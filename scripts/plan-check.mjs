@@ -11,16 +11,51 @@ const head = (s) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 
 const pool = new Pool({ connectionString: process.env.DIRECT_URL })
 
+const ORIGIN = process.env.BETTER_AUTH_URL
+const DOMAIN = 'plancheck.local'
+const PW = 'demo12345'
+
+class Client {
+  constructor() { this.jar = new Map() }
+  async req(path, body, method = 'POST', base = `${ORIGIN}/api/auth`) {
+    const headers = { 'content-type': 'application/json', origin: ORIGIN }
+    if (this.jar.size) headers.cookie = [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ')
+    const res = await fetch(base + path, {
+      method, headers,
+      body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
+    })
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      const kv = c.split(';')[0], i = kv.indexOf('=')
+      const name = kv.slice(0, i), val = kv.slice(i + 1)
+      if (val === '') this.jar.delete(name)
+      else this.jar.set(name, val)
+    }
+    const t = await res.text()
+    let d; try { d = JSON.parse(t) } catch { d = t }
+    return { status: res.status, data: d }
+  }
+  get(path, base) { return this.req(path, undefined, 'GET', base) }
+}
+
 try {
   head('0. reset test fixtures')
   // organizations cascade to teams and subscriptions; plan_limits/plans rows
   // are cleaned individually since they don't hang off the organization FK.
   await pool.query(`delete from organizations where id = 'plancheck_org'`)
-  await pool.query(`delete from plan_limits
-                     where resource = 'branches'
-                       and plan_id in (select id from plans where key in ('free','plancheck_paid'))`)
+  // Section 4 below temporarily repoints the default plan's branch cap to
+  // exercise the lock rule; restore the real seeded value (see
+  // scripts/seed-plans.mjs) rather than deleting it, or plan_limits ends up
+  // missing this row for every run after the first.
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'branches', 1 from plans where key = 'free'
+    on conflict (plan_id, resource) do update set cap = 1`)
   await pool.query(`delete from plans where key = 'plancheck_paid'`)
+  await pool.query(`delete from users where email like $1`, [`%@${DOMAIN}`])
+  await pool.query(`delete from organizations where slug = 'plancheck'`)
   ok('cleared stale test fixtures', true)
+
+  const owner = new Client()
 
   head('1. schema')
   const { rows: tables } = await pool.query(`
@@ -138,9 +173,10 @@ try {
     JSON.stringify({ pastDue, def, paid }))
 
   await pool.query(`delete from organizations where id = 'plancheck_org'`)
-  await pool.query(`delete from plan_limits
-                     where resource = 'branches'
-                       and plan_id in (select id from plans where key in ('free','plancheck_paid'))`)
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'branches', 1 from plans where key = 'free'
+    on conflict (plan_id, resource) do update set cap = 1`)
   await pool.query(`delete from plans where key = 'plancheck_paid'`)
 
   head('5. catalog integrity')
@@ -162,6 +198,24 @@ try {
 
   const { rows: planCount } = await pool.query(`select count(*)::int n from plans`)
   ok('four tiers seeded', planCount[0].n === 4, JSON.stringify(planCount))
+
+  head('6. entitlement resolution over HTTP')
+  await owner.req('/sign-up/email',
+    { name: 'Plan Owner', email: `owner@${DOMAIN}`, password: PW })
+  const orgRes = await owner.req('/organization/create',
+    { name: 'Plan Check Salon', slug: 'plancheck' })
+  const orgId = orgRes.data?.id
+  await owner.req('/organization/set-active', { organizationId: orgId })
+
+  const ent = await owner.get('/me/entitlements', `${ORIGIN}/api`)
+  ok('entitlements resolve for a new tenant',
+    ent.status === 200 && ent.data?.planKey === 'free', JSON.stringify(ent.data))
+  ok('free tier grants online_booking',
+    (ent.data?.features ?? []).includes('online_booking'), JSON.stringify(ent.data?.features))
+  ok('free tier does NOT grant payroll',
+    !(ent.data?.features ?? []).includes('payroll'), JSON.stringify(ent.data?.features))
+  ok('free tier caps branches at 1',
+    ent.data?.caps?.branches === 1, JSON.stringify(ent.data?.caps))
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
