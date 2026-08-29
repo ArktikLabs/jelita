@@ -1,6 +1,7 @@
 import { headers } from 'next/headers'
 import { auth } from './auth'
-import { PlanError, isBranchActive } from './plan/entitlements'
+import { PlanError } from './plan/entitlements'
+import { isBranchActive } from './plan/branch'
 import type { statement } from './permissions'
 
 type Resource = keyof typeof statement

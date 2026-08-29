@@ -322,24 +322,45 @@ try {
     update plan_limits set cap = 3
      where plan_id = (select id from plans where key = 'free') and resource = 'staff'`)
 
-  head('10. locked branches are read-only')
+  head('10. isBranchActive() — the function requireBranch actually calls')
+  // Section 4 already proves the branch_entitlement VIEW's lock rule on
+  // synthetic teams. This section proves the isBranchActive() FUNCTION
+  // that requireBranch depends on — via a real import, not another direct
+  // query — against the two real branches the HTTP flow above created.
+  const { isBranchActive } = await import('../lib/plan/branch.ts')
+
   await pool.query(`
     update subscriptions set plan_id = (select id from plans where key = 'pro')
      where organization_id = $1`, [orgId])
-  const { rows: two } = await pool.query(
-    `select team_id, seq, is_active from branch_entitlement
+  const { rows: branchRows } = await pool.query(
+    `select team_id, seq from branch_entitlement
       where organization_id = $1 order by seq`, [orgId])
-  ok('both branches active on pro',
-    two.length === 2 && two.every((r) => r.is_active), JSON.stringify(two))
+  const [branch1, branch2] = branchRows
+  const bothOnPro = [await isBranchActive(branch1.team_id), await isBranchActive(branch2.team_id)]
+  ok('isBranchActive resolves true for a branch within the cap (pro, both branches)',
+    bothOnPro.every((v) => v === true), JSON.stringify(bothOnPro))
 
   await pool.query(`
     update subscriptions set plan_id = (select id from plans where key = 'free')
      where organization_id = $1`, [orgId])
-  const { rows: one } = await pool.query(
-    `select team_id, seq, is_active from branch_entitlement
-      where organization_id = $1 order by seq`, [orgId])
-  ok('downgrading locks the newer branch, keeps the oldest',
-    one[0].is_active === true && one[1].is_active === false, JSON.stringify(one))
+  const afterDowngrade = [await isBranchActive(branch1.team_id), await isBranchActive(branch2.team_id)]
+  ok('isBranchActive resolves false for the newer branch once over cap after a downgrade',
+    afterDowngrade[0] === true && afterDowngrade[1] === false, JSON.stringify(afterDowngrade))
+
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'pro')
+     where organization_id = $1`, [orgId])
+  const afterRaise = await isBranchActive(branch2.team_id)
+  ok('isBranchActive resolves true again after raising the cap, no manual unlock',
+    afterRaise === true, `got ${afterRaise}`)
+
+  const unknown = await isBranchActive('plancheck-nonexistent-branch-id')
+  ok('isBranchActive resolves true for an unknown branch id (let other layers 404 it)',
+    unknown === true, `got ${unknown}`)
+
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'free')
+     where organization_id = $1`, [orgId])
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)

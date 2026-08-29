@@ -138,11 +138,3 @@ export async function requireQuota(resource: CappedResource, organizationId?: st
     })
   }
 }
-
-/** Is this branch within its tenant's cap? Computed, never stored. */
-export async function isBranchActive(teamId: string): Promise<boolean> {
-  const { rows } = await db.execute(sql`
-    select is_active from branch_entitlement where team_id = ${teamId} limit 1`)
-  const row = rows[0] as { is_active: boolean } | undefined
-  return row?.is_active ?? true // unknown branch: let other layers 404 it
-}
