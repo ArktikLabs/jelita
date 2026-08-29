@@ -263,6 +263,57 @@ try {
   await pool.query(`
     update subscriptions set plan_id = (select id from plans where key = 'free')
      where organization_id = $1`, [orgId])
+
+  head('9. better-auth endpoints respect the staff cap (not just branches)')
+  // Pin free's staff cap to exactly one seat above the org's current member
+  // count, so there is precisely one free seat to invite into and then fill
+  // — the exact boundary the accept-invitation org-resolution fix depends on.
+  const { rows: memberCountRow } = await pool.query(
+    `select count(*)::int as n from members where organization_id = $1`, [orgId])
+  const staffCap = memberCountRow[0].n + 1
+  await pool.query(`
+    update plan_limits set cap = $1
+     where plan_id = (select id from plans where key = 'free') and resource = 'staff'`,
+    [staffCap])
+
+  const invitee = new Client()
+  await invitee.req('/sign-up/email',
+    { name: 'Plan Invitee', email: `invitee@${DOMAIN}`, password: PW })
+  const inv1 = await owner.req('/organization/invite-member',
+    { email: `invitee@${DOMAIN}`, role: 'stylist', organizationId: orgId })
+  ok('invite-member succeeds while a seat remains',
+    inv1.status === 200, `got ${inv1.status} ${JSON.stringify(inv1.data)}`)
+
+  // Fill the remaining seat directly (via our own route, not accept-invitation)
+  // so the org sits exactly at cap when the invitee accepts below.
+  const filler = await owner.req('/staff', {
+    name: 'Filler', email: `filler@${DOMAIN}`, password: PW, role: 'stylist',
+  }, 'POST', `${ORIGIN}/api`)
+  ok('filling the last seat succeeds', filler.status === 201, JSON.stringify(filler.data))
+
+  const acceptAtCap = await invitee.req('/organization/accept-invitation',
+    { invitationId: inv1.data?.id })
+  ok('accept-invitation is refused once the invitation\'s org is at its staff cap',
+    acceptAtCap.status === 402
+      && acceptAtCap.data?.error === 'QUOTA_EXCEEDED'
+      && acceptAtCap.data?.resource === 'staff'
+      && acceptAtCap.data?.cap === staffCap
+      && acceptAtCap.data?.used === staffCap,
+    JSON.stringify(acceptAtCap.data))
+
+  const inviteAtCap = await owner.req('/organization/invite-member',
+    { email: `invitee2@${DOMAIN}`, role: 'stylist', organizationId: orgId })
+  ok('invite-member is refused (courtesy check) once staff is at cap',
+    inviteAtCap.status === 402
+      && inviteAtCap.data?.error === 'QUOTA_EXCEEDED'
+      && inviteAtCap.data?.resource === 'staff'
+      && inviteAtCap.data?.cap === staffCap
+      && inviteAtCap.data?.used === staffCap,
+    JSON.stringify(inviteAtCap.data))
+
+  await pool.query(`
+    update plan_limits set cap = 3
+     where plan_id = (select id from plans where key = 'free') and resource = 'staff'`)
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)

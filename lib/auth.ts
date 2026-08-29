@@ -100,7 +100,7 @@ export const auth = betterAuth({
         }
       } catch (e) {
         if (e instanceof PlanError) {
-          throw new APIError('PAYMENT_REQUIRED', { code: e.code, ...e.meta })
+          throw new APIError('PAYMENT_REQUIRED', { error: e.code, ...e.meta })
         }
         throw e
       }
