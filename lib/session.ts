@@ -20,12 +20,25 @@ export async function requireUser() {
 /**
  * The active branch (team) for this request. PRD §5.8: every scoped query
  * must filter on this — never trust a branch id from the client.
+ *
+ * Pass `{ write: true }` for any mutation. Locked branches (over the tier's
+ * cap) are read-only; enforcement is wired in Task 8 of the plan-gating work.
  */
-export async function requireBranch() {
+export async function requireBranch(opts: { write?: boolean } = {}) {
   const session = await requireUser()
   const branchId = session.session.activeTeamId
   if (!branchId) throw new Error('NO_ACTIVE_BRANCH')
-  return { ...session, branchId, organizationId: session.session.activeOrganizationId }
+
+  if (opts.write) {
+    // ponytail: always-allow stub. Task 8 replaces this with a
+    // branch_entitlement lookup that throws BRANCH_LOCKED.
+  }
+
+  return {
+    ...session,
+    branchId,
+    organizationId: session.session.activeOrganizationId,
+  }
 }
 
 /**
