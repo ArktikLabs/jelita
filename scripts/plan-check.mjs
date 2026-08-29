@@ -142,6 +142,26 @@ try {
                      where resource = 'branches'
                        and plan_id in (select id from plans where key in ('free','plancheck_paid'))`)
   await pool.query(`delete from plans where key = 'plancheck_paid'`)
+
+  head('5. catalog integrity')
+  const { FEATURE_KEYS } = await import('../lib/plan/catalog.ts')
+  const { rows: dbFeatures } = await pool.query(`select key from features order by key`)
+  const dbKeys = dbFeatures.map((r) => r.key).sort()
+  const tsKeys = [...FEATURE_KEYS].sort()
+  ok('every TS feature key exists in the features table',
+    tsKeys.every((k) => dbKeys.includes(k)),
+    JSON.stringify({ missing: tsKeys.filter((k) => !dbKeys.includes(k)) }))
+  ok('every features row exists in the TS catalog',
+    dbKeys.every((k) => tsKeys.includes(k)),
+    JSON.stringify({ orphaned: dbKeys.filter((k) => !tsKeys.includes(k)) }))
+
+  const restrict = await pool.query(`delete from features where key = 'payroll'`)
+    .then(() => null).catch((e) => e)
+  ok('deleting a feature a plan still sells is refused', restrict !== null,
+    'payroll was deleted despite plan_features referencing it')
+
+  const { rows: planCount } = await pool.query(`select count(*)::int n from plans`)
+  ok('four tiers seeded', planCount[0].n === 4, JSON.stringify(planCount))
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
