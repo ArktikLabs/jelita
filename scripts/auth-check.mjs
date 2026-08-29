@@ -89,6 +89,15 @@ try {
   ok('organization created', !!orgId, JSON.stringify(org.data).slice(0, 120))
   await owner.req('/organization/set-active', { organizationId: orgId })
 
+  // Put this tenant on an uncapped tier: this suite adds four members and
+  // multiple teams, which exceeds the free tier's staff (3) and branch (1)
+  // caps once requireQuota is enforced. business has no plan_limits rows at
+  // all, so both are unlimited — the fix belongs in the suite's own fixture
+  // setup, not in loosening the quota guard or raising free's caps.
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [orgId])
+
   const mkTeam = async (name) =>
     (await owner.req('/organization/create-team', { name, organizationId: orgId })).data?.id
   const kemang = await mkTeam('Kemang')

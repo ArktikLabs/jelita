@@ -2,6 +2,7 @@ import { createLocalAccountIssuer } from 'better-auth'
 import { auth } from '@/lib/auth'
 import { requirePermission } from '@/lib/session'
 import { roles, type SalonRole } from '@/lib/permissions'
+import { PlanError, requireQuota } from '@/lib/plan/entitlements'
 
 const STATUS: Record<string, number> = {
   UNAUTHORIZED: 401,
@@ -38,6 +39,7 @@ export async function POST(req: Request) {
     const session = await requirePermission({ staff: ['create'] })
     const organizationId = session.session.activeOrganizationId
     if (!organizationId) throw new Error('NO_ACTIVE_ORGANIZATION')
+    await requireQuota('staff')
 
     // Create the login directly instead of via signUpEmail: that endpoint
     // mints a session, and nextCookies() would then write the NEW user's
@@ -74,6 +76,9 @@ export async function POST(req: Request) {
 
     return Response.json({ user: created }, { status: 201 })
   } catch (e) {
+    if (e instanceof PlanError) {
+      return Response.json({ error: e.code, ...e.meta }, { status: 402 })
+    }
     const msg = e instanceof Error ? e.message : 'ERROR'
     return Response.json({ error: msg }, { status: STATUS[msg] ?? 400 })
   }

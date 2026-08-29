@@ -216,6 +216,35 @@ try {
     !(ent.data?.features ?? []).includes('payroll'), JSON.stringify(ent.data?.features))
   ok('free tier caps branches at 1',
     ent.data?.caps?.branches === 1, JSON.stringify(ent.data?.caps))
+
+  head('7. quota enforcement')
+  // free caps staff at 3; the owner already occupies one seat.
+  const mkStaff = (i) => owner.req('/staff', {
+    name: `Staff ${i}`, email: `s${i}@${DOMAIN}`, password: PW, role: 'stylist',
+  }, 'POST', `${ORIGIN}/api`)
+
+  const s1 = await mkStaff(1)
+  const s2 = await mkStaff(2)
+  ok('staff can be added while under cap',
+    s1.status === 201 && s2.status === 201,
+    JSON.stringify([s1.status, s2.status]))
+
+  const s3 = await mkStaff(3)
+  ok('staff creation past the cap returns 402', s3.status === 402, `got ${s3.status}`)
+  ok('402 body names the resource, cap and usage',
+    s3.data?.error === 'QUOTA_EXCEEDED' && s3.data?.resource === 'staff'
+      && s3.data?.cap === 3 && s3.data?.used === 3,
+    JSON.stringify(s3.data))
+
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [orgId])
+  const s4 = await mkStaff(4)
+  ok('upgrading to an uncapped tier allows creation again',
+    s4.status === 201, JSON.stringify(s4.data))
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'free')
+     where organization_id = $1`, [orgId])
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)

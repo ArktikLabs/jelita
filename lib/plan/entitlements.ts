@@ -75,3 +75,58 @@ export async function currentEntitlements() {
   if (!orgId) throw new Error('NO_ACTIVE_ORGANIZATION')
   return { session, orgId, entitlements: await getEntitlements(orgId) }
 }
+
+/**
+ * Current usage for a capped resource. Returns null when the resource is
+ * not yet countable — `services` and `products` have no tables until the
+ * business schema ships, and a cap that cannot be counted must not be
+ * silently treated as satisfied.
+ */
+export async function countResource(
+  organizationId: string,
+  resource: CappedResource,
+): Promise<number | null> {
+  if (resource === 'branches') {
+    const { rows } = await db.execute(sql`
+      select count(*)::int as n from teams
+       where organization_id = ${organizationId}`)
+    return (rows[0] as { n: number }).n
+  }
+  if (resource === 'staff') {
+    const { rows } = await db.execute(sql`
+      select count(*)::int as n from members
+       where organization_id = ${organizationId}`)
+    return (rows[0] as { n: number }).n
+  }
+  return null // services, products — Task 9
+}
+
+/** Throws PlanError('FEATURE_NOT_IN_PLAN') unless the tier includes `key`. */
+export async function requireFeature(key: FeatureKey) {
+  const { entitlements } = await currentEntitlements()
+  if (!entitlements.features.has(key)) {
+    throw new PlanError('FEATURE_NOT_IN_PLAN', {
+      feature: key,
+      planKey: entitlements.planKey,
+      planName: entitlements.planName,
+    })
+  }
+}
+
+/** Throws PlanError('QUOTA_EXCEEDED') when the tier has no room left. */
+export async function requireQuota(resource: CappedResource) {
+  const { orgId, entitlements } = await currentEntitlements()
+  const cap = entitlements.caps[resource]
+  if (cap === undefined) return // no plan_limits row = unlimited
+
+  const used = await countResource(orgId, resource)
+  if (used === null) return // not countable yet; see countResource
+
+  if (used >= cap) {
+    throw new PlanError('QUOTA_EXCEEDED', {
+      resource, cap, used,
+      planKey: entitlements.planKey,
+      planName: entitlements.planName,
+    })
+  }
+}
