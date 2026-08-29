@@ -12,6 +12,16 @@ const head = (s) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 const pool = new Pool({ connectionString: process.env.DIRECT_URL })
 
 try {
+  head('0. reset test fixtures')
+  // organizations cascade to teams and subscriptions; plan_limits/plans rows
+  // are cleaned individually since they don't hang off the organization FK.
+  await pool.query(`delete from organizations where id = 'plancheck_org'`)
+  await pool.query(`delete from plan_limits
+                     where resource = 'branches'
+                       and plan_id in (select id from plans where key in ('free','plancheck_paid'))`)
+  await pool.query(`delete from plans where key = 'plancheck_paid'`)
+  ok('cleared stale test fixtures', true)
+
   head('1. schema')
   const { rows: tables } = await pool.query(`
     select table_name from information_schema.tables
@@ -63,11 +73,16 @@ try {
     sub.length === 1 && sub[0].status === 'active', JSON.stringify(sub))
 
   head('4. lock rule')
-  const mkTeam = (n, i) => pool.query(
+  const mkTeam = (id, n, offsetSec) => pool.query(
     `insert into teams (id, name, organization_id, created_at)
      values ($1, $2, 'plancheck_org', now() + ($3 || ' seconds')::interval)`,
-    [`plancheck_t${i}`, n, i])
-  for (let i = 1; i <= 3; i++) await mkTeam(`Branch ${i}`, i)
+    [`plancheck_t${id}`, n, offsetSec])
+  // branches 1 and 2 share a created_at on purpose, so the view's
+  // `order by t.created_at, t.id` tiebreak (not just created_at) is what
+  // decides seq for them.
+  await mkTeam(1, 'Branch 1', 1)
+  await mkTeam(2, 'Branch 2', 1)
+  await mkTeam(3, 'Branch 3', 2)
 
   const capTo = async (n) => {
     await pool.query(`
@@ -91,29 +106,42 @@ try {
     unlocked.length === 3 && unlocked.every((r) => r.is_active === true),
     JSON.stringify(unlocked))
 
+  // Only the 'free' default plan has existed so far, so subscriptions.plan_id
+  // has necessarily always equaled plans.id where is_default — a broken
+  // effective_plan that ignores status entirely would pass the same way a
+  // correct one does. Give the org a distinct non-default plan so canceled
+  // vs. non-canceled resolve to visibly different ids.
+  await pool.query(`
+    insert into plans (key, name) values ('plancheck_paid','Plan Check Paid')
+    on conflict (key) do nothing`)
+  const { rows: paid } = await pool.query(`select id from plans where key = 'plancheck_paid'`)
+  const { rows: def } = await pool.query(`select id from plans where is_default`)
+  await pool.query(`update subscriptions set plan_id = $1, status = 'active'
+                     where organization_id = 'plancheck_org'`, [paid[0].id])
+
   await pool.query(`update subscriptions set status = 'canceled'
                      where organization_id = 'plancheck_org'`)
   const { rows: cancelled } = await pool.query(`
     select plan_id from effective_plan where organization_id = 'plancheck_org'`)
-  const { rows: def } = await pool.query(`select id from plans where is_default`)
-  ok('canceled resolves to the default plan',
-    String(cancelled[0].plan_id) === String(def[0].id),
-    JSON.stringify({ cancelled, def }))
+  ok('canceled resolves to the default plan (not the subscribed plan)',
+    String(cancelled[0].plan_id) === String(def[0].id)
+      && String(cancelled[0].plan_id) !== String(paid[0].id),
+    JSON.stringify({ cancelled, def, paid }))
 
   await pool.query(`update subscriptions set status = 'past_due'
                      where organization_id = 'plancheck_org'`)
   const { rows: pastDue } = await pool.query(`
     select plan_id from effective_plan where organization_id = 'plancheck_org'`)
-  const { rows: subPlan } = await pool.query(`
-    select plan_id from subscriptions where organization_id = 'plancheck_org'`)
-  ok('past_due retains the subscription plan, unchanged',
-    String(pastDue[0].plan_id) === String(subPlan[0].plan_id),
-    JSON.stringify({ pastDue, subPlan }))
+  ok('past_due retains the subscribed plan, not the default',
+    String(pastDue[0].plan_id) === String(paid[0].id)
+      && String(pastDue[0].plan_id) !== String(def[0].id),
+    JSON.stringify({ pastDue, def, paid }))
 
   await pool.query(`delete from organizations where id = 'plancheck_org'`)
   await pool.query(`delete from plan_limits
-                     where plan_id = (select id from plans where is_default)
-                       and resource = 'branches'`)
+                     where resource = 'branches'
+                       and plan_id in (select id from plans where key in ('free','plancheck_paid'))`)
+  await pool.query(`delete from plans where key = 'plancheck_paid'`)
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
