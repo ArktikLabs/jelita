@@ -50,6 +50,13 @@ try {
     insert into plan_limits (plan_id, resource, cap)
     select id, 'branches', 1 from plans where key = 'free'
     on conflict (plan_id, resource) do update set cap = 1`)
+  // Section 9 below temporarily repoints free's staff cap to pin a seat
+  // boundary; restore the seeded value for the same reason as branches above
+  // — a mid-run crash must not corrupt the next run.
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'staff', 3 from plans where key = 'free'
+    on conflict (plan_id, resource) do update set cap = 3`)
   await pool.query(`delete from plans where key = 'plancheck_paid'`)
   await pool.query(`delete from users where email like $1`, [`%@${DOMAIN}`])
   await pool.query(`delete from organizations where slug = 'plancheck'`)
