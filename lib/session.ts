@@ -1,5 +1,6 @@
 import { headers } from 'next/headers'
 import { auth } from './auth'
+import { PlanError, isBranchActive } from './plan/entitlements'
 import type { statement } from './permissions'
 
 type Resource = keyof typeof statement
@@ -22,16 +23,15 @@ export async function requireUser() {
  * must filter on this — never trust a branch id from the client.
  *
  * Pass `{ write: true }` for any mutation. Locked branches (over the tier's
- * cap) are read-only; enforcement is wired in Task 8 of the plan-gating work.
+ * cap) are read-only.
  */
 export async function requireBranch(opts: { write?: boolean } = {}) {
   const session = await requireUser()
   const branchId = session.session.activeTeamId
   if (!branchId) throw new Error('NO_ACTIVE_BRANCH')
 
-  if (opts.write) {
-    // ponytail: always-allow stub. Task 8 replaces this with a
-    // branch_entitlement lookup that throws BRANCH_LOCKED.
+  if (opts.write && !(await isBranchActive(branchId))) {
+    throw new PlanError('BRANCH_LOCKED', { branchId })
   }
 
   return {

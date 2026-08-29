@@ -321,6 +321,25 @@ try {
   await pool.query(`
     update plan_limits set cap = 3
      where plan_id = (select id from plans where key = 'free') and resource = 'staff'`)
+
+  head('10. locked branches are read-only')
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'pro')
+     where organization_id = $1`, [orgId])
+  const { rows: two } = await pool.query(
+    `select team_id, seq, is_active from branch_entitlement
+      where organization_id = $1 order by seq`, [orgId])
+  ok('both branches active on pro',
+    two.length === 2 && two.every((r) => r.is_active), JSON.stringify(two))
+
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'free')
+     where organization_id = $1`, [orgId])
+  const { rows: one } = await pool.query(
+    `select team_id, seq, is_active from branch_entitlement
+      where organization_id = $1 order by seq`, [orgId])
+  ok('downgrading locks the newer branch, keeps the oldest',
+    one[0].is_active === true && one[1].is_active === false, JSON.stringify(one))
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
