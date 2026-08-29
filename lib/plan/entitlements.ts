@@ -113,9 +113,17 @@ export async function requireFeature(key: FeatureKey) {
   }
 }
 
-/** Throws PlanError('QUOTA_EXCEEDED') when the tier has no room left. */
-export async function requireQuota(resource: CappedResource) {
-  const { orgId, entitlements } = await currentEntitlements()
+/**
+ * Throws PlanError('QUOTA_EXCEEDED') when the tier has no room left.
+ *
+ * `organizationId` is optional and defaults to the caller's active org.
+ * It must be passed explicitly for endpoints like accept-invitation, where
+ * the acting session's active org has nothing to do with the org whose
+ * quota is at stake (the invitee usually has no active org yet).
+ */
+export async function requireQuota(resource: CappedResource, organizationId?: string) {
+  const orgId = organizationId ?? (await currentEntitlements()).orgId
+  const entitlements = await getEntitlements(orgId)
   const cap = entitlements.caps[resource]
   if (cap === undefined) return // no plan_limits row = unlimited
 

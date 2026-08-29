@@ -2,11 +2,13 @@ import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { organization } from 'better-auth/plugins'
 import { nextCookies } from 'better-auth/next-js'
+import { createAuthMiddleware, APIError } from 'better-auth/api'
 import { eq } from 'drizzle-orm'
 import { db } from './db'
-import { members, teamMembers } from './schema'
+import { invitations, members, teamMembers } from './schema'
 import { sendMail } from './mailer'
 import { ac, roles } from './permissions'
+import { PlanError, requireQuota } from './plan/entitlements'
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: 'pg', usePlural: true }),
@@ -60,6 +62,49 @@ export const auth = betterAuth({
         },
       },
     },
+  },
+
+  hooks: {
+    /**
+     * Some resource-creating endpoints belong to better-auth, not to us, so
+     * a guard in our route handlers would miss them entirely. Seats are
+     * counted from `members`, so a pending invitation holds none — the
+     * authoritative gate is acceptance, not invitation.
+     */
+    before: createAuthMiddleware(async (ctx) => {
+      const gated: Record<string, 'branches' | 'staff'> = {
+        '/organization/create-team': 'branches',
+        '/organization/accept-invitation': 'staff',
+        '/organization/invite-member': 'staff', // courtesy: fail early
+      }
+      const resource = gated[ctx.path]
+      if (!resource) return
+
+      try {
+        if (ctx.path === '/organization/accept-invitation') {
+          // The invitee is not yet a member of the org they're joining, so
+          // their own session (usually with no active org at all) is the
+          // wrong thing to check quota against — resolve the invitation's
+          // target org instead.
+          const invitationId = ctx.body?.invitationId as string | undefined
+          if (!invitationId) return
+          const [inv] = await db
+            .select({ organizationId: invitations.organizationId })
+            .from(invitations)
+            .where(eq(invitations.id, invitationId))
+            .limit(1)
+          if (!inv) return
+          await requireQuota(resource, inv.organizationId)
+        } else {
+          await requireQuota(resource)
+        }
+      } catch (e) {
+        if (e instanceof PlanError) {
+          throw new APIError('PAYMENT_REQUIRED', { code: e.code, ...e.meta })
+        }
+        throw e
+      }
+    }),
   },
 
   plugins: [

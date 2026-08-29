@@ -245,6 +245,24 @@ try {
   await pool.query(`
     update subscriptions set plan_id = (select id from plans where key = 'free')
      where organization_id = $1`, [orgId])
+
+  head('8. better-auth endpoints respect caps')
+  // free caps branches at 1, and the org's auto-created team is branch #1.
+  const extraTeam = await owner.req('/organization/create-team',
+    { name: 'Second Branch', organizationId: orgId })
+  ok('creating a branch past the cap is refused',
+    extraTeam.status === 402, `got ${extraTeam.status} ${JSON.stringify(extraTeam.data)}`)
+
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'pro')
+     where organization_id = $1`, [orgId])
+  const allowed = await owner.req('/organization/create-team',
+    { name: 'Second Branch', organizationId: orgId })
+  ok('the same call succeeds on a tier with room',
+    allowed.status === 200, `got ${allowed.status} ${JSON.stringify(allowed.data)}`)
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'free')
+     where organization_id = $1`, [orgId])
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
