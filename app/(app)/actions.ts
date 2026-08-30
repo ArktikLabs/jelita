@@ -20,7 +20,7 @@ export async function switchBranchAction(
   // Conditional rendering is presentation. This is a public POST endpoint and
   // guards itself — the same lesson as the session-revoke fix.
   await requirePagePermission({ branch: ['switch'] })
-  const { organizationId } = await requirePageOrg()
+  const { organizationId, user } = await requirePageOrg()
   const teamId = String(formData.get('teamId') ?? '')
   if (!teamId) return { error: 'Cabang tidak ditemukan.' }
 
@@ -34,6 +34,18 @@ export async function switchBranchAction(
   if (rows.length === 0) return { error: 'Cabang tidak ditemukan.' }
 
   try {
+    // The switcher lists every branch of the salon, but setActiveTeam demands a
+    // team_members row — so an owner picking a branch an admin created got
+    // better-auth's untranslated English error and a silently reverting
+    // dropdown. Enrol them instead of hiding the branch: management is entitled
+    // to enter any branch of its own salon, and this runs only AFTER the
+    // permission and org checks above. addTeamMember is find-or-create, and the
+    // row is navigational only — it never makes them staff (see assignedStaff
+    // in lib/branch.ts) and never affects lock ranking.
+    await auth.api.addTeamMember({
+      body: { teamId, userId: user.id, organizationId },
+      headers: await headers(),
+    })
     await auth.api.setActiveTeam({ body: { teamId }, headers: await headers() })
   } catch (e) {
     return { error: formError(e, 'Gagal berpindah cabang.') }
