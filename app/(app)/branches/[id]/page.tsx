@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { listBranches, getBranch } from '@/lib/branch'
+import { getBranch } from '@/lib/branch'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
@@ -17,12 +17,9 @@ export default async function BranchDetailPage({
   const { organizationId } = await requirePageOrg()
   const { id } = await params
 
-  // getBranch(id) alone does not scope by organization — confirm this team
-  // belongs to the caller's org before trusting anything it returns.
-  const branches = await listBranches(organizationId)
-  if (!branches.some((b) => b.teamId === id)) notFound()
-
-  const data = await getBranch(id)
+  // getBranch is scoped by organizationId in the query itself, so null here
+  // covers both "no such branch" and "not yours" — notFound() is correct for both.
+  const data = await getBranch(id, organizationId)
   if (!data) notFound()
   const { profile, hours } = data
 
@@ -34,7 +31,7 @@ export default async function BranchDetailPage({
           <CardDescription>Detail cabang.</CardDescription>
         </CardHeader>
         <CardContent>
-          <BranchDetailsForm key={`details-${profile.name}`} profile={profile} />
+          <BranchDetailsForm profile={profile} />
         </CardContent>
       </Card>
 
@@ -44,11 +41,7 @@ export default async function BranchDetailPage({
           <CardDescription>Atur jam buka dan tutup per hari.</CardDescription>
         </CardHeader>
         <CardContent>
-          <BranchHoursForm
-            key={hours.map((h) => `${h.closed}-${h.opensAt}-${h.closesAt}`).join('|')}
-            teamId={profile.teamId}
-            hours={hours}
-          />
+          <BranchHoursForm teamId={profile.teamId} hours={hours} />
         </CardContent>
       </Card>
 

@@ -38,8 +38,12 @@ export async function listBranches(organizationId: string): Promise<BranchRow[]>
   }))
 }
 
-export async function getBranch(teamId: string) {
-  const [profile] = await listBranchesById(teamId)
+/**
+ * Scoped by organizationId in the query itself, not just by the caller — a
+ * bare `getBranch(teamId)` must be impossible to use across tenants.
+ */
+export async function getBranch(teamId: string, organizationId: string) {
+  const [profile] = await listBranchById(teamId, organizationId)
   if (!profile) return null
   const { rows } = await db.execute(sql`
     select weekday, closed, opens_at, closes_at from branch_hours
@@ -53,14 +57,14 @@ export async function getBranch(teamId: string) {
   return { profile, hours }
 }
 
-async function listBranchesById(teamId: string): Promise<BranchRow[]> {
+async function listBranchById(teamId: string, organizationId: string): Promise<BranchRow[]> {
   const { rows } = await db.execute(sql`
     select t.id as team_id, t.name, p.address, p.phone, p.active,
            coalesce(e.within_cap, false) as within_cap, t.member_count
       from teams t
       join branch_profiles p on p.team_id = t.id
       left join branch_entitlement e on e.team_id = t.id
-     where t.id = ${teamId} limit 1`)
+     where t.id = ${teamId} and t.organization_id = ${organizationId} limit 1`)
   return (rows as Record<string, unknown>[]).map((r) => ({
     teamId: r.team_id as string,
     name: r.name as string,

@@ -19,6 +19,15 @@ const WEEKDAY_LABEL = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'S
 
 export function BranchDetailsForm({ profile }: { profile: BranchRow }) {
   const [state, action, pending] = useActionState(updateBranchDetailsAction, initial)
+  // Controlled, not `defaultValue` + a data-derived `key`: a save that changes
+  // any of these fields re-renders this same component with fresh props from
+  // the revalidated page. An uncontrolled input would either warn (base-ui
+  // flags a post-mount `defaultValue` change) or, if remounted via key, reset
+  // to `{}` and lose the `state.done` "Tersimpan." message it just received.
+  const [name, setName] = useState(profile.name)
+  const [address, setAddress] = useState(profile.address ?? '')
+  const [phone, setPhone] = useState(profile.phone ?? '')
+
   return (
     <form action={action} className="space-y-4">
       {state.error && (
@@ -34,15 +43,18 @@ export function BranchDetailsForm({ profile }: { profile: BranchRow }) {
       <input type="hidden" name="teamId" value={profile.teamId} />
       <div className="space-y-2">
         <Label htmlFor="name">Nama cabang</Label>
-        <Input id="name" name="name" defaultValue={profile.name} required />
+        <Input
+          id="name" name="name" value={name}
+          onChange={(e) => setName(e.target.value)} required
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="address">Alamat</Label>
-        <Input id="address" name="address" defaultValue={profile.address ?? ''} />
+        <Input id="address" name="address" value={address} onChange={(e) => setAddress(e.target.value)} />
       </div>
       <div className="space-y-2">
         <Label htmlFor="phone">Telepon</Label>
-        <Input id="phone" name="phone" defaultValue={profile.phone ?? ''} />
+        <Input id="phone" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
       </div>
       <Button type="submit" disabled={pending}>
         {pending ? 'Menyimpan…' : 'Simpan'}
@@ -53,7 +65,12 @@ export function BranchDetailsForm({ profile }: { profile: BranchRow }) {
 
 export function BranchHoursForm({ teamId, hours }: { teamId: string; hours: HourRow[] }) {
   const [state, action, pending] = useActionState(updateBranchHoursAction, initial)
-  const [closed, setClosed] = useState(() => hours.map((h) => h.closed))
+  // Controlled for the same reason as BranchDetailsForm above: no `key`, no
+  // `defaultChecked`/`defaultValue` — this instance survives its own save.
+  const [days, setDays] = useState(() => hours.map((h) => ({ ...h })))
+  const patchDay = (weekday: number, patch: Partial<HourRow>) => {
+    setDays((prev) => prev.map((d) => (d.weekday === weekday ? { ...d, ...patch } : d)))
+  }
 
   return (
     <form action={action} className="space-y-4">
@@ -69,21 +86,15 @@ export function BranchHoursForm({ teamId, hours }: { teamId: string; hours: Hour
       )}
       <input type="hidden" name="teamId" value={teamId} />
       <div className="space-y-3">
-        {hours.map((h) => (
+        {days.map((h) => (
           <div key={h.weekday} className="flex items-center gap-3">
             <span className="w-16 text-sm">{WEEKDAY_LABEL[h.weekday]}</span>
             <div className="flex items-center gap-2">
               <Checkbox
                 id={`closed-${h.weekday}`}
                 name={`closed-${h.weekday}`}
-                defaultChecked={h.closed}
-                onCheckedChange={(checked) => {
-                  setClosed((prev) => {
-                    const next = [...prev]
-                    next[h.weekday] = checked
-                    return next
-                  })
-                }}
+                checked={h.closed}
+                onCheckedChange={(checked) => patchDay(h.weekday, { closed: checked })}
               />
               <Label htmlFor={`closed-${h.weekday}`} className="text-sm text-muted-foreground">
                 Tutup
@@ -92,16 +103,18 @@ export function BranchHoursForm({ teamId, hours }: { teamId: string; hours: Hour
             <Input
               type="time"
               name={`opens-${h.weekday}`}
-              defaultValue={h.opensAt}
-              disabled={closed[h.weekday]}
+              value={h.opensAt}
+              onChange={(e) => patchDay(h.weekday, { opensAt: e.target.value })}
+              disabled={h.closed}
               className="w-28"
             />
             <span className="text-sm text-muted-foreground">—</span>
             <Input
               type="time"
               name={`closes-${h.weekday}`}
-              defaultValue={h.closesAt}
-              disabled={closed[h.weekday]}
+              value={h.closesAt}
+              onChange={(e) => patchDay(h.weekday, { closesAt: e.target.value })}
+              disabled={h.closed}
               className="w-28"
             />
           </div>
