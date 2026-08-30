@@ -64,8 +64,12 @@ app/
     register/page.tsx
     verify-email/page.tsx     confirmation landing (user is already signed in)
     forgot-password/page.tsx
-    reset-password/page.tsx   reads ?token=
-  onboarding/page.tsx         authenticated, NO org yet — outside (app) by design
+  reset-password/page.tsx     reads ?token=; OUTSIDE (auth) so a user who is
+                              still signed in on another device can finish a
+                              reset instead of being bounced to /dashboard
+  onboarding/page.tsx         authenticated, NO org yet — outside (app) by
+                              design; bounces to /dashboard if the user
+                              already has a salon (one salon per owner)
   (app)/                      authenticated AND has an organization
     layout.tsx                the guard
     dashboard/page.tsx        stub landing
@@ -144,6 +148,10 @@ emailAndPassword: {
 },
 emailVerification: {
   sendOnSignUp: true,
+  sendOnSignIn: true,                    // without it an unverified sign-in is
+                                         // FORBIDDEN with no fresh link, and
+                                         // reset-password does not verify —
+                                         // one lost mail kills the account
   autoSignInAfterVerification: true,     // verifying is proof of possession;
                                          // don't charge a second login for it
   sendVerificationEmail: → notify({ channel: 'email', … }),
@@ -152,7 +160,7 @@ emailVerification: {
 
 The existing invitation email moves to `notify()`.
 
-All four options were confirmed to typecheck against better-auth 1.7.2.
+All of these options were confirmed to typecheck against better-auth 1.7.2.
 
 **Rate limiting — resolved empirically.** Thirty rapid failed sign-ins against
 the dev server all returned 401 and never 429, so limiting is not active in
@@ -174,8 +182,24 @@ Five signups per hour is deliberately tight — a salon owner registers once.
 Ten sign-ins a minute tolerates a fat-fingered password without locking out a
 busy front desk. `customRules` was confirmed to typecheck.
 
-Residual: dev was proven unlimited; production was **not** proven limited.
-Worth one check against a production build before launch.
+**What these rules actually cover — read this before trusting them.**
+better-auth enforces rate limiting in its router's `onRequest`
+(`node_modules/better-auth/dist/api/index.mjs:168`), which runs only for HTTP
+requests that reach `app/api/auth/[...all]/route.ts`. So:
+
+| Path | Limited? |
+|---|---|
+| `POST /api/auth/sign-up/email`, `/sign-in/email`, `/request-password-reset` | **Yes** |
+| The `/register`, `/login`, `/forgot-password` **forms** | **No** |
+
+Every form here is a Server Action calling `auth.api.*` directly, which
+bypasses the router entirely — and a Server Action is itself a public POST
+endpoint. The screens a bot would actually hit are therefore unlimited today;
+only the raw `/api/auth/*` routes are covered.
+
+Residual: dev was proven unlimited even on the raw routes; production was
+**not** proven limited. Worth one check against a production build before
+launch.
 
 ## 8. Screens
 
@@ -258,6 +282,12 @@ verification flow is end-to-end testable with no inbox and no mocking.
 
 ## 11. Deferred, with the trigger for revisiting
 
+- **Rate limiting the Server Actions (top of the list).** §7 explains why the
+  configured rules never fire for the forms. Two candidate fixes, neither
+  cheap: route the actions through `auth.handler` so the router's `onRequest`
+  runs (needs the `Set-Cookie` headers forwarded back out of the synthesised
+  `Response`, which is what makes it risky), or add a limiter inside the
+  actions themselves. Revisit before the app is publicly reachable.
 - **Real transport (email or WhatsApp).** Revisit when a stranger needs to
   complete signup unaided, or when booking notifications ship.
 - **`proxy.ts` optimistic redirects.** Revisit if the pre-redirect render is
