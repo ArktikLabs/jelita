@@ -5,8 +5,9 @@
  *
  * PLANS is exported so scripts/plan-check.mjs derives its cap expectations
  * from the same array instead of duplicating the numbers. Importing this file
- * therefore must not seed anything — hence the import.meta.main guard.
+ * therefore must not seed anything — hence the entry-point guard below.
  */
+import { fileURLToPath } from 'node:url'
 import { Pool } from 'pg'
 
 const FEATURES = [
@@ -105,4 +106,7 @@ async function seed() {
   await pool.end()
 }
 
-if (import.meta.main) await seed()
+// `import.meta.main` only exists on Node >= 24.2; below that it is undefined,
+// so the seed would silently do nothing and still exit 0 — the same fail-open
+// shape the transaction above exists to prevent. Compare argv instead.
+if (process.argv[1] === fileURLToPath(import.meta.url)) await seed()
