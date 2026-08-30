@@ -50,6 +50,20 @@
       "when": 1788060002312,
       "tag": "0006_branches_cap_min",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788078479778,
+      "tag": "0007_fine_wendigo",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788078503621,
+      "tag": "0008_branch_tables",
+      "breakpoints": true
     }
   ]
 }
