@@ -11,7 +11,12 @@ export async function createSalonAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  await requirePageSession()
+  const session = await requirePageSession()
+  // This action is a public POST endpoint in its own right, so the guard has
+  // to live here and not only on the page: without it an already-onboarded
+  // user can create a second organization, breaking the one-salon-per-user
+  // assumption the session hook in lib/auth.ts depends on.
+  if (session.session.activeOrganizationId) redirect('/dashboard')
   const name = String(formData.get('name') ?? '').trim()
   const slug = String(formData.get('slug') ?? '').trim().toLowerCase()
   if (!name || !slug) return { error: 'Nama dan slug wajib diisi.' }

@@ -81,16 +81,9 @@ try {
   })
   const dash = await u.go('/dashboard')
   ok('user with a salon reaches /dashboard', dash.status === 200, `got ${dash.status}`)
-  // NOTE: neither task-2-brief (requirePageOrg) nor task-7-brief (the
-  // onboarding page itself, which guards only with requirePageSession) ever
-  // specifies a reverse guard that bounces an already-onboarded user away
-  // from /onboarding. That is a real, current gap — a signed-in owner can
-  // revisit /onboarding and create a second organization — but it is not a
-  // regression introduced by tasks 5-7 against their own briefs, so fixing
-  // it is out of scope here. This asserts the actual (200, not a redirect)
-  // behaviour instead of the task-8 brief's assumption of one.
-  ok('/onboarding has no reverse guard: an onboarded user still gets the form (known gap)',
-    (await u.go('/onboarding')).status === 200)
+  const reverse = await u.go('/onboarding')
+  ok('/onboarding redirects an onboarded user to /dashboard',
+    lands(reverse, '/dashboard'), `got ${reverse.status} ${reverse.location}`)
   ok('/login redirects a signed-in user to /dashboard',
     lands(await u.go('/login'), '/dashboard'))
 
