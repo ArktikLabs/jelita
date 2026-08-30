@@ -159,11 +159,11 @@ try {
   }
   await capTo(1)
   const { rows: locked } = await pool.query(`
-    select team_id, seq, is_active from branch_entitlement
+    select team_id, seq, within_cap from branch_entitlement
      where organization_id = 'plancheck_org' order by seq`)
   ok('only the oldest branch stays active at cap 1',
-    locked.length === 3 && locked[0].is_active === true
-      && locked[1].is_active === false && locked[2].is_active === false,
+    locked.length === 3 && locked[0].within_cap === true
+      && locked[1].within_cap === false && locked[2].within_cap === false,
     JSON.stringify(locked))
   // Says WHICH tied branch won: t1 and t2 share a created_at exactly, so the
   // lower id must take seq 1 and the other must be the locked one.
@@ -174,9 +174,9 @@ try {
 
   await capTo(3)
   const { rows: unlocked } = await pool.query(`
-    select is_active from branch_entitlement where organization_id = 'plancheck_org'`)
+    select within_cap from branch_entitlement where organization_id = 'plancheck_org'`)
   ok('raising the cap re-activates with no manual unlock',
-    unlocked.length === 3 && unlocked.every((r) => r.is_active === true),
+    unlocked.length === 3 && unlocked.every((r) => r.within_cap === true),
     JSON.stringify(unlocked))
 
   // Only the 'free' default plan has existed so far, so subscriptions.plan_id

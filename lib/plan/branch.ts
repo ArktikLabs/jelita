@@ -11,7 +11,7 @@ import { pool } from '../pg-pool.ts'
  */
 export async function isBranchActive(teamId: string): Promise<boolean> {
   const { rows } = await pool.query(
-    'select is_active from branch_entitlement where team_id = $1 limit 1', [teamId])
-  const row = rows[0] as { is_active: boolean } | undefined
-  return row?.is_active ?? true // unknown branch: let other layers 404 it
+    'select within_cap from branch_entitlement where team_id = $1 limit 1', [teamId])
+  const row = rows[0] as { within_cap: boolean } | undefined
+  return row?.within_cap ?? true // unknown branch: let other layers 404 it
 }
