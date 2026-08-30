@@ -11,6 +11,7 @@ const head = (s) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 
 const pool = new Pool({ connectionString: process.env.DIRECT_URL })
 const ORG = 'branchcheck_org'
+const ORG2 = 'branchcheck_org2'
 
 try {
   head('0. reset test fixtures')
@@ -18,7 +19,7 @@ try {
   // reuse fixtures created by earlier sections, so cleanup never happens
   // mid-run (a crash would poison the next run) or at a section's end (a
   // later section still needs the row).
-  await pool.query(`delete from organizations where id = $1`, [ORG])
+  await pool.query(`delete from organizations where id = any($1)`, [[ORG, ORG2]])
   await pool.query(`delete from plan_limits
                      where plan_id = (select id from plans where is_default)
                        and resource = 'branches'`)
@@ -75,6 +76,36 @@ try {
     after.length === 1 && after[0].team_id === 'bc_t2'
       && after[0].within_cap === true,
     JSON.stringify(after))
+
+  head('3. getBranchStatus distinguishes the two read-only reasons')
+  const { getBranchStatus } = await import('../lib/plan/branch.ts')
+  // A separate org, not ORG: section 2 already spent ORG's cap-1 slot on
+  // bc_t2, which would make bc_s1 read over_cap for the wrong reason.
+  // Fixture cleanup is section 0's job only; nothing here deletes rows.
+  await pool.query(`
+    insert into organizations (id, name, slug, created_at)
+    values ($1, 'Branch Check 2', 'branchcheck2', now())`, [ORG2])
+  const mkTeam2 = (id, name, offsetSec) => pool.query(
+    `insert into teams (id, name, organization_id, created_at)
+     values ($1, $2, $3, timestamp '2026-01-01 00:00:00' + ($4 || ' seconds')::interval)`,
+    [id, name, ORG2, offsetSec])
+  await mkTeam2('bc_s1', 'Satu', 1)
+  await mkTeam2('bc_s2', 'Dua', 2)
+
+  ok('an active branch within cap is ok', await getBranchStatus('bc_s1') === 'ok')
+
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'branches', 1 from plans where is_default
+    on conflict (plan_id, resource) do update set cap = 1`)
+  ok('an active branch over cap is over_cap',
+    await getBranchStatus('bc_s2') === 'over_cap', await getBranchStatus('bc_s2'))
+
+  await pool.query(`update branch_profiles set active = false where team_id = 'bc_s2'`)
+  ok('a deactivated branch is closed, not over_cap',
+    await getBranchStatus('bc_s2') === 'closed', await getBranchStatus('bc_s2'))
+
+  ok('an unknown branch id is ok', await getBranchStatus('bc_nonexistent') === 'ok')
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
