@@ -54,8 +54,10 @@ export const getEntitlements = cache(
 
     if (!row) {
       // effective_plan falls back to the default plan, so this only happens
-      // if the organization itself is gone. Fail closed but legibly.
-      throw new PlanError('FEATURE_NOT_IN_PLAN', { organizationId })
+      // if the organization itself is gone. That is a missing tenant, not a
+      // tier problem — a PlanError here would surface as a 402 about a plan
+      // that does not exist.
+      throw new Error('ORGANIZATION_NOT_FOUND')
     }
 
     return {
@@ -130,6 +132,12 @@ export async function requireQuota(resource: CappedResource, organizationId?: st
   const used = await countResource(orgId, resource)
   if (used === null) return // not countable yet; see countResource
 
+  // ponytail: check-then-act, no unique constraint behind it — two concurrent
+  // creates at used = cap - 1 both pass and the tenant lands one seat over.
+  // Ceiling: an off-by-one overshoot per race, self-healing for branches (the
+  // view recomputes lock state) but not for seats. Upgrade path: a
+  // `members`-counting exclusion/trigger constraint, or serialize seat creation
+  // per organization (advisory lock on organization_id) if it ever matters.
   if (used >= cap) {
     throw new PlanError('QUOTA_EXCEEDED', {
       resource, cap, used,

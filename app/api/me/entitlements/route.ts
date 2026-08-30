@@ -3,6 +3,7 @@ import { currentEntitlements } from '@/lib/plan/entitlements'
 const STATUS: Record<string, number> = {
   UNAUTHORIZED: 401,
   NO_ACTIVE_ORGANIZATION: 409,
+  ORGANIZATION_NOT_FOUND: 409,
 }
 
 export async function GET() {
