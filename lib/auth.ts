@@ -2,13 +2,36 @@ import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { organization } from 'better-auth/plugins'
 import { nextCookies } from 'better-auth/next-js'
-import { createAuthMiddleware, APIError } from 'better-auth/api'
+import { APIError } from 'better-auth/api'
 import { eq } from 'drizzle-orm'
 import { db } from './db'
-import { invitations, members, teamMembers } from './schema'
+import { members, teamMembers } from './schema'
 import { sendMail } from './mailer'
 import { ac, roles } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
+import type { CappedResource } from './plan/catalog'
+
+/**
+ * Quota guard for better-auth's own resource-creating endpoints — a route
+ * handler of ours would never see them.
+ *
+ * Wired as organizationHooks (not a global `before` hook) so it runs AFTER
+ * better-auth has authenticated the caller, checked their permission and
+ * RESOLVED the target organization: `ctx.body.organizationId` wins over the
+ * session's active org, so the caller's active salon is the wrong tenant to
+ * bill. That ordering also keeps 401/403 ahead of 402, so a plan's name, cap
+ * and seat usage never leak to someone who wasn't allowed in.
+ */
+async function assertQuota(resource: CappedResource, organizationId: string) {
+  try {
+    await requireQuota(resource, organizationId)
+  } catch (e) {
+    if (e instanceof PlanError) {
+      throw new APIError('PAYMENT_REQUIRED', { error: e.code, ...e.meta })
+    }
+    throw e
+  }
+}
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: 'pg', usePlural: true }),
@@ -64,49 +87,6 @@ export const auth = betterAuth({
     },
   },
 
-  hooks: {
-    /**
-     * Some resource-creating endpoints belong to better-auth, not to us, so
-     * a guard in our route handlers would miss them entirely. Seats are
-     * counted from `members`, so a pending invitation holds none — the
-     * authoritative gate is acceptance, not invitation.
-     */
-    before: createAuthMiddleware(async (ctx) => {
-      const gated: Record<string, 'branches' | 'staff'> = {
-        '/organization/create-team': 'branches',
-        '/organization/accept-invitation': 'staff',
-        '/organization/invite-member': 'staff', // courtesy: fail early
-      }
-      const resource = gated[ctx.path]
-      if (!resource) return
-
-      try {
-        if (ctx.path === '/organization/accept-invitation') {
-          // The invitee is not yet a member of the org they're joining, so
-          // their own session (usually with no active org at all) is the
-          // wrong thing to check quota against — resolve the invitation's
-          // target org instead.
-          const invitationId = ctx.body?.invitationId as string | undefined
-          if (!invitationId) return
-          const [inv] = await db
-            .select({ organizationId: invitations.organizationId })
-            .from(invitations)
-            .where(eq(invitations.id, invitationId))
-            .limit(1)
-          if (!inv) return
-          await requireQuota(resource, inv.organizationId)
-        } else {
-          await requireQuota(resource)
-        }
-      } catch (e) {
-        if (e instanceof PlanError) {
-          throw new APIError('PAYMENT_REQUIRED', { error: e.code, ...e.meta })
-        }
-        throw e
-      }
-    }),
-  },
-
   plugins: [
     // Tenancy (PRD §5.8): organization = salon, team = branch.
     // session.activeOrganizationId scopes the tenant; activeTeamId is the
@@ -125,6 +105,14 @@ export const auth = betterAuth({
         )
       },
       teams: { enabled: true, maximumTeams: 20 },
+      // Seats are counted from `members`, so a pending invitation holds
+      // none — acceptance is the authoritative gate, invitation only a
+      // courtesy early warning.
+      organizationHooks: {
+        beforeCreateTeam: ({ organization }) => assertQuota('branches', organization.id),
+        beforeAcceptInvitation: ({ organization }) => assertQuota('staff', organization.id),
+        beforeCreateInvitation: ({ organization }) => assertQuota('staff', organization.id),
+      },
       // Lets an owner define salon-specific roles at runtime (e.g. "senior
       // stylist who may also void") without a redeploy — the multi-tenant
       // case in PRD §2, where each client wants slightly different rules.
