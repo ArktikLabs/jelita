@@ -53,7 +53,7 @@ export default function ForgotPasswordPage() {
           )}
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
-            <Input id="email" name="email" type="email" required />
+            <Input id="email" name="email" type="email" autoComplete="email" required />
           </div>
           <Button type="submit" className="w-full" disabled={pending}>
             {pending ? 'Memproses…' : 'Kirim tautan'}

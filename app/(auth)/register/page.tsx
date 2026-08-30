@@ -46,17 +46,17 @@ export default function RegisterPage() {
           )}
           <div className="space-y-2">
             <Label htmlFor="name">Nama</Label>
-            <Input id="name" name="name" required />
+            <Input id="name" name="name" autoComplete="name" required />
           </div>
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
-            <Input id="email" name="email" type="email" required />
+            <Input id="email" name="email" type="email" autoComplete="email" required />
           </div>
           <div className="space-y-2">
             <Label htmlFor="password">Kata sandi</Label>
             <Input
               id="password" name="password" type="password"
-              minLength={8} required
+              autoComplete="new-password" minLength={8} required
             />
           </div>
           <Button type="submit" className="w-full" disabled={pending}>

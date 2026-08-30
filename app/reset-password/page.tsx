@@ -37,14 +37,14 @@ function ResetPasswordForm() {
             <Label htmlFor="password">Kata sandi baru</Label>
             <Input
               id="password" name="password" type="password"
-              minLength={8} required
+              autoComplete="new-password" minLength={8} required
             />
           </div>
           <div className="space-y-2">
             <Label htmlFor="confirm">Konfirmasi kata sandi</Label>
             <Input
               id="confirm" name="confirm" type="password"
-              minLength={8} required
+              autoComplete="new-password" minLength={8} required
             />
           </div>
           <Button type="submit" className="w-full" disabled={pending}>

@@ -51,11 +51,17 @@ export function ChangePasswordForm() {
       )}
       <div className="space-y-2">
         <Label htmlFor="current">Kata sandi saat ini</Label>
-        <Input id="current" name="current" type="password" required />
+        <Input
+          id="current" name="current" type="password"
+          autoComplete="current-password" required
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="next">Kata sandi baru</Label>
-        <Input id="next" name="next" type="password" minLength={8} required />
+        <Input
+          id="next" name="next" type="password"
+          autoComplete="new-password" minLength={8} required
+        />
       </div>
       <Button type="submit" disabled={pending}>
         {pending ? 'Menyimpan…' : 'Ubah kata sandi'}

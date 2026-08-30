@@ -31,11 +31,14 @@ export default function LoginPage() {
           )}
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
-            <Input id="email" name="email" type="email" required />
+            <Input id="email" name="email" type="email" autoComplete="email" required />
           </div>
           <div className="space-y-2">
             <Label htmlFor="password">Kata sandi</Label>
-            <Input id="password" name="password" type="password" required />
+            <Input
+              id="password" name="password" type="password"
+              autoComplete="current-password" required
+            />
           </div>
           <Button type="submit" className="w-full" disabled={pending}>
             {pending ? 'Memproses…' : 'Masuk'}
