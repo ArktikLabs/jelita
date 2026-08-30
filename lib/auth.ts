@@ -5,7 +5,7 @@ import { nextCookies } from 'better-auth/next-js'
 import { APIError } from 'better-auth/api'
 import { and, asc, eq } from 'drizzle-orm'
 import { db } from './db'
-import { members, teamMembers, teams } from './schema'
+import { branchProfiles, members, teamMembers, teams } from './schema'
 import { notify } from './notify'
 import { ac, roles } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
@@ -96,7 +96,8 @@ export const auth = betterAuth({
          * so a user can belong to more than one salon. The oldest membership
          * wins (deterministic tiebreak on id), and the branch lookup is
          * constrained to that same organization so activeTeamId can never
-         * resolve to a branch belonging to a different salon.
+         * resolve to a branch belonging to a different salon, and to active
+         * branches so a fresh login never lands in one the owner closed.
          */
         before: async (session) => {
           const [m] = await db
@@ -110,10 +111,12 @@ export const auth = betterAuth({
             .select({ teamId: teamMembers.teamId })
             .from(teamMembers)
             .innerJoin(teams, eq(teamMembers.teamId, teams.id))
+            .innerJoin(branchProfiles, eq(teams.id, branchProfiles.teamId))
             .where(
               and(
                 eq(teamMembers.userId, session.userId),
                 eq(teams.organizationId, m.organizationId),
+                eq(branchProfiles.active, true),
               ),
             )
             .orderBy(asc(teamMembers.createdAt), asc(teamMembers.id))

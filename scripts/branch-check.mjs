@@ -12,6 +12,9 @@ const head = (s) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 const pool = new Pool({ connectionString: process.env.DIRECT_URL })
 const ORG = 'branchcheck_org'
 const ORG2 = 'branchcheck_org2'
+const ORIGIN = process.env.BETTER_AUTH_URL
+const DOMAIN = 'branchcheck.local'
+const PW = 'demo12345'
 
 try {
   head('0. reset test fixtures')
@@ -20,6 +23,8 @@ try {
   // mid-run (a crash would poison the next run) or at a section's end (a
   // later section still needs the row).
   await pool.query(`delete from organizations where id = any($1)`, [[ORG, ORG2]])
+  await pool.query(`delete from organizations where slug = 'branchlogin'`)
+  await pool.query(`delete from users where email like $1`, [`%@${DOMAIN}`])
   await pool.query(`delete from plan_limits
                      where plan_id = (select id from plans where is_default)
                        and resource = 'branches'`)
@@ -106,6 +111,63 @@ try {
     await getBranchStatus('bc_s2') === 'closed', await getBranchStatus('bc_s2'))
 
   ok('an unknown branch id is ok', await getBranchStatus('bc_nonexistent') === 'ok')
+
+  head('4. a fresh login lands on an active branch')
+  // call/jar/org2 are declared at try-block level (no nested block scope)
+  // because later sections in this file reuse this HTTP helper, its cookie
+  // jar, and this fixture organization.
+  const jar = new Map()
+  const call = async (path, body) => {
+    const headers = { 'content-type': 'application/json', origin: ORIGIN }
+    if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ')
+    const res = await fetch(`${ORIGIN}/api/auth${path}`, {
+      method: 'POST', headers, body: JSON.stringify(body ?? {}),
+    })
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      const kv = c.split(';')[0], i = kv.indexOf('=')
+      const n = kv.slice(0, i), v = kv.slice(i + 1)
+      if (v === '') jar.delete(n); else jar.set(n, v)
+    }
+    const t = await res.text()
+    let d; try { d = JSON.parse(t) } catch { d = t }
+    return { status: res.status, data: d }
+  }
+
+  await call('/sign-up/email', { name: 'BC Owner', email: `owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email like $1`, [`%@${DOMAIN}`])
+  await call('/sign-in/email', { email: `owner@${DOMAIN}`, password: PW })
+  const org2 = await call('/organization/create', { name: 'Branch Login', slug: 'branchlogin' })
+  await call('/organization/set-active', { organizationId: org2.data?.id })
+
+  // The auto-created default team is branch #1. Deactivate it and add a live
+  // one. Inserted directly (like sections 1-2's mkTeam) rather than through
+  // /organization/create-team: that endpoint is quota-gated, and section 2
+  // left the default plan's branches cap at 1 for the rest of this run.
+  // Direct insert also sidesteps that create-team does not enrol its caller
+  // — the owner needs an explicit team_members row to be eligible as the
+  // resolved active team.
+  const { rows: t0 } = await pool.query(
+    `select id from teams where organization_id = $1 order by created_at, id limit 1`,
+    [org2.data.id])
+  const { rows: owner } = await pool.query(`select id from users where email = $1`, [`owner@${DOMAIN}`])
+  await pool.query(
+    `insert into teams (id, name, organization_id, created_at)
+     values ('bl_t1', 'Cabang Aktif', $1, now())`, [org2.data.id])
+  await pool.query(
+    `insert into team_members (id, team_id, user_id, created_at)
+     values ('bl_tm1', 'bl_t1', $1, now())`, [owner[0].id])
+  await pool.query(`update branch_profiles set active = false where team_id = $1`, [t0[0].id])
+
+  jar.clear()
+  await call('/sign-in/email', { email: `owner@${DOMAIN}`, password: PW })
+  const { rows: sess } = await pool.query(
+    `select s.active_team_id, p.active
+       from sessions s join users u on u.id = s.user_id
+       left join branch_profiles p on p.team_id = s.active_team_id
+      where u.email = $1 order by s.created_at desc limit 1`, [`owner@${DOMAIN}`])
+  ok('a fresh login does not land on a deactivated branch',
+    sess[0]?.active_team_id !== t0[0].id && sess[0]?.active === true,
+    JSON.stringify(sess[0]))
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
