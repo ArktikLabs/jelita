@@ -168,6 +168,54 @@ try {
   ok('a fresh login does not land on a deactivated branch',
     sess[0]?.active_team_id !== t0[0].id && sess[0]?.active === true,
     JSON.stringify(sess[0]))
+
+  head('5. the switcher rejects a branch from another organization')
+  // Reusing call/jar/org2/owner from section 4: the caller's session is
+  // signed in and active in org2 ("Branch Login"). bc_t2 belongs to ORG
+  // (section 1's organization) — a genuinely different tenant.
+  //
+  // switchBranchAction (app/(app)/actions.ts) is a 'use server' action that
+  // calls next/headers internally, so it cannot be invoked directly from a
+  // standalone script — it has no meaning outside a Next.js request. What we
+  // CAN and do exercise here is both halves of its security property:
+  //   (a) the exact scoping query the action runs itself, before ever
+  //       calling better-auth, and
+  //   (b) the underlying /organization/set-active-team endpoint the action
+  //       delegates to, proving the cross-tenant switch is refused end to
+  //       end regardless of which layer catches it.
+  const { rows: foreign } = await pool.query(
+    `select 1 from teams where id = $1 and organization_id = $2 limit 1`,
+    ['bc_t2', org2.data.id])
+  ok('the action\'s own org-scoping query finds no row for a foreign team',
+    foreign.length === 0, JSON.stringify(foreign))
+
+  const cross = await call('/organization/set-active-team', { teamId: 'bc_t2' })
+  ok('switching to a team in another organization is refused',
+    cross.status >= 400, JSON.stringify(cross))
+
+  // Success path: a second live team in the caller's OWN organization.
+  await pool.query(
+    `insert into teams (id, name, organization_id, created_at)
+     values ('bl_t2', 'Cabang Dua', $1, now())`, [org2.data.id])
+  await pool.query(
+    `insert into team_members (id, team_id, user_id, created_at)
+     values ('bl_tm2', 'bl_t2', $1, now())`, [owner[0].id])
+
+  const { rows: own } = await pool.query(
+    `select 1 from teams where id = $1 and organization_id = $2 limit 1`,
+    ['bl_t2', org2.data.id])
+  ok('the action\'s own org-scoping query finds a row for the caller\'s own team',
+    own.length === 1, JSON.stringify(own))
+
+  const same = await call('/organization/set-active-team', { teamId: 'bl_t2' })
+  ok('switching to a team in the caller\'s own organization succeeds',
+    same.status === 200, JSON.stringify(same))
+
+  const { rows: switched } = await pool.query(
+    `select active_team_id from sessions s join users u on u.id = s.user_id
+      where u.email = $1 order by s.created_at desc limit 1`, [`owner@${DOMAIN}`])
+  ok('sessions.active_team_id updates to the newly switched branch',
+    switched[0]?.active_team_id === 'bl_t2', JSON.stringify(switched[0]))
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
