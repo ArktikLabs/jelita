@@ -13,6 +13,7 @@
     "db:studio": "drizzle-kit studio",
     "auth:check": "node --env-file=.env.local scripts/auth-check.mjs",
     "plan:check": "node --env-file=.env.local scripts/plan-check.mjs",
+    "ui:check": "node --env-file=.env.local scripts/ui-check.mjs",
     "plan:seed": "node --env-file=.env.local scripts/seed-plans.mjs"
   },
   "dependencies": {
