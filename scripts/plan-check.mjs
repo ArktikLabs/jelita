@@ -3,6 +3,12 @@
  *   pnpm plan:check      (dev server must be running)
  */
 import { Pool } from 'pg'
+import { PLANS } from './seed-plans.mjs'
+
+// Free's caps come from the seed, not from literals repeated here: the
+// restore below writes them back into the database, so a hardcoded copy would
+// silently revert plan_limits to stale values the moment the seed changes.
+const FREE = PLANS.find((p) => p.key === 'free')
 
 let pass = 0, fail = 0
 const ok = (n, c, d) => (c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${n}`))
@@ -42,24 +48,21 @@ try {
   // organizations cascade to teams and subscriptions; plan_limits/plans rows
   // are cleaned individually since they don't hang off the organization FK.
   await pool.query(`delete from organizations where id = 'plancheck_org'`)
-  // Section 4 below temporarily repoints the default plan's branch cap to
-  // exercise the lock rule; restore the real seeded value (see
-  // scripts/seed-plans.mjs) rather than deleting it, or plan_limits ends up
-  // missing this row for every run after the first.
-  await pool.query(`
+  // Sections 4 and 9 below temporarily repoint free's branch and staff caps
+  // to exercise the lock rule and pin a seat boundary; restore the seeded
+  // values rather than deleting the rows, or plan_limits ends up missing them
+  // for every run after the first — and a mid-run crash must not corrupt the
+  // next run either.
+  const restoreFreeCap = (resource) => pool.query(`
     insert into plan_limits (plan_id, resource, cap)
-    select id, 'branches', 1 from plans where key = 'free'
-    on conflict (plan_id, resource) do update set cap = 1`)
-  // Section 9 below temporarily repoints free's staff cap to pin a seat
-  // boundary; restore the seeded value for the same reason as branches above
-  // — a mid-run crash must not corrupt the next run.
-  await pool.query(`
-    insert into plan_limits (plan_id, resource, cap)
-    select id, 'staff', 3 from plans where key = 'free'
-    on conflict (plan_id, resource) do update set cap = 3`)
+    select id, $1, $2 from plans where key = 'free'
+    on conflict (plan_id, resource) do update set cap = excluded.cap`,
+    [resource, FREE.caps[resource]])
+  await restoreFreeCap('branches')
+  await restoreFreeCap('staff')
   await pool.query(`delete from plans where key = 'plancheck_paid'`)
   await pool.query(`delete from users where email like $1`, [`%@${DOMAIN}`])
-  await pool.query(`delete from organizations where slug = 'plancheck'`)
+  await pool.query(`delete from organizations where slug like 'plancheck%'`)
   ok('cleared stale test fixtures', true)
 
   const owner = new Client()
@@ -115,16 +118,17 @@ try {
     sub.length === 1 && sub[0].status === 'active', JSON.stringify(sub))
 
   head('4. lock rule')
-  const mkTeam = (id, n, offsetSec) => pool.query(
+  const mkTeam = (id, n, at) => pool.query(
     `insert into teams (id, name, organization_id, created_at)
-     values ($1, $2, 'plancheck_org', now() + ($3 || ' seconds')::interval)`,
-    [`plancheck_t${id}`, n, offsetSec])
-  // branches 1 and 2 share a created_at on purpose, so the view's
-  // `order by t.created_at, t.id` tiebreak (not just created_at) is what
-  // decides seq for them.
-  await mkTeam(1, 'Branch 1', 1)
-  await mkTeam(2, 'Branch 2', 1)
-  await mkTeam(3, 'Branch 3', 2)
+     values ($1, $2, 'plancheck_org', $3::timestamp)`,
+    [`plancheck_t${id}`, n, at])
+  // Branches 1 and 2 get a literal, byte-identical created_at: now() is
+  // transaction_timestamp() and each pool.query is its own transaction, so
+  // two now() calls differ by milliseconds and the view's `, t.id` tiebreak
+  // would never actually decide anything.
+  await mkTeam(1, 'Branch 1', '2026-01-01 00:00:01')
+  await mkTeam(2, 'Branch 2', '2026-01-01 00:00:01')
+  await mkTeam(3, 'Branch 3', '2026-01-01 00:00:02')
 
   const capTo = async (n) => {
     await pool.query(`
@@ -140,6 +144,12 @@ try {
     locked.length === 3 && locked[0].is_active === true
       && locked[1].is_active === false && locked[2].is_active === false,
     JSON.stringify(locked))
+  // Says WHICH tied branch won: t1 and t2 share a created_at exactly, so the
+  // lower id must take seq 1 and the other must be the locked one.
+  ok('the (created_at, id) tiebreak gives the lower id the surviving seat',
+    locked[0].team_id === 'plancheck_t1' && locked[1].team_id === 'plancheck_t2'
+      && locked[2].team_id === 'plancheck_t3',
+    JSON.stringify(locked.map((r) => r.team_id)))
 
   await capTo(3)
   const { rows: unlocked } = await pool.query(`
@@ -180,10 +190,7 @@ try {
     JSON.stringify({ pastDue, def, paid }))
 
   await pool.query(`delete from organizations where id = 'plancheck_org'`)
-  await pool.query(`
-    insert into plan_limits (plan_id, resource, cap)
-    select id, 'branches', 1 from plans where key = 'free'
-    on conflict (plan_id, resource) do update set cap = 1`)
+  await restoreFreeCap('branches')
   await pool.query(`delete from plans where key = 'plancheck_paid'`)
 
   head('5. catalog integrity')
@@ -198,10 +205,28 @@ try {
     dbKeys.every((k) => tsKeys.includes(k)),
     JSON.stringify({ orphaned: dbKeys.filter((k) => !tsKeys.includes(k)) }))
 
-  const restrict = await pool.query(`delete from features where key = 'payroll'`)
+  // In a transaction that is always rolled back: if the FK ever stops
+  // restricting, the bare delete would succeed and take the payroll row with
+  // it, breaking this whole section on every later run.
+  const fkClient = await pool.connect()
+  await fkClient.query('begin')
+  const restrict = await fkClient.query(`delete from features where key = 'payroll'`)
     .then(() => null).catch((e) => e)
+  await fkClient.query('rollback')
+  fkClient.release()
   ok('deleting a feature a plan still sells is refused', restrict !== null,
     'payroll was deleted despite plan_features referencing it')
+
+  // Same drift gap as FEATURE_KEYS above, one table over: CAPPED_RESOURCES and
+  // the plan_limits_resource CHECK are hand-maintained copies of one list.
+  const { CAPPED_RESOURCES } = await import('../lib/plan/catalog.ts')
+  const { rows: [{ constraintdef }] } = await pool.query(
+    `select pg_get_constraintdef(oid) as constraintdef
+       from pg_constraint where conname = 'plan_limits_resource'`)
+  const checkResources = [...constraintdef.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort()
+  ok('CAPPED_RESOURCES matches the plan_limits_resource CHECK exactly',
+    JSON.stringify(checkResources) === JSON.stringify([...CAPPED_RESOURCES].sort()),
+    JSON.stringify({ check: checkResources, ts: [...CAPPED_RESOURCES].sort() }))
 
   const { rows: planCount } = await pool.query(`select count(*)::int n from plans`)
   ok('four tiers seeded', planCount[0].n === 4, JSON.stringify(planCount))
@@ -221,11 +246,11 @@ try {
     (ent.data?.features ?? []).includes('online_booking'), JSON.stringify(ent.data?.features))
   ok('free tier does NOT grant payroll',
     !(ent.data?.features ?? []).includes('payroll'), JSON.stringify(ent.data?.features))
-  ok('free tier caps branches at 1',
-    ent.data?.caps?.branches === 1, JSON.stringify(ent.data?.caps))
+  ok(`free tier caps branches at ${FREE.caps.branches}`,
+    ent.data?.caps?.branches === FREE.caps.branches, JSON.stringify(ent.data?.caps))
 
   head('7. quota enforcement')
-  // free caps staff at 3; the owner already occupies one seat.
+  // free caps staff at FREE.caps.staff; the owner already occupies one seat.
   const mkStaff = (i) => owner.req('/staff', {
     name: `Staff ${i}`, email: `s${i}@${DOMAIN}`, password: PW, role: 'stylist',
   }, 'POST', `${ORIGIN}/api`)
@@ -240,7 +265,7 @@ try {
   ok('staff creation past the cap returns 402', s3.status === 402, `got ${s3.status}`)
   ok('402 body names the resource, cap and usage',
     s3.data?.error === 'QUOTA_EXCEEDED' && s3.data?.resource === 'staff'
-      && s3.data?.cap === 3 && s3.data?.used === 3,
+      && s3.data?.cap === FREE.caps.staff && s3.data?.used === FREE.caps.staff,
     JSON.stringify(s3.data))
 
   await pool.query(`
@@ -270,6 +295,34 @@ try {
   await pool.query(`
     update subscriptions set plan_id = (select id from plans where key = 'free')
      where organization_id = $1`, [orgId])
+
+  // better-auth resolves the target org as `ctx.body.organizationId ||
+  // session.activeOrganizationId`, so the quota must be charged to the org in
+  // the BODY. An owner whose ACTIVE salon is uncapped must still not be able
+  // to create a branch in a capped salon they also belong to.
+  const org2 = await owner.req('/organization/create',
+    { name: 'Plan Check Salon 2', slug: 'plancheck2' })
+  const org2Id = org2.data?.id
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [org2Id])
+  const active2 = await owner.req('/organization/set-active', { organizationId: org2Id })
+  ok('the caller\'s active org is now the uncapped second salon',
+    active2.data?.id === org2Id, JSON.stringify(active2.data))
+  const crossOrg = await owner.req('/organization/create-team',
+    { name: 'Cross Org Branch', organizationId: orgId })
+  ok('create-team is quota-checked against the body\'s organizationId, not the active org',
+    crossOrg.status === 402 && crossOrg.data?.error === 'QUOTA_EXCEEDED'
+      && crossOrg.data?.resource === 'branches',
+    `got ${crossOrg.status} ${JSON.stringify(crossOrg.data)}`)
+  await owner.req('/organization/set-active', { organizationId: orgId })
+
+  // A guard that throws a non-APIError from a global before-hook surfaces as a
+  // bodyless 500; the endpoint's own session check must be what answers here.
+  const anonTeam = await new Client().req('/organization/create-team',
+    { name: 'Nobody Branch', organizationId: orgId })
+  ok('unauthenticated create-team returns 401, not 500',
+    anonTeam.status === 401, `got ${anonTeam.status} ${JSON.stringify(anonTeam.data)}`)
 
   head('9. better-auth endpoints respect the staff cap (not just branches)')
   // Pin free's staff cap to exactly one seat above the org's current member
@@ -318,9 +371,7 @@ try {
       && inviteAtCap.data?.used === staffCap,
     JSON.stringify(inviteAtCap.data))
 
-  await pool.query(`
-    update plan_limits set cap = 3
-     where plan_id = (select id from plans where key = 'free') and resource = 'staff'`)
+  await restoreFreeCap('staff')
 
   head('10. isBranchActive() — the function requireBranch actually calls')
   // Section 4 already proves the branch_entitlement VIEW's lock rule on
