@@ -42,3 +42,6 @@ next-env.d.ts
 
 # dev mail transport
 .mail.log
+
+# Playwright MCP scratch (browser console/network logs)
+.playwright-mcp/

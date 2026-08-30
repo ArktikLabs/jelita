@@ -1,4 +1,5 @@
 import { headers } from 'next/headers'
+import { redirect } from 'next/navigation'
 import { auth } from './auth'
 import { PlanError } from './plan/entitlements'
 import { isBranchActive } from './plan/branch'
@@ -56,4 +57,25 @@ export async function requirePermission(permissions: Permissions) {
   })
   if (!success) throw new Error('FORBIDDEN')
   return session
+}
+
+/**
+ * Page guard: session or bounce to /login.
+ *
+ * The API-route guards above throw so a handler can map the error to a status
+ * code. A page has no status code to return — it redirects. Both read the same
+ * session; only the failure behaviour differs.
+ */
+export async function requirePageSession() {
+  const session = await getSession()
+  if (!session?.user) redirect('/login')
+  return session
+}
+
+/** Page guard: an active organization, or bounce to onboarding. */
+export async function requirePageOrg() {
+  const session = await requirePageSession()
+  const organizationId = session.session.activeOrganizationId
+  if (!organizationId) redirect('/onboarding')
+  return { ...session, organizationId }
 }

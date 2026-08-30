@@ -3,10 +3,10 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { organization } from 'better-auth/plugins'
 import { nextCookies } from 'better-auth/next-js'
 import { APIError } from 'better-auth/api'
-import { eq } from 'drizzle-orm'
+import { and, asc, eq } from 'drizzle-orm'
 import { db } from './db'
-import { members, teamMembers } from './schema'
-import { sendMail } from './mailer'
+import { members, teamMembers, teams } from './schema'
+import { notify } from './notify'
 import { ac, roles } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
 import type { CappedResource } from './plan/catalog'
@@ -41,13 +41,45 @@ export const auth = betterAuth({
     minPasswordLength: 8,
     // Salon staff are created by the owner, not self-service; no inbox round
     // trip before they can work.
-    requireEmailVerification: false,
+    requireEmailVerification: true,
     sendResetPassword: async ({ user, url, token }) => {
-      await sendMail(
-        user.email,
-        'Reset kata sandi — Jelita Salon',
-        `Klik untuk mengatur ulang kata sandi Anda:\n${url}\n\ntoken=${token}`,
-      )
+      await notify({
+        channel: 'email',
+        to: user.email,
+        subject: 'Reset kata sandi — Jelita Salon',
+        body: `Klik untuk mengatur ulang kata sandi Anda:\n${url}\n\ntoken=${token}`,
+      })
+    },
+  },
+
+  emailVerification: {
+    sendOnSignUp: true,
+    // Without this an unverified sign-in is a permanent dead end: FORBIDDEN,
+    // no fresh link, no resend screen anywhere, and password reset does not
+    // set emailVerified. One lost mail would kill the account.
+    sendOnSignIn: true,
+    // Clicking a link in your own inbox is proof of possession; charging a
+    // second login for it is friction that buys nothing.
+    autoSignInAfterVerification: true,
+    sendVerificationEmail: async ({ user, url, token }) => {
+      await notify({
+        channel: 'email',
+        to: user.email,
+        subject: 'Verifikasi email — Jelita Salon',
+        body: `Klik untuk memverifikasi email Anda:\n${url}\n\ntoken=${token}`,
+      })
+    },
+  },
+
+  rateLimit: {
+    // No `enabled` key on purpose. better-auth's default is production-only,
+    // which is what we want; setting enabled:true forces limiting on in dev
+    // and trips the test suites. Verified: 30 rapid failed sign-ins in dev
+    // returned 401 and never 429.
+    customRules: {
+      '/sign-up/email': { window: 3600, max: 5 },
+      '/sign-in/email': { window: 60, max: 10 },
+      '/request-password-reset': { window: 3600, max: 5 },
     },
   },
 
@@ -60,20 +92,31 @@ export const auth = betterAuth({
          * change the user would have no salon and no branch, and every
          * §5.8-scoped query would fail until something called set-active.
          *
-         * Salon staff belong to exactly one salon (and non-admins to one
-         * branch), so resolve both at session creation instead.
+         * Multi-salon membership is reachable via /organization/accept-invitation,
+         * so a user can belong to more than one salon. The oldest membership
+         * wins (deterministic tiebreak on id), and the branch lookup is
+         * constrained to that same organization so activeTeamId can never
+         * resolve to a branch belonging to a different salon.
          */
         before: async (session) => {
           const [m] = await db
             .select({ organizationId: members.organizationId })
             .from(members)
             .where(eq(members.userId, session.userId))
+            .orderBy(asc(members.createdAt), asc(members.id))
             .limit(1)
           if (!m) return
           const [t] = await db
             .select({ teamId: teamMembers.teamId })
             .from(teamMembers)
-            .where(eq(teamMembers.userId, session.userId))
+            .innerJoin(teams, eq(teamMembers.teamId, teams.id))
+            .where(
+              and(
+                eq(teamMembers.userId, session.userId),
+                eq(teams.organizationId, m.organizationId),
+              ),
+            )
+            .orderBy(asc(teamMembers.createdAt), asc(teamMembers.id))
             .limit(1)
           return {
             data: {
@@ -97,12 +140,13 @@ export const auth = betterAuth({
       roles,
       creatorRole: 'owner',
       sendInvitationEmail: async ({ email, inviter, organization, id }) => {
-        await sendMail(
-          email,
-          `Undangan bergabung — ${organization.name}`,
-          `${inviter.user.name} mengundang Anda bergabung di ${organization.name}.\n`
+        await notify({
+          channel: 'email',
+          to: email,
+          subject: `Undangan bergabung — ${organization.name}`,
+          body: `${inviter.user.name} mengundang Anda bergabung di ${organization.name}.\n`
             + `${process.env.BETTER_AUTH_URL}/accept-invitation/${id}\n\ninvitationId=${id}`,
-        )
+        })
       },
       teams: { enabled: true, maximumTeams: 20 },
       // Seats are counted from `members`, so a pending invitation holds
