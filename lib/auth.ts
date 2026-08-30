@@ -41,7 +41,7 @@ export const auth = betterAuth({
     minPasswordLength: 8,
     // Salon staff are created by the owner, not self-service; no inbox round
     // trip before they can work.
-    requireEmailVerification: false,
+    requireEmailVerification: true,
     sendResetPassword: async ({ user, url, token }) => {
       await notify({
         channel: 'email',
@@ -49,6 +49,33 @@ export const auth = betterAuth({
         subject: 'Reset kata sandi — Jelita Salon',
         body: `Klik untuk mengatur ulang kata sandi Anda:\n${url}\n\ntoken=${token}`,
       })
+    },
+  },
+
+  emailVerification: {
+    sendOnSignUp: true,
+    // Clicking a link in your own inbox is proof of possession; charging a
+    // second login for it is friction that buys nothing.
+    autoSignInAfterVerification: true,
+    sendVerificationEmail: async ({ user, url, token }) => {
+      await notify({
+        channel: 'email',
+        to: user.email,
+        subject: 'Verifikasi email — Jelita Salon',
+        body: `Klik untuk memverifikasi email Anda:\n${url}\n\ntoken=${token}`,
+      })
+    },
+  },
+
+  rateLimit: {
+    // No `enabled` key on purpose. better-auth's default is production-only,
+    // which is what we want; setting enabled:true forces limiting on in dev
+    // and trips the test suites. Verified: 30 rapid failed sign-ins in dev
+    // returned 401 and never 429.
+    customRules: {
+      '/sign-up/email': { window: 3600, max: 5 },
+      '/sign-in/email': { window: 60, max: 10 },
+      '/request-password-reset': { window: 3600, max: 5 },
     },
   },
 

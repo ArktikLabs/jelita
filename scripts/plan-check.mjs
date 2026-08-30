@@ -255,6 +255,13 @@ try {
   head('6. entitlement resolution over HTTP')
   await owner.req('/sign-up/email',
     { name: 'Plan Owner', email: `owner@${DOMAIN}`, password: PW })
+  // requireEmailVerification is on, so sign-up alone leaves no session.
+  // Verifying the fixture is the correct fix, not weakening the setting.
+  await pool.query(
+    `update users set email_verified = true where email like $1`,
+    [`%@${DOMAIN}`],
+  )
+  await owner.req('/sign-in/email', { email: `owner@${DOMAIN}`, password: PW })
   const orgRes = await owner.req('/organization/create',
     { name: 'Plan Check Salon', slug: 'plancheck' })
   const orgId = orgRes.data?.id
@@ -360,6 +367,11 @@ try {
   const invitee = new Client()
   await invitee.req('/sign-up/email',
     { name: 'Plan Invitee', email: `invitee@${DOMAIN}`, password: PW })
+  await pool.query(
+    `update users set email_verified = true where email = $1`,
+    [`invitee@${DOMAIN}`],
+  )
+  await invitee.req('/sign-in/email', { email: `invitee@${DOMAIN}`, password: PW })
   const inv1 = await owner.req('/organization/invite-member',
     { email: `invitee@${DOMAIN}`, role: 'stylist', organizationId: orgId })
   ok('invite-member succeeds while a seat remains',

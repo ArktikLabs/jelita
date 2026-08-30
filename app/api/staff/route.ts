@@ -54,8 +54,12 @@ export async function POST(req: Request) {
     }
 
     const hash = await ctx.password.hash(password)
+    // Verified true, not false: this account never goes through
+    // sendVerificationEmail at all, so requireEmailVerification would lock
+    // the new hire out of sign-in forever. The owner creating the login IS
+    // the verification — the same trust that lets this route skip signUpEmail.
     const created = await ctx.internalAdapter.createUser(
-      { email: normalizedEmail, name, emailVerified: false },
+      { email: normalizedEmail, name, emailVerified: true },
       { method: 'email-password' },
     )
     await ctx.internalAdapter.linkAccount({

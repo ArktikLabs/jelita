@@ -72,10 +72,25 @@ try {
 
   const dup = await new Client().req('/sign-up/email',
     { name: 'X', email: `owner@${DOMAIN}`, password: PW })
-  ok('duplicate email rejected', dup.status >= 400, `got ${dup.status}`)
+  ok('duplicate registration returns a generic success (anti-enumeration)',
+    dup.status === 200 && !!dup.data?.user && dup.data?.token === null,
+    `got ${dup.status} ${JSON.stringify(dup.data).slice(0, 160)}`)
 
   const sess = await owner.get('/get-session')
-  ok('session readable after sign-up', sess.data?.user?.email === `owner@${DOMAIN}`)
+  ok('sign-up does NOT establish a session until verified',
+    !sess.data?.user, JSON.stringify(sess.data).slice(0, 120))
+
+  // requireEmailVerification is on, so these fixtures need verifying before
+  // their sessions work. Marking them verified is the correct fix; weakening
+  // the setting to keep the suite green would delete real production safety.
+  await pool.query(
+    `update users set email_verified = true where email like $1`,
+    [`%@${DOMAIN}`],
+  )
+
+  for (const [c, email] of [[owner, `owner@${DOMAIN}`], [desk, `kasir@${DOMAIN}`], [sty, `sinta@${DOMAIN}`]]) {
+    await c.req('/sign-in/email', { email, password: PW })
+  }
 
   const badPw = await new Client().req('/sign-in/email',
     { email: `owner@${DOMAIN}`, password: 'wrongpassword' })
