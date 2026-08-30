@@ -111,11 +111,9 @@ export const auth = betterAuth({
       organizationHooks: {
         // NOTE: better-auth also fires beforeCreateTeam for the default team it
         // auto-creates during organization creation, so signup is branch-quota
-        // checked too. Harmless while every tier allows >= 1 branch (count is 0
-        // at that point). If a future tier ever sets the `branches` cap to 0,
-        // signup breaks AFTER the organization and owner rows are committed but
-        // BEFORE the default team — leaving an orphan salon with no branch.
-        // Keep every tier's branches cap >= 1, or gate this on teams > 0.
+        // checked too. Safe because a `branches` cap below 1 is unrepresentable
+        // — see the plan_limits_branches_min constraint in migration 0006, which
+        // exists precisely so this hook cannot fail mid-signup.
         beforeCreateTeam: ({ organization }) => assertQuota('branches', organization.id),
         beforeAcceptInvitation: ({ organization }) => assertQuota('staff', organization.id),
         beforeCreateInvitation: ({ organization }) => assertQuota('staff', organization.id),

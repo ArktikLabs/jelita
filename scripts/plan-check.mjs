@@ -106,6 +106,27 @@ try {
   ok('an unknown limit resource is refused', badResource !== null,
     'bad resource was accepted')
 
+  // A branches cap of 0 would fail signup after the organization and owner rows
+  // commit and before the default team, leaving an orphan salon. Attempted in a
+  // transaction that always rolls back, so a regression cannot corrupt the cap.
+  const zeroBranches = await (async () => {
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await c.query(`update plan_limits set cap = 0
+                      where resource = 'branches'
+                        and plan_id = (select id from plans where is_default)`)
+      return null
+    } catch (e) {
+      return e
+    } finally {
+      await c.query('rollback').catch(() => {})
+      c.release()
+    }
+  })()
+  ok('a branches cap of 0 is refused (it would break signup mid-write)',
+    zeroBranches !== null, 'a zero-branch tier was accepted')
+
   head('3. default plan trigger')
   const org = await pool.query(`
     insert into organizations (id, name, slug, created_at)
