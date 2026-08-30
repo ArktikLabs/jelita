@@ -62,7 +62,7 @@ app/
     layout.tsx                centered-card shell
     login/page.tsx
     register/page.tsx
-    verify-email/page.tsx     confirmation landing
+    verify-email/page.tsx     confirmation landing (user is already signed in)
     forgot-password/page.tsx
     reset-password/page.tsx   reads ?token=
   onboarding/page.tsx         authenticated, NO org yet — outside (app) by design
@@ -144,7 +144,8 @@ emailAndPassword: {
 },
 emailVerification: {
   sendOnSignUp: true,
-  autoSignInAfterVerification: false,    // matches verify → login → onboarding
+  autoSignInAfterVerification: true,     // verifying is proof of possession;
+                                         // don't charge a second login for it
   sendVerificationEmail: → notify({ channel: 'email', … }),
 },
 ```
@@ -153,18 +154,35 @@ The existing invitation email moves to `notify()`.
 
 All four options were confirmed to typecheck against better-auth 1.7.2.
 
-**Rate limiting is unresolved.** `rateLimit: { enabled, window, max }`
-typechecks, but whether better-auth self-disables it outside production was not
-determined. Public signup is exactly the surface that wants limiting, but if it
-is active in development the test suites will trip it. Resolve before enabling;
-prefer leaving it off to leaving the suites flaky.
+**Rate limiting — resolved empirically.** Thirty rapid failed sign-ins against
+the dev server all returned 401 and never 429, so limiting is not active in
+development by default. Configure the paths that matter and never set `enabled`:
+
+```ts
+rateLimit: {
+  // No `enabled` key on purpose. The default is production-only, which is what
+  // we want; setting enabled:true forces it on in dev and trips the suites.
+  customRules: {
+    '/sign-up/email':          { window: 3600, max: 5 },
+    '/sign-in/email':          { window: 60,   max: 10 },
+    '/request-password-reset': { window: 3600, max: 5 },
+  },
+},
+```
+
+Five signups per hour is deliberately tight — a salon owner registers once.
+Ten sign-ins a minute tolerates a fat-fingered password without locking out a
+busy front desk. `customRules` was confirmed to typecheck.
+
+Residual: dev was proven unlimited; production was **not** proven limited.
+Worth one check against a production build before launch.
 
 ## 8. Screens
 
 | Screen | Fields | Calls | On success |
 |---|---|---|---|
 | `/register` | name, email, password | `signUpEmail` | "check your email" state |
-| `/verify-email` | — | none (token already consumed) | `/login` with confirmed banner |
+| `/verify-email` | — | none (token already consumed) | `/dashboard` → `/onboarding` |
 | `/login` | email, password | `signInEmail` | `/dashboard`, or `/onboarding` if no org |
 | `/forgot-password` | email | `requestPasswordReset` | "if that address exists, we sent a link" |
 | `/reset-password?token=` | new password ×2 | `resetPassword` | `/login` |
@@ -218,8 +236,8 @@ booking calendar or POS cart with real interaction.
 4. user with an org → `/onboarding` redirects to `/dashboard`
 5. signed-in user → `/login` redirects to `/dashboard`
 6. `/reset-password` with a garbage token renders the error state, does not 500
-7. register → read the verification URL from `.mail.log` → follow it → verified
-   → login succeeds
+7. register → read the verification URL from `.mail.log` → follow it → the
+   user is verified AND signed in, landing on `/onboarding`
 8. forgot-password → read the reset URL → reset → old password dead, new
    password works
 
@@ -244,6 +262,6 @@ verification flow is end-to-end testable with no inbox and no mocking.
   complete signup unaided, or when booking notifications ship.
 - **`proxy.ts` optimistic redirects.** Revisit if the pre-redirect render is
   visibly annoying.
-- **Rate limiting.** Revisit once the development-mode behaviour is confirmed.
+- **Confirming production rate limiting.** Revisit against a production build.
 - **Playwright.** Revisit at the first genuinely interactive screen.
 - **Social login, 2FA, magic links.** No demand yet.
