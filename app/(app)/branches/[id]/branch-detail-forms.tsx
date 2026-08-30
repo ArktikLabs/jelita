@@ -105,8 +105,12 @@ export function BranchHoursForm({ teamId, hours }: { teamId: string; hours: Hour
               name={`opens-${h.weekday}`}
               value={h.opensAt}
               onChange={(e) => patchDay(h.weekday, { opensAt: e.target.value })}
-              disabled={h.closed}
-              className="w-28"
+              // readOnly, not disabled: a disabled input submits nothing, so
+              // closing a day made the action fall back to 09:00/21:00 and
+              // destroy that day's stored hours on save. Read-only keeps the
+              // values in the payload so a close-and-reopen is lossless.
+              readOnly={h.closed}
+              className="w-28 read-only:opacity-50"
             />
             <span className="text-sm text-muted-foreground">—</span>
             <Input
@@ -114,8 +118,8 @@ export function BranchHoursForm({ teamId, hours }: { teamId: string; hours: Hour
               name={`closes-${h.weekday}`}
               value={h.closesAt}
               onChange={(e) => patchDay(h.weekday, { closesAt: e.target.value })}
-              disabled={h.closed}
-              className="w-28"
+              readOnly={h.closed}
+              className="w-28 read-only:opacity-50"
             />
           </div>
         ))}
@@ -135,6 +139,15 @@ export function BranchStatusForm({ teamId, active }: { teamId: string; active: b
       {state.error && (
         <Alert variant="destructive">
           <AlertDescription>{state.error}</AlertDescription>
+        </Alert>
+      )}
+      {/* Without this the write succeeded silently: the page did not
+          revalidate, the button still said "Nonaktifkan cabang", and a second
+          click reported "Ini satu-satunya cabang aktif" — an error about the
+          state the first click had created. */}
+      {state.done && (
+        <Alert>
+          <AlertDescription>Status cabang diperbarui.</AlertDescription>
         </Alert>
       )}
       <input type="hidden" name="teamId" value={teamId} />
