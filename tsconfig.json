@@ -9,6 +9,13 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    // Lets lib/plan/branch.ts import "../pg-pool.ts" with an explicit
+    // extension, which plain Node's ESM resolver requires when
+    // scripts/plan-check.mjs imports it via type-stripping. Legal because
+    // noEmit is set. NOTE: changing this needs a dev server RESTART —
+    // a stale server presents as unrelated auth failures, not a
+    // resolution error.
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
