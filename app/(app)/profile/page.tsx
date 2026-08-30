@@ -49,7 +49,7 @@ export default async function ProfilePage() {
               >
                 <div>
                   <p className="font-medium">
-                    {s.userAgent ?? 'Perangkat tidak dikenal'}
+                    {s.userAgent || 'Perangkat tidak dikenal'}
                     {s.token === currentToken && (
                       <span className="ml-2 text-xs text-muted-foreground">
                         (sesi ini)
@@ -57,7 +57,7 @@ export default async function ProfilePage() {
                     )}
                   </p>
                   <p className="text-muted-foreground">
-                    {s.ipAddress ?? '—'}
+                    {s.ipAddress || '—'}
                   </p>
                 </div>
                 {s.token !== currentToken && (

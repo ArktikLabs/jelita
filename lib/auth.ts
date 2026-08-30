@@ -54,6 +54,10 @@ export const auth = betterAuth({
 
   emailVerification: {
     sendOnSignUp: true,
+    // Without this an unverified sign-in is a permanent dead end: FORBIDDEN,
+    // no fresh link, no resend screen anywhere, and password reset does not
+    // set emailVerified. One lost mail would kill the account.
+    sendOnSignIn: true,
     // Clicking a link in your own inbox is proof of possession; charging a
     // second login for it is friction that buys nothing.
     autoSignInAfterVerification: true,

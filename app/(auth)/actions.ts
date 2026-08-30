@@ -1,6 +1,7 @@
 'use server'
 
 import { redirect } from 'next/navigation'
+import { headers } from 'next/headers'
 import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
 import type { FormState } from '@/lib/form-state'
@@ -18,7 +19,10 @@ export async function registerAction(
   if (!name || !email || !password) return { error: 'Semua kolom wajib diisi.' }
 
   try {
-    await auth.api.signUpEmail({ body: { name, email, password } })
+    await auth.api.signUpEmail({
+      body: { name, email, password },
+      headers: await headers(),
+    })
   } catch (e) {
     return { error: message(e, 'Pendaftaran gagal. Coba lagi.') }
   }
@@ -37,7 +41,14 @@ export async function loginAction(
   if (!email || !password) return { error: 'Email dan kata sandi wajib diisi.' }
 
   try {
-    await auth.api.signInEmail({ body: { email, password } })
+    // Without `headers` better-auth has no endpoint context to read from and
+    // stores '' for ip/user-agent, so the session shows as a blank row on
+    // /profile. Sessions minted by the verify-email link go through the HTTP
+    // route and get real values; these have to be handed them explicitly.
+    await auth.api.signInEmail({
+      body: { email, password },
+      headers: await headers(),
+    })
   } catch (e) {
     return { error: message(e, 'Email atau kata sandi salah.') }
   }
