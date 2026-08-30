@@ -6,7 +6,7 @@ import { APIError } from 'better-auth/api'
 import { eq } from 'drizzle-orm'
 import { db } from './db'
 import { members, teamMembers } from './schema'
-import { sendMail } from './mailer'
+import { notify } from './notify'
 import { ac, roles } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
 import type { CappedResource } from './plan/catalog'
@@ -43,11 +43,12 @@ export const auth = betterAuth({
     // trip before they can work.
     requireEmailVerification: false,
     sendResetPassword: async ({ user, url, token }) => {
-      await sendMail(
-        user.email,
-        'Reset kata sandi — Jelita Salon',
-        `Klik untuk mengatur ulang kata sandi Anda:\n${url}\n\ntoken=${token}`,
-      )
+      await notify({
+        channel: 'email',
+        to: user.email,
+        subject: 'Reset kata sandi — Jelita Salon',
+        body: `Klik untuk mengatur ulang kata sandi Anda:\n${url}\n\ntoken=${token}`,
+      })
     },
   },
 
@@ -97,12 +98,13 @@ export const auth = betterAuth({
       roles,
       creatorRole: 'owner',
       sendInvitationEmail: async ({ email, inviter, organization, id }) => {
-        await sendMail(
-          email,
-          `Undangan bergabung — ${organization.name}`,
-          `${inviter.user.name} mengundang Anda bergabung di ${organization.name}.\n`
+        await notify({
+          channel: 'email',
+          to: email,
+          subject: `Undangan bergabung — ${organization.name}`,
+          body: `${inviter.user.name} mengundang Anda bergabung di ${organization.name}.\n`
             + `${process.env.BETTER_AUTH_URL}/accept-invitation/${id}\n\ninvitationId=${id}`,
-        )
+        })
       },
       teams: { enabled: true, maximumTeams: 20 },
       // Seats are counted from `members`, so a pending invitation holds
