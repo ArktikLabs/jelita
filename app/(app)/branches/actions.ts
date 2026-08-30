@@ -197,7 +197,13 @@ export async function deactivateBranchAction(
     // Two ways to affect no rows, and they are not the same news: a branch
     // that was already closed (a double submit) is a no-op, anything else is
     // the last-open-branch refusal. The foreign-id case never reaches here.
-    return branch.active
+    // Re-read rather than trusting the pre-read above: when two admins close
+    // the SAME branch together, the loser blocks, re-reads under EvalPlanQual,
+    // drops the now-closed row and affects 0 rows -- while its own pre-read
+    // still says active. Trusting that would announce the last-open-branch
+    // refusal on a salon with several branches still open.
+    const stillOpen = await ownedBranch(teamId, organizationId)
+    return stillOpen?.active
       ? { error: 'Ini satu-satunya cabang aktif. Aktifkan cabang lain lebih dulu.' }
       : { done: true }
   }
