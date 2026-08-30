@@ -3,9 +3,9 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { organization } from 'better-auth/plugins'
 import { nextCookies } from 'better-auth/next-js'
 import { APIError } from 'better-auth/api'
-import { eq } from 'drizzle-orm'
+import { and, asc, eq } from 'drizzle-orm'
 import { db } from './db'
-import { members, teamMembers } from './schema'
+import { members, teamMembers, teams } from './schema'
 import { notify } from './notify'
 import { ac, roles } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
@@ -92,20 +92,31 @@ export const auth = betterAuth({
          * change the user would have no salon and no branch, and every
          * §5.8-scoped query would fail until something called set-active.
          *
-         * Salon staff belong to exactly one salon (and non-admins to one
-         * branch), so resolve both at session creation instead.
+         * Multi-salon membership is reachable via /organization/accept-invitation,
+         * so a user can belong to more than one salon. The oldest membership
+         * wins (deterministic tiebreak on id), and the branch lookup is
+         * constrained to that same organization so activeTeamId can never
+         * resolve to a branch belonging to a different salon.
          */
         before: async (session) => {
           const [m] = await db
             .select({ organizationId: members.organizationId })
             .from(members)
             .where(eq(members.userId, session.userId))
+            .orderBy(asc(members.createdAt), asc(members.id))
             .limit(1)
           if (!m) return
           const [t] = await db
             .select({ teamId: teamMembers.teamId })
             .from(teamMembers)
-            .where(eq(teamMembers.userId, session.userId))
+            .innerJoin(teams, eq(teamMembers.teamId, teams.id))
+            .where(
+              and(
+                eq(teamMembers.userId, session.userId),
+                eq(teams.organizationId, m.organizationId),
+              ),
+            )
+            .orderBy(asc(teamMembers.createdAt), asc(teamMembers.id))
             .limit(1)
           return {
             data: {
