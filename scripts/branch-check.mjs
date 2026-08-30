@@ -356,6 +356,12 @@ try {
     })
     return { status: r.status, html: await r.text() }
   }
+  /** The BranchRow the layout handed the switcher, read out of the RSC payload. */
+  const branchProp = async (j, teamId) => {
+    const { html } = await getPage(j, '/dashboard')
+    const m = html.replace(/\\+"/g, '"').match(new RegExp(`\\{"teamId":"${teamId}"[^}]*\\}`))
+    return m ? JSON.parse(m[0]) : null
+  }
   const isActive = async (teamId) => (await pool.query(
     `select active from branch_profiles where team_id = $1`, [teamId])).rows[0]?.active
   const setActive = (teamId, active) => pool.query(
@@ -409,9 +415,20 @@ try {
   // own row, which better-auth creates for the default team and which used to
   // make every branch permanently undeactivatable.
   const { rows: desk } = await pool.query(`select id from users where email = $1`, [`desk@${DOMAIN}`])
+  // The same distinction, on screen: the /branches "Staf" column must not
+  // count the owner's navigation row, or it would climb every time a manager
+  // switched into a branch — a number that changes because someone looked at a
+  // page. newTeam's only member so far is its creator.
+  ok('a branch whose only members are management reports 0 staff',
+    (await branchProp(jar, newTeam))?.staffCount === 0,
+    JSON.stringify(await branchProp(jar, newTeam)))
+
   await pool.query(
     `insert into team_members (id, team_id, user_id, created_at)
      values ('bl_tm3', $1, $2, now())`, [newTeam, desk[0].id])
+  ok('assigning a front-desk/stylist member takes it to 1',
+    (await branchProp(jar, newTeam))?.staffCount === 1,
+    JSON.stringify(await branchProp(jar, newTeam)))
 
   const blocked = await submitForm(jar, `/branches/${newTeam}`, 'Nonaktifkan cabang</button>')
   ok('deactivation is refused while staff are assigned, and the error names them',
@@ -457,14 +474,12 @@ try {
   head('12. a closed branch stays in the switcher; the list stays away from front desk')
   // t0 (the org's default team, named after the salon) has been closed since
   // section 4.
-  const ownerDash = await getPage(jar, '/dashboard')
   // The switcher is a client component and base-ui renders its items only once
   // the popup opens, so what the assertion reads is the RSC payload it was
-  // handed — the branches prop, with the escaping undone.
-  const payload = ownerDash.html.replace(/\\+"/g, '"')
-  const entry = payload.match(new RegExp(`\\{"teamId":"${t0[0].id}"[^}]*\\}`))?.[0]
+  // handed — the branches prop.
+  const closedProp = await branchProp(jar, t0[0].id)
   ok('a closed branch is still offered in the switcher, flagged inactive',
-    !!entry && entry.includes('"active":false'), `status ${ownerDash.status} ${entry}`)
+    closedProp?.active === false, JSON.stringify(closedProp))
   const { branchLabel } = await import('../lib/branch-label.ts')
   ok('and the switcher labels it Nonaktif rather than dropping it',
     branchLabel({ name: 'Cabang Lama', active: false, withinCap: true })

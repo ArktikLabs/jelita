@@ -50,7 +50,7 @@ export default async function BranchesPage() {
                 <TableCell>
                   <Badge variant={status.variant}>{status.label}</Badge>
                 </TableCell>
-                <TableCell>{b.memberCount}</TableCell>
+                <TableCell>{b.staffCount}</TableCell>
               </TableRow>
             )
           })}
