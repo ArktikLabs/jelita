@@ -2,10 +2,9 @@
 
 import { redirect } from 'next/navigation'
 import { headers } from 'next/headers'
-import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
 import { requirePageSession } from '@/lib/session'
-import type { FormState } from '@/lib/form-state'
+import { formError, type FormState } from '@/lib/form-state'
 
 export async function createSalonAction(
   _prev: FormState,
@@ -36,11 +35,7 @@ export async function createSalonAction(
       })
     }
   } catch (e) {
-    return {
-      error: e instanceof APIError
-        ? (e.body?.message as string) ?? 'Slug sudah dipakai.'
-        : 'Gagal membuat salon.',
-    }
+    return { error: formError(e, 'Gagal membuat salon.') }
   }
   redirect('/dashboard')
 }

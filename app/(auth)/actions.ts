@@ -2,12 +2,8 @@
 
 import { redirect } from 'next/navigation'
 import { headers } from 'next/headers'
-import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
-import type { FormState } from '@/lib/form-state'
-
-const message = (e: unknown, fallback: string) =>
-  e instanceof APIError ? (e.body?.message as string) ?? fallback : fallback
+import { formError, type FormState } from '@/lib/form-state'
 
 export async function registerAction(
   _prev: FormState,
@@ -24,7 +20,7 @@ export async function registerAction(
       headers: await headers(),
     })
   } catch (e) {
-    return { error: message(e, 'Pendaftaran gagal. Coba lagi.') }
+    return { error: formError(e, 'Pendaftaran gagal. Coba lagi.') }
   }
   // Deliberately identical whether or not the address was already taken —
   // better-auth returns a generic success for duplicates when verification is
@@ -50,7 +46,7 @@ export async function loginAction(
       headers: await headers(),
     })
   } catch (e) {
-    return { error: message(e, 'Email atau kata sandi salah.') }
+    return { error: formError(e, 'Email atau kata sandi salah.') }
   }
   redirect('/dashboard')
 }
@@ -87,7 +83,7 @@ export async function resetPasswordAction(
   try {
     await auth.api.resetPassword({ body: { token, newPassword: password } })
   } catch (e) {
-    return { error: message(e, 'Tautan tidak valid atau sudah kedaluwarsa.') }
+    return { error: formError(e, 'Tautan tidak valid atau sudah kedaluwarsa.') }
   }
   redirect('/login')
 }

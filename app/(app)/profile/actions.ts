@@ -2,23 +2,19 @@
 
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
-import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
-import { getSession } from '@/lib/session'
-import type { FormState } from '@/lib/form-state'
-
-const fail = (e: unknown, fallback: string): FormState => ({
-  error: e instanceof APIError ? (e.body?.message as string) ?? fallback : fallback,
-})
+import { getSession, requirePageSession } from '@/lib/session'
+import { formError, type FormState } from '@/lib/form-state'
 
 export async function updateProfileAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
+  await requirePageSession()
   const name = String(formData.get('name') ?? '').trim()
   if (!name) return { error: 'Nama wajib diisi.' }
   try {
     await auth.api.updateUser({ body: { name }, headers: await headers() })
-  } catch (e) { return fail(e, 'Gagal menyimpan.') }
+  } catch (e) { return { error: formError(e, 'Gagal menyimpan.') } }
   revalidatePath('/profile')
   return { done: true }
 }
@@ -26,6 +22,7 @@ export async function updateProfileAction(
 export async function changePasswordAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
+  await requirePageSession()
   const currentPassword = String(formData.get('current') ?? '')
   const newPassword = String(formData.get('next') ?? '')
   if (newPassword.length < 8) return { error: 'Kata sandi minimal 8 karakter.' }
@@ -34,7 +31,7 @@ export async function changePasswordAction(
       body: { currentPassword, newPassword, revokeOtherSessions: true },
       headers: await headers(),
     })
-  } catch (e) { return fail(e, 'Kata sandi saat ini salah.') }
+  } catch (e) { return { error: formError(e, 'Kata sandi saat ini salah.') } }
   revalidatePath('/profile')
   return { done: true }
 }
@@ -49,7 +46,7 @@ export async function revokeSessionAction(
   }
   try {
     await auth.api.revokeSession({ body: { token }, headers: await headers() })
-  } catch (e) { return fail(e, 'Gagal mencabut sesi.') }
+  } catch (e) { return { error: formError(e, 'Gagal mencabut sesi.') } }
   revalidatePath('/profile')
   return { done: true }
 }
