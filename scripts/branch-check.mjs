@@ -216,6 +216,95 @@ try {
       where u.email = $1 order by s.created_at desc limit 1`, [`owner@${DOMAIN}`])
   ok('sessions.active_team_id updates to the newly switched branch',
     switched[0]?.active_team_id === 'bl_t2', JSON.stringify(switched[0]))
+
+  head('6. deactivating does not give a plan slot back')
+  // Put the org at its branch cap, deactivate one branch, and confirm creating
+  // another is STILL refused. countResource counts every team on purpose.
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'branches', 2 from plans where is_default
+    on conflict (plan_id, resource) do update set cap = 2`)
+
+  const atCap = await call('/organization/create-team',
+    { name: 'Cabang Ketiga', organizationId: org2.data.id })
+  ok('creating past the cap is refused', atCap.status === 402, `got ${atCap.status}`)
+
+  const { rows: live2 } = await pool.query(
+    `select t.id from teams t join branch_profiles p on p.team_id = t.id
+      where t.organization_id = $1 and p.active order by t.created_at desc limit 1`,
+    [org2.data.id])
+  await pool.query(`update branch_profiles set active = false where team_id = $1`,
+    [live2[0].id])
+
+  const stillAtCap = await call('/organization/create-team',
+    { name: 'Cabang Ketiga', organizationId: org2.data.id })
+  ok('deactivating a branch does NOT free a slot — creation still refused',
+    stillAtCap.status === 402, `got ${stillAtCap.status}`)
+
+  await pool.query(`update branch_profiles set active = true where team_id = $1`,
+    [live2[0].id])
+
+  // This section mutated the shared default-plan branches cap; put it back
+  // to the seeded value now rather than leaving it for a later section to
+  // trip over (sections 2 and 3 already learned this lesson the hard way).
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'branches', 1 from plans where is_default
+    on conflict (plan_id, resource) do update set cap = 1`)
+
+  head('7. a closed branch refuses writes as closed, not locked')
+  // getBranchStatus was already imported in section 3 — reuse it.
+  await pool.query(`update branch_profiles set active = false where team_id = $1`,
+    [live2[0].id])
+  ok('a deactivated branch reports closed even when within cap',
+    await getBranchStatus(live2[0].id) === 'closed',
+    await getBranchStatus(live2[0].id))
+  await pool.query(`update branch_profiles set active = true where team_id = $1`,
+    [live2[0].id])
+
+  head('8. /branches is closed to front desk')
+  // Invite a front-desk user into org2, accept, sign in as them, and GET
+  // /branches following no redirects. Same invite-and-accept sequence as
+  // auth-check.mjs; call/jar are still the owner's authenticated session
+  // from section 4, active in org2.
+  const deskJar = new Map()
+  const callDesk = async (path, body) => {
+    const headers = { 'content-type': 'application/json', origin: ORIGIN }
+    if (deskJar.size) headers.cookie = [...deskJar].map(([k, v]) => `${k}=${v}`).join('; ')
+    const res = await fetch(`${ORIGIN}/api/auth${path}`, {
+      method: 'POST', headers, body: JSON.stringify(body ?? {}),
+    })
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      const kv = c.split(';')[0], i = kv.indexOf('=')
+      const n = kv.slice(0, i), v = kv.slice(i + 1)
+      if (v === '') deskJar.delete(n); else deskJar.set(n, v)
+    }
+    const t = await res.text()
+    let d; try { d = JSON.parse(t) } catch { d = t }
+    return { status: res.status, data: d }
+  }
+
+  await callDesk('/sign-up/email', { name: 'BC Desk', email: `desk@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [`desk@${DOMAIN}`])
+
+  const deskInvite = await call('/organization/invite-member',
+    { email: `desk@${DOMAIN}`, role: 'frontdesk', organizationId: org2.data.id })
+  ok('front desk invited', deskInvite.status === 200, JSON.stringify(deskInvite.data).slice(0, 160))
+
+  await callDesk('/sign-in/email', { email: `desk@${DOMAIN}`, password: PW })
+  const deskAccept = await callDesk('/organization/accept-invitation',
+    { invitationId: deskInvite.data?.id })
+  ok('front desk accepted invitation', deskAccept.status === 200,
+    JSON.stringify(deskAccept.data).slice(0, 160))
+  await callDesk('/organization/set-active', { organizationId: org2.data.id })
+
+  const res = await fetch(`${ORIGIN}/branches`, {
+    headers: { cookie: [...deskJar].map(([k, v]) => `${k}=${v}`).join('; ') },
+    redirect: 'manual',
+  })
+  ok('front desk is redirected away from /branches',
+    res.status === 307 && (res.headers.get('location') ?? '').includes('/dashboard'),
+    `got ${res.status} ${res.headers.get('location')}`)
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
