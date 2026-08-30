@@ -323,6 +323,170 @@ try {
   ok('front desk is redirected away from /branches',
     res.status === 307 && (res.headers.get('location') ?? '').includes('/dashboard'),
     `got ${res.status} ${res.headers.get('location')}`)
+
+  // ---------------------------------------------------------------------
+  // Sections 9-12 drive the Server Actions themselves.
+  //
+  // A 'use server' action calls next/headers and cannot be invoked from a
+  // standalone script. But Next renders every useActionState form's
+  // progressive-enhancement fields ($ACTION_REF_n, $ACTION_n:0/1, $ACTION_KEY)
+  // into the page HTML, so reading them back and POSTing them is exactly what a
+  // browser with JS disabled does: the real action, behind the real page
+  // guards, on the real session. That is carried finding 2's option (b).
+  const cookieOf = (j) => [...j].map(([k, v]) => `${k}=${v}`).join('; ')
+  const decodeHtml = (t) => t.replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+  const getPage = async (j, path) => {
+    const r = await fetch(ORIGIN + path, { headers: { cookie: cookieOf(j) }, redirect: 'manual' })
+    return { status: r.status, html: await r.text() }
+  }
+  /** Submit the form on `path` whose markup contains `marker`. */
+  const submitForm = async (j, path, marker, fields = {}) => {
+    const page = await getPage(j, path)
+    const form = page.html.split('<form').find((f) => f.includes(marker))
+    if (!form) throw new Error(`no form matching ${marker} on ${path} (status ${page.status})`)
+    const body = new FormData()
+    for (const m of form.slice(0, form.indexOf('</form>')).matchAll(
+      /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)) {
+      body.set(decodeHtml(m[1]), decodeHtml(m[2] ?? ''))
+    }
+    for (const [k, v] of Object.entries(fields)) body.set(k, v)
+    const r = await fetch(ORIGIN + path, {
+      method: 'POST', headers: { cookie: cookieOf(j) }, body, redirect: 'manual',
+    })
+    return { status: r.status, html: await r.text() }
+  }
+  const isActive = async (teamId) => (await pool.query(
+    `select active from branch_profiles where team_id = $1`, [teamId])).rows[0]?.active
+  const setActive = (teamId, active) => pool.query(
+    `update branch_profiles set active = $2 where team_id = $1`, [teamId, active])
+
+  head('9. a branch created through the UI is switchable by its creator')
+  // The cap is still 1 from section 2, and org2 already has three teams, so
+  // /branches/new must show the upgrade message rather than a form it will
+  // reject on submit (spec §8's requireQuota half).
+  const atCapPage = await getPage(jar, '/branches/new')
+  ok('/branches/new refuses at cap instead of rendering a doomed form',
+    atCapPage.html.includes('Batas cabang paket Anda sudah tercapai')
+      && !atCapPage.html.includes('name="name"'),
+    `status ${atCapPage.status}`)
+
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'branches', 5 from plans where is_default
+    on conflict (plan_id, resource) do update set cap = 5`)
+
+  const create = await submitForm(jar, '/branches/new', 'Simpan</button>',
+    { name: 'Cabang Baru', address: 'Jl. Baru 1', phone: '02100000' })
+  const { rows: made } = await pool.query(
+    `select id from teams where organization_id = $1 and name = 'Cabang Baru'`, [org2.data.id])
+  ok('createBranchAction creates the branch', made.length === 1, `status ${create.status}`)
+  const newTeam = made[0]?.id ?? 'none'
+
+  const { rows: enrolled } = await pool.query(
+    `select 1 from team_members where team_id = $1 and user_id = $2`, [newTeam, owner[0].id])
+  ok('the creator gets a team_members row for it', enrolled.length === 1)
+
+  const enterNew = await call('/organization/set-active-team', { teamId: newTeam })
+  ok('and can therefore switch into it — without the row set-active-team is FORBIDDEN',
+    enterNew.status === 200, JSON.stringify(enterNew).slice(0, 160))
+
+  const { rows: rank } = await pool.query(
+    `select team_id, seq from branch_entitlement where organization_id = $1 order by seq`,
+    [org2.data.id])
+  ok('enrolment does not disturb the created_at lock ranking',
+    rank[0]?.team_id === 'bl_t1' && rank.at(-1)?.team_id === newTeam, JSON.stringify(rank))
+
+  // This section mutated the shared default-plan branches cap; restore it.
+  await pool.query(`
+    insert into plan_limits (plan_id, resource, cap)
+    select id, 'branches', 1 from plans where is_default
+    on conflict (plan_id, resource) do update set cap = 1`)
+
+  head('10. deactivation is refused while STAFF are assigned')
+  // Management membership is navigational; staff membership is assignment.
+  // desk@ is frontdesk, so their row is a real assignment — unlike the owner's
+  // own row, which better-auth creates for the default team and which used to
+  // make every branch permanently undeactivatable.
+  const { rows: desk } = await pool.query(`select id from users where email = $1`, [`desk@${DOMAIN}`])
+  await pool.query(
+    `insert into team_members (id, team_id, user_id, created_at)
+     values ('bl_tm3', $1, $2, now())`, [newTeam, desk[0].id])
+
+  const blocked = await submitForm(jar, `/branches/${newTeam}`, 'Nonaktifkan cabang</button>')
+  ok('deactivation is refused while staff are assigned, and the error names them',
+    blocked.html.includes('Pindahkan staf berikut lebih dulu: BC Desk.'),
+    `status ${blocked.status}`)
+  ok('the branch with staff stayed open', await isActive(newTeam) === true)
+
+  // The inverse, and the regression test for the blocking bug: bl_t2's only
+  // team_members row belongs to the owner, so it must close.
+  const closed = await submitForm(jar, '/branches/bl_t2', 'Nonaktifkan cabang</button>')
+  ok('a branch whose only members are management CAN be deactivated',
+    await isActive('bl_t2') === false, `status ${closed.status}`)
+  // Finding 6's symptom was that the page came back unchanged — same button,
+  // no sign the write landed — so a second click errored about the state the
+  // first click had created. (The `state.done` alert itself only survives the
+  // JS path: without JS, React drops the returned state because the form's
+  // action, and so its $ACTION_KEY, flips to reactivate on the re-render.)
+  ok('the page comes back showing the new state, not the button that was clicked',
+    closed.html.includes('Aktifkan cabang</button>')
+      && !closed.html.includes('Nonaktifkan cabang</button>'))
+
+  const reopened = await submitForm(jar, '/branches/bl_t2', 'Aktifkan cabang</button>')
+  ok('reactivating through the same form reopens it',
+    await isActive('bl_t2') === true, `status ${reopened.status}`)
+
+  head('11. the last open branch cannot be closed')
+  await setActive(newTeam, false)
+  await setActive('bl_t2', false)
+  const { rows: open1 } = await pool.query(
+    `select p.team_id from branch_profiles p join teams t on t.id = p.team_id
+      where t.organization_id = $1 and p.active`, [org2.data.id])
+  ok('exactly one branch is open (the precondition)',
+    open1.length === 1 && open1[0].team_id === 'bl_t1', JSON.stringify(open1))
+
+  const lastOne = await submitForm(jar, '/branches/bl_t1', 'Nonaktifkan cabang</button>')
+  ok('closing the last open branch is refused',
+    lastOne.html.includes('Ini satu-satunya cabang aktif'), `status ${lastOne.status}`)
+  ok('and it is still open', await isActive('bl_t1') === true)
+
+  await setActive(newTeam, true)
+  await setActive('bl_t2', true)
+
+  head('12. a closed branch stays in the switcher; the list stays away from front desk')
+  // t0 (the org's default team, named after the salon) has been closed since
+  // section 4.
+  const ownerDash = await getPage(jar, '/dashboard')
+  // The switcher is a client component and base-ui renders its items only once
+  // the popup opens, so what the assertion reads is the RSC payload it was
+  // handed — the branches prop, with the escaping undone.
+  const payload = ownerDash.html.replace(/\\+"/g, '"')
+  const entry = payload.match(new RegExp(`\\{"teamId":"${t0[0].id}"[^}]*\\}`))?.[0]
+  ok('a closed branch is still offered in the switcher, flagged inactive',
+    !!entry && entry.includes('"active":false'), `status ${ownerDash.status} ${entry}`)
+  const { branchLabel } = await import('../lib/branch-label.ts')
+  ok('and the switcher labels it Nonaktif rather than dropping it',
+    branchLabel({ name: 'Cabang Lama', active: false, withinCap: true })
+      === 'Cabang Lama — Nonaktif')
+  const enterClosed = await call('/organization/set-active-team', { teamId: t0[0].id })
+  ok('a closed branch is selectable', enterClosed.status === 200,
+    JSON.stringify(enterClosed).slice(0, 160))
+  ok('and standing in it is read-only as closed, not locked',
+    await getBranchStatus(t0[0].id) === 'closed')
+
+  // Front desk cannot switch, so the branch table must never enter their RSC
+  // payload — props to a client component are serialized whether or not the
+  // component renders them.
+  deskJar.clear()
+  await callDesk('/sign-in/email', { email: `desk@${DOMAIN}`, password: PW })
+  const deskDash = await getPage(deskJar, '/dashboard')
+  ok('front desk still sees which branch they are standing in',
+    deskDash.html.includes('Cabang Baru'), `status ${deskDash.status}`)
+  ok('front desk is not sent the rest of the salon\'s branches',
+    !deskDash.html.includes('Cabang Dua') && !deskDash.html.includes('withinCap')
+      && !deskDash.html.includes('Branch Login —'),
+    'branch list leaked into a non-switching role\'s page')
 } catch (e) {
   fail++
   console.error('\n\x1b[31mFATAL\x1b[0m', e.stack)
