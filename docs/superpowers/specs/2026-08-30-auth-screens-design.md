@@ -44,7 +44,7 @@ error conventions every later screen inherits.
 |---|---|---|
 | Account creation | Public self-serve signup | Real SaaS funnel; the free tier exists for it |
 | Outbound delivery | Channel adapter, `.mail.log` transport | PRD §5.5 requires the adapter; a provider is a credentials swap |
-| Entry flow | Register → verify → login → onboarding | Keeps salon creation out of the signup transaction |
+| Entry flow | Register → verify (auto signs in) → onboarding | Keeps salon creation out of the signup transaction |
 | Components | shadcn/ui on Tailwind | Accessible primitives; Tailwind is already the mandated stack |
 | Forms | Server Actions, not client `authClient` | No auth logic in the browser; works without JS |
 
