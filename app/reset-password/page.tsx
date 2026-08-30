@@ -3,7 +3,7 @@
 import { Suspense, useActionState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { resetPasswordAction } from '../actions'
+import { resetPasswordAction } from '../(auth)/actions'
 import type { FormState } from '@/lib/form-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -59,10 +59,21 @@ function ResetPasswordForm() {
   )
 }
 
+/**
+ * Deliberately OUTSIDE the (auth) group: that layout bounces anyone with a
+ * session to /dashboard, which would lock out a user who is still signed in
+ * on another device and clicks their reset link. Everything else in (auth) is
+ * meaningless when signed in; this page is not, so it carries its own copy of
+ * the centered-card shell instead.
+ */
 export default function ResetPasswordPage() {
   return (
-    <Suspense>
-      <ResetPasswordForm />
-    </Suspense>
+    <div className="flex min-h-full items-center justify-center p-6">
+      <div className="w-full max-w-sm">
+        <Suspense>
+          <ResetPasswordForm />
+        </Suspense>
+      </div>
+    </div>
   )
 }
