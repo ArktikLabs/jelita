@@ -254,13 +254,31 @@ try {
 
   head('7. a closed branch refuses writes as closed, not locked')
   // getBranchStatus was already imported in section 3 — reuse it.
+  //
+  // live2 (bl_t2) is the wrong fixture here: branch_entitlement ranks only
+  // ACTIVE branches by created_at, and live2 is picked as the NEWEST active
+  // one — with cap 1 (restored at the end of section 6) it is over_cap by
+  // construction. Deactivating it would just re-prove "closed beats
+  // over_cap", which section 3 already covers. The cap HOLDER (seq 1,
+  // within_cap = true) is the one that must go from a genuine 'ok' to
+  // 'closed' on deactivation — that's the actual claim of this section.
+  const { rows: capHolder } = await pool.query(
+    `select team_id from branch_entitlement
+      where organization_id = $1 and within_cap order by seq limit 1`,
+    [org2.data.id])
+  ok('there is exactly one cap holder to deactivate', capHolder.length === 1,
+    JSON.stringify(capHolder))
+  ok('the cap holder genuinely reads ok before deactivation (the precondition)',
+    await getBranchStatus(capHolder[0].team_id) === 'ok',
+    await getBranchStatus(capHolder[0].team_id))
+
   await pool.query(`update branch_profiles set active = false where team_id = $1`,
-    [live2[0].id])
-  ok('a deactivated branch reports closed even when within cap',
-    await getBranchStatus(live2[0].id) === 'closed',
-    await getBranchStatus(live2[0].id))
+    [capHolder[0].team_id])
+  ok('a deactivated branch reports closed even though it was within cap',
+    await getBranchStatus(capHolder[0].team_id) === 'closed',
+    await getBranchStatus(capHolder[0].team_id))
   await pool.query(`update branch_profiles set active = true where team_id = $1`,
-    [live2[0].id])
+    [capHolder[0].team_id])
 
   head('8. /branches is closed to front desk')
   // Invite a front-desk user into org2, accept, sign in as them, and GET
