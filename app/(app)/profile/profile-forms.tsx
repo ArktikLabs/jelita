@@ -65,9 +65,14 @@ export function ChangePasswordForm() {
 }
 
 export function RevokeSessionForm({ token }: { token: string }) {
-  const [, action, pending] = useActionState(revokeSessionAction, initial)
+  const [state, action, pending] = useActionState(revokeSessionAction, initial)
   return (
-    <form action={action}>
+    <form action={action} className="space-y-2">
+      {state.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{state.error}</AlertDescription>
+        </Alert>
+      )}
       <input type="hidden" name="token" value={token} />
       <Button type="submit" variant="outline" size="sm" disabled={pending}>
         {pending ? 'Mencabut…' : 'Cabut'}

@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
+import { getSession } from '@/lib/session'
 import type { FormState } from '@/lib/form-state'
 
 const fail = (e: unknown, fallback: string): FormState => ({
@@ -42,6 +43,10 @@ export async function revokeSessionAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
   const token = String(formData.get('token') ?? '')
+  const session = await getSession()
+  if (session?.session.token === token) {
+    return { error: 'Tidak bisa mencabut sesi yang sedang Anda gunakan.' }
+  }
   try {
     await auth.api.revokeSession({ body: { token }, headers: await headers() })
   } catch (e) { return fail(e, 'Gagal mencabut sesi.') }
