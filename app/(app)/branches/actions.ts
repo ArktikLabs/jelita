@@ -3,10 +3,10 @@
 import { revalidatePath } from 'next/cache'
 import { headers } from 'next/headers'
 import { sql } from 'drizzle-orm'
+import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { PlanError } from '@/lib/plan/entitlements'
 import { formError, type FormState } from '@/lib/form-state'
 
 export async function createBranchAction(
@@ -17,14 +17,18 @@ export async function createBranchAction(
   const name = String(formData.get('name') ?? '').trim()
   if (!name) return { error: 'Nama cabang wajib diisi.' }
 
+  let teamId: string
   try {
-    await auth.api.createTeam({
+    const team = await auth.api.createTeam({
       body: { name, organizationId },
       headers: await headers(),
     })
+    teamId = team.id
   } catch (e) {
-    // beforeCreateTeam raises 402 when the tier has no room.
-    if (e instanceof PlanError || (e as { status?: number })?.status === 402) {
+    // assertQuota (lib/auth.ts) wraps the 402 as `new APIError('PAYMENT_REQUIRED', ...)`.
+    // better-call's InternalAPIError keeps the STRING key on `.status` and derives the
+    // numeric code onto `.statusCode` — `e.status === 402` never matches.
+    if (e instanceof APIError && e.statusCode === 402) {
       return { error: 'Batas cabang paket Anda sudah tercapai. Upgrade untuk menambah cabang.' }
     }
     return { error: formError(e, 'Gagal membuat cabang.') }
@@ -33,11 +37,13 @@ export async function createBranchAction(
   const address = String(formData.get('address') ?? '').trim()
   const phone = String(formData.get('phone') ?? '').trim()
   if (address || phone) {
+    // Keyed off the id createTeam just returned, not a re-derived "latest team in
+    // this org" query — two concurrent creates would otherwise race and one
+    // branch's address/phone could land on the other.
     await db.execute(sql`
       update branch_profiles set address = ${address || null}, phone = ${phone || null},
              updated_at = now()
-       where team_id = (select id from teams where organization_id = ${organizationId}
-                         order by created_at desc, id desc limit 1)`)
+       where team_id = ${teamId}`)
   }
   revalidatePath('/branches')
   return { done: true }
@@ -80,6 +86,9 @@ export async function updateBranchHoursAction(
   const teamId = String(formData.get('teamId') ?? '')
   if (!teamId) return { error: 'Cabang tidak ditemukan.' }
 
+  // Validate every day before writing any of them — a rejected submission
+  // must not leave days 0..N-1 persisted while N..6 keep their old values.
+  const days: { weekday: number; closed: boolean; opensAt: string; closesAt: string }[] = []
   for (let weekday = 0; weekday <= 6; weekday++) {
     const closed = formData.get(`closed-${weekday}`) === 'on'
     const opensAt = String(formData.get(`opens-${weekday}`) ?? '09:00')
@@ -87,6 +96,10 @@ export async function updateBranchHoursAction(
     if (!closed && closesAt <= opensAt) {
       return { error: `Jam tutup harus setelah jam buka (hari ke-${weekday}).` }
     }
+    days.push({ weekday, closed, opensAt, closesAt })
+  }
+
+  for (const { weekday, closed, opensAt, closesAt } of days) {
     await db.execute(sql`
       update branch_hours
          set closed = ${closed}, opens_at = ${opensAt}::time, closes_at = ${closesAt}::time
@@ -108,8 +121,10 @@ export async function deactivateBranchAction(
 
   const { rows: staff } = await db.execute(sql`
     select u.name from team_members tm
+      join teams t on t.id = tm.team_id
       join users u on u.id = tm.user_id
-     where tm.team_id = ${teamId} order by u.name`)
+     where tm.team_id = ${teamId} and t.organization_id = ${organizationId}
+     order by u.name`)
   if (staff.length > 0) {
     const names = (staff as { name: string }[]).map((s) => s.name).join(', ')
     return { error: `Pindahkan staf berikut lebih dulu: ${names}.` }
