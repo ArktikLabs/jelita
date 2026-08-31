@@ -145,6 +145,59 @@ try {
     ok(`round trip ${minor} ${currency}`, roundTripped === minor,
        `toAmountInput -> ${toAmountInput(minor, currency)} -> ${roundTripped}`)
   }
+  head('5. resolution')
+  await pool.query(`
+    insert into teams (id, name, organization_id, created_at)
+    values ('svc_t1', 'Cabang Satu', $1, now())`, [ORG])
+  const priceAt = async (serviceId, teamId) => {
+    const { rows } = await pool.query(`
+      select price, offered, currency from service_branch_pricing
+       where service_id = $1 and team_id = $2`, [serviceId, teamId])
+    return rows[0]
+  }
+  ok('no override resolves to the salon price',
+     Number((await priceAt('svc_s1', 'svc_t1')).price) === 150000)
+
+  await pool.query(`
+    insert into service_branch_overrides (service_id, team_id, organization_id, price)
+    values ('svc_s1', 'svc_t1', $1, 180000)`, [ORG])
+  ok('an override resolves to the branch price',
+     Number((await priceAt('svc_s1', 'svc_t1')).price) === 180000)
+
+  ok('resolution carries the currency',
+     (await priceAt('svc_s1', 'svc_t1')).currency === 'IDR')
+
+  await pool.query(`
+    update service_branch_overrides set offered = false
+     where service_id = 'svc_s1' and team_id = 'svc_t1'`)
+  ok('offered = false hides it at that branch',
+     (await priceAt('svc_s1', 'svc_t1')).offered === false)
+
+  await pool.query(`
+    update service_branch_overrides set offered = true, price = null
+     where service_id = 'svc_s1' and team_id = 'svc_t1'`)
+  await pool.query(`update services set active = false where id = 'svc_s1'`)
+  ok('an inactive service is hidden everywhere',
+     (await priceAt('svc_s1', 'svc_t1')).offered === false)
+  await pool.query(`update services set active = true where id = 'svc_s1'`)
+
+  // An override whose price EQUALS the salon price is still an override. If
+  // the two collapse, a salon-wide price change silently stops reaching that
+  // branch -- and nothing visible breaks until someone is charged the old
+  // price months later.
+  await pool.query(`
+    update service_branch_overrides set price = 150000
+     where service_id = 'svc_s1' and team_id = 'svc_t1'`)
+  await pool.query(`update services set price = 200000 where id = 'svc_s1'`)
+  ok('an override equal to the old salon price does NOT follow a salon change',
+     Number((await priceAt('svc_s1', 'svc_t1')).price) === 150000,
+     String((await priceAt('svc_s1', 'svc_t1')).price))
+
+  await pool.query(`
+    update service_branch_overrides set price = null
+     where service_id = 'svc_s1' and team_id = 'svc_t1'`)
+  ok('while an inheriting branch DOES follow it',
+     Number((await priceAt('svc_s1', 'svc_t1')).price) === 200000)
 } finally {
   await pool.end()
 }
