@@ -1,6 +1,6 @@
 import { APIError } from 'better-auth/api'
 import { requirePermission } from '@/lib/session'
-import { roles, type SalonRole } from '@/lib/permissions'
+import type { SalonRole } from '@/lib/permissions'
 import { PlanError } from '@/lib/plan/entitlements'
 import { provisionStaff } from '@/lib/staff'
 
@@ -10,6 +10,11 @@ const STATUS: Record<string, number> = {
   NO_ACTIVE_ORGANIZATION: 409,
   ORGANIZATION_NOT_FOUND: 409,
   EMAIL_TAKEN: 409,
+  // Both from provisionStaff, both plain bad input: 'owner' (or a custom role)
+  // is not assignable by ANY caller, so it is a 400, not the 403 a role that
+  // merely lacked permission would get.
+  UNKNOWN_ROLE: 400,
+  PASSWORD_TOO_SHORT: 400,
   // provisionStaff throws this for a deactivated branch (lib/staff.ts);
   // BRANCH_LOCKED (over-cap) is a PlanError, already mapped to 402 above.
   BRANCH_CLOSED: 409,
@@ -35,15 +40,15 @@ export async function POST(req: Request) {
   if (!name || !email || !password) {
     return Response.json({ error: 'MISSING_FIELDS' }, { status: 400 })
   }
-  if (!(role in roles)) {
-    return Response.json({ error: 'UNKNOWN_ROLE' }, { status: 400 })
-  }
 
   try {
     const session = await requirePermission({ staff: ['create'] })
     const organizationId = session.session.activeOrganizationId
     if (!organizationId) throw new Error('NO_ACTIVE_ORGANIZATION')
 
+    // Role, password length and branch status are provisionStaff's to enforce
+    // (lib/staff.ts) -- this route had its own weaker `role in roles` copy,
+    // which let an admin mint an owner. One authority, not four (spec §8).
     const { user } = await provisionStaff({
       organizationId,
       name,

@@ -1,9 +1,9 @@
 import { createLocalAccountIssuer } from 'better-auth'
 import { sql } from 'drizzle-orm'
 import { headers } from 'next/headers'
-import { auth } from './auth'
+import { auth, MIN_PASSWORD_LENGTH } from './auth'
 import { db } from './db'
-import { roles, type SalonRole } from './permissions'
+import { ASSIGNABLE_ROLES, type SalonRole } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
 import { getBranchStatus } from './plan/branch'
 
@@ -25,7 +25,18 @@ export async function provisionStaff(input: {
   role: SalonRole
   teamId?: string | null
 }) {
-  if (!(input.role in roles)) throw new Error('UNKNOWN_ROLE')
+  // The allow-list, not `role in roles`: `roles` contains 'owner', and
+  // better-auth's addMember performs NO permission check on the role it writes
+  // (node_modules/better-auth/dist/plugins/organization/routes/crud-members.mjs
+  // -- it validates the caller's membership and the teamId, never the role), so
+  // an admin holding staff:['create'] could mint an owner and inherit rights
+  // they never held. Every creation path routes through this function (spec
+  // §8), so the guard lives here once rather than once per caller -- the JSON
+  // API route had none at all.
+  if (!ASSIGNABLE_ROLES.includes(input.role)) throw new Error('UNKNOWN_ROLE')
+  // Same reason: the actions checked this and the JSON route did not, so
+  // "password":"a" minted a working login below the configured minimum.
+  if (input.password.length < MIN_PASSWORD_LENGTH) throw new Error('PASSWORD_TOO_SHORT')
   // A branch the owner closed, or one the plan tier has outgrown, must not
   // silently acquire a new hire -- every creation path routes through this
   // function, so the guard lives here once rather than once per caller
@@ -64,18 +75,30 @@ export async function provisionStaff(input: {
     password: hash,
   })
 
-  await auth.api.addMember({
-    body: {
-      userId: created.id,
-      organizationId: input.organizationId,
-      role: input.role,
-      ...(input.teamId ? { teamId: input.teamId } : {}),
-    },
-  })
+  // addMember is what validates teamId against the org, and it runs AFTER the
+  // two writes above -- so anything it (or the assignment below) rejects used
+  // to leave an orphaned users + accounts row with no members row: invisible in
+  // /staff, still able to sign in, and that email EMAIL_TAKEN forever. Undo the
+  // whole hire on any failure, the way the import loop already compensates
+  // (app/(app)/staff/actions.ts). deleteUser removes the user row; accounts,
+  // members and staff_profiles cascade off it.
+  try {
+    await auth.api.addMember({
+      body: {
+        userId: created.id,
+        organizationId: input.organizationId,
+        role: input.role,
+        ...(input.teamId ? { teamId: input.teamId } : {}),
+      },
+    })
 
-  // The members insert fired the trigger, so a profile exists with team_id
-  // null. Assignment is this module's job -- see the pairing note below.
-  if (input.teamId) await assignBranch(created.id, input.organizationId, input.teamId)
+    // The members insert fired the trigger, so a profile exists with team_id
+    // null. Assignment is this module's job -- see the pairing note below.
+    if (input.teamId) await assignBranch(created.id, input.organizationId, input.teamId)
+  } catch (e) {
+    await ctx.internalAdapter.deleteUser(created.id)
+    throw e
+  }
   return { user: created }
 }
 

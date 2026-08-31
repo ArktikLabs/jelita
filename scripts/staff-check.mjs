@@ -292,6 +292,65 @@ try {
   ok('provisioning with no branch leaves staff_profiles.team_id null',
     adminProfile?.team_id === null, `got ${JSON.stringify(adminProfile)}`)
 
+  // 5b. The JSON route inherits provisionStaff's guards. Every one of these
+  // was reproduced against the running app: the route gated on `role in
+  // roles` (which contains 'owner') and had no password-length check at all,
+  // and better-auth's addMember checks the CALLER's membership and the
+  // teamId, never the role it writes. The allow-list and the length check now
+  // live in provisionStaff, so the route, both Server Actions and the import
+  // loop share one authority (spec §8).
+  const apiOwnerEmail = `api-owner-escalation@${DOMAIN}`
+  const apiOwner = await assignOwner.req('/staff',
+    { name: 'SC API Owner', email: apiOwnerEmail, password: PW, role: 'owner' },
+    'POST', APP)
+  ok('POST /api/staff with role=owner is refused, not 201',
+    apiOwner.status !== 201, `got ${apiOwner.status} ${JSON.stringify(apiOwner.data)}`)
+  // On the row, not merely on the status: a refusal that still wrote the
+  // member would pass a status-only check.
+  const { rows: apiOwnerMembers } = await pool.query(`
+    select m.role from members m join users u on u.id = m.user_id
+     where u.email = $1 and m.organization_id = $2`, [apiOwnerEmail, assignOrgId])
+  ok('and no member row -- least of all an owner -- was created for it',
+    apiOwnerMembers.length === 0, JSON.stringify(apiOwnerMembers))
+
+  const apiShortEmail = `api-short-password@${DOMAIN}`
+  const apiShort = await assignOwner.req('/staff',
+    { name: 'SC API Short', email: apiShortEmail, password: 'a', role: 'stylist', branchId },
+    'POST', APP)
+  ok('POST /api/staff with a password under the configured minimum is refused',
+    apiShort.status === 400 && apiShort.data?.error === 'PASSWORD_TOO_SHORT',
+    `got ${apiShort.status} ${JSON.stringify(apiShort.data)}`)
+  const { rows: apiShortUsers } = await pool.query(
+    `select 1 from users where email = $1`, [apiShortEmail])
+  ok('and no login was created below the minimum', apiShortUsers.length === 0)
+
+  // 5c. A rejected hire must not leave an orphan. addMember is what validates
+  // teamId against the org, and it runs AFTER createUser + linkAccount -- so a
+  // foreign branchId used to leave a users + accounts row with no members row:
+  // invisible in /staff (which joins members), still able to sign in, and that
+  // email EMAIL_TAKEN forever. 'sc_team1' is section 3's fixture, under ORG.
+  const orphanEmail = `api-orphan@${DOMAIN}`
+  const orphanHire = await assignOwner.req('/staff',
+    { name: 'SC API Orphan', email: orphanEmail, password: PW,
+      role: 'stylist', branchId: 'sc_team1' },
+    'POST', APP)
+  ok('POST /api/staff with another salon\'s branchId is refused',
+    orphanHire.status !== 201, `got ${orphanHire.status} ${JSON.stringify(orphanHire.data)}`)
+  const { rows: orphanUsers } = await pool.query(
+    `select 1 from users where email = $1`, [orphanEmail])
+  ok('and the whole hire was unwound -- no orphaned users row burning the email',
+    orphanUsers.length === 0, `${orphanUsers.length} left`)
+  const { rows: orphanAccounts } = await pool.query(`
+    select 1 from accounts a join users u on u.id = a.user_id where u.email = $1`, [orphanEmail])
+  ok('nor an orphaned credential account it could still sign in with',
+    orphanAccounts.length === 0, `${orphanAccounts.length} left`)
+  // The consequence the orphan actually caused: the email is reusable.
+  const reuse = await assignOwner.req('/staff',
+    { name: 'SC API Reuse', email: orphanEmail, password: PW, role: 'stylist', branchId },
+    'POST', APP)
+  ok('so the same email can still be hired afterwards, not EMAIL_TAKEN forever',
+    reuse.status === 201, `got ${reuse.status} ${JSON.stringify(reuse.data)}`)
+
   head('6. assignment does not depend on role strings')
   // The bug this replaces: a custom management role like 'manajer' is not in
   // array['owner', 'admin'], so the old team_members + role-deny-list

@@ -78,3 +78,18 @@ export const stylist = ac.newRole({
 
 export const roles = { owner, admin, frontdesk, stylist }
 export type SalonRole = keyof typeof roles
+
+/**
+ * Roles a staff-management screen may WRITE. An allow-list, not "not owner":
+ * it stays correct when a role is added later, and dynamicAccessControl means
+ * a custom role must be refused too, not just the built-in 'owner'.
+ * staff:['create'] is held by admin as well as owner -- without this an admin
+ * could mint an owner and inherit rights (deleting the organization) they
+ * never held themselves.
+ *
+ * Lives here, next to `roles`, because every writer needs it: provisionStaff
+ * (lib/staff.ts) is the single authority every creation path routes through
+ * (spec §8), and the Server Actions import the same list to refuse the role
+ * before a form ever reaches it.
+ */
+export const ASSIGNABLE_ROLES: SalonRole[] = ['admin', 'stylist', 'frontdesk']

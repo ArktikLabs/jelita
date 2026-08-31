@@ -6,7 +6,7 @@ import { headers } from 'next/headers'
 import { createLocalAccountIssuer } from 'better-auth'
 import { parse as parseCsv } from 'csv-parse/sync'
 import { sql } from 'drizzle-orm'
-import { auth } from '@/lib/auth'
+import { auth, MIN_PASSWORD_LENGTH } from '@/lib/auth'
 import { db } from '@/lib/db'
 import { PlanError, requireQuota, countResource, getEntitlements } from '@/lib/plan/entitlements'
 import { getBranchStatus } from '@/lib/plan/branch'
@@ -14,16 +14,9 @@ import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { provisionStaff, assignBranch, getStaff } from '@/lib/staff'
 import { listBranches } from '@/lib/branch'
 import { formError, type FormState, type ImportState } from '@/lib/form-state'
-import type { SalonRole } from '@/lib/permissions'
+import { ASSIGNABLE_ROLES, type SalonRole } from '@/lib/permissions'
 
 const NEEDS_BRANCH = ['stylist', 'frontdesk']
-
-// Allow-list, not "not owner": stays correct when a role is added later, and
-// dynamicAccessControl means a custom role must be refused here too, not
-// just the built-in 'owner'. staff:['create'] is held by admin as well as
-// owner -- without this an admin could mint an owner and inherit rights
-// (deleting the organization) they never held themselves.
-const ASSIGNABLE_ROLES: SalonRole[] = ['admin', 'stylist', 'frontdesk']
 
 const NOT_FOUND = { error: 'Staf tidak ditemukan.' }
 
@@ -114,7 +107,7 @@ export async function createStaffAction(
   const teamId = String(formData.get('teamId') ?? '').trim() || null
 
   if (!name || !email || !password) return { error: 'Nama, email dan kata sandi wajib diisi.' }
-  if (password.length < 8) return { error: 'Kata sandi minimal 8 karakter.' }
+  if (password.length < MIN_PASSWORD_LENGTH) return { error: 'Kata sandi minimal 8 karakter.' }
   // This screen mints new logins -- it must never be the path to a second
   // owner or an unrecognised (custom) role. Promoting an existing member is
   // a different operation (better-auth's updateMemberRole), not this form.
@@ -218,7 +211,7 @@ export async function importStaffAction(
       badRows.push({ line, message: 'Nama, email dan kata sandi wajib diisi.' })
       continue
     }
-    if (password.length < 8) {
+    if (password.length < MIN_PASSWORD_LENGTH) {
       badRows.push({ line, message: 'Kata sandi minimal 8 karakter.' })
       continue
     }
@@ -567,7 +560,7 @@ export async function resetStaffPasswordAction(
   const password = String(formData.get('password') ?? '')
   const target = await getStaff(userId, organizationId)
   if (!target) return NOT_FOUND
-  if (password.length < 8) return { error: 'Kata sandi minimal 8 karakter.' }
+  if (password.length < MIN_PASSWORD_LENGTH) return { error: 'Kata sandi minimal 8 karakter.' }
   // Same rule as updateStaffRoleAction (spec §6.1), and for a sharper reason:
   // handing an admin the owner's password is handing them the owner's account,
   // including rights (deleting the organization) an admin never held.

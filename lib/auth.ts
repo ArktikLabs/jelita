@@ -33,12 +33,20 @@ async function assertQuota(resource: CappedResource, organizationId: string) {
   }
 }
 
+/**
+ * better-auth enforces this on its own sign-up/reset endpoints. provisionStaff
+ * and the staff Server Actions never touch those endpoints (see lib/staff.ts),
+ * so they check it themselves -- against this constant, not a second literal
+ * that could drift from the config below.
+ */
+export const MIN_PASSWORD_LENGTH = 8
+
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: 'pg', usePlural: true }),
 
   emailAndPassword: {
     enabled: true,
-    minPasswordLength: 8,
+    minPasswordLength: MIN_PASSWORD_LENGTH,
     // Salon staff are created by the owner, not self-service; no inbox round
     // trip before they can work.
     requireEmailVerification: true,
