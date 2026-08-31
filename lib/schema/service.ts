@@ -1,7 +1,7 @@
 import {
   bigint, boolean, char, index, pgTable, smallint, text, timestamp, unique,
 } from 'drizzle-orm/pg-core'
-import { organizations, teams } from './auth'
+import { organizations } from './auth'
 
 export const salonProfiles = pgTable('salon_profiles', {
   organizationId: text('organization_id').primaryKey()

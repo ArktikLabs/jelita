@@ -12,9 +12,7 @@ const head = (s) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 const pool = new Pool({ connectionString: process.env.DIRECT_URL })
 const ORG = 'svccheck_org'
 const ORG2 = 'svccheck_org2'
-const ORIGIN = process.env.BETTER_AUTH_URL
 const DOMAIN = 'svccheck.local'
-const PW = 'demo12345'
 
 try {
   head('0. reset test fixtures')
@@ -98,13 +96,55 @@ try {
   ok('a staff link pointing at another salon staff member is refused', staffRefused)
 
   head('4. money is minor units')
-  const { formatMoney, parseMoney } = await import('../lib/money.ts')
+  const { formatMoney, toAmountInput, parseMoney } = await import('../lib/money.ts')
   ok('IDR has no minor digits', formatMoney(150000, 'IDR').includes('150.000'))
   ok('USD has two', formatMoney(15050, 'USD') === '$150.50', formatMoney(15050, 'USD'))
-  ok('IDR parses whole units', parseMoney('150000', 'IDR') === 150000)
-  ok('USD parses to cents', parseMoney('150.50', 'USD') === 15050,
-     String(parseMoney('150.50', 'USD')))
-  ok('a negative amount is refused', parseMoney('-5', 'IDR') === null)
+
+  // Table-driven: every case is [input, currency, expected minor units].
+  // '1.500' USD is deliberately null -- it could be 1,500 or 1.50 and no
+  // rule distinguishes them, so the parser refuses rather than guessing.
+  const parseCases = [
+    ['150.000', 'IDR', 150000],
+    ['1.500.000', 'IDR', 1500000],
+    ['150.5', 'USD', 15050],
+    ['150.50', 'USD', 15050],
+    ['1,500.50', 'USD', 150050],
+    ['150', 'USD', 15000],
+    ['1.500', 'USD', null],
+    ['abc', 'USD', null],
+    ['', 'USD', null],
+    ['-5', 'IDR', null],
+    ['9.5', 'USD', 950],
+  ]
+  for (const [input, currency, expected] of parseCases) {
+    const got = parseMoney(input, currency)
+    ok(`parseMoney(${JSON.stringify(input)}, ${currency}) === ${expected}`,
+       got === expected, `got ${got}`)
+  }
+
+  // The heuristic this replaces guessed '.' as decimal-vs-grouping by
+  // counting trailing digits against the exponent, so '150.5' (one decimal
+  // digit) was silently reinterpreted as a thousands separator -- a 10x
+  // overcharge, not an error. This is the one assertion standing between
+  // that bug and production.
+  ok('a one-decimal USD amount is not a 10x overcharge',
+     parseMoney('150.5', 'USD') === 15050, `got ${parseMoney('150.5', 'USD')}`)
+
+  // formatMoney is DISPLAY ONLY (symbol, grouping) and must never be fed
+  // back into parseMoney -- toAmountInput is the round-trip counterpart.
+  ok('formatMoney output does not round-trip through parseMoney',
+     parseMoney(formatMoney(150000, 'IDR'), 'IDR') === null)
+
+  // toAmountInput <-> parseMoney round trip, 0-exponent and 2-exponent,
+  // several magnitudes including zero.
+  for (const [minor, currency] of [
+    [0, 'IDR'], [1, 'IDR'], [150000, 'IDR'], [1500000, 'IDR'],
+    [0, 'USD'], [5, 'USD'], [15050, 'USD'], [999999, 'USD'],
+  ]) {
+    const roundTripped = parseMoney(toAmountInput(minor, currency), currency)
+    ok(`round trip ${minor} ${currency}`, roundTripped === minor,
+       `toAmountInput -> ${toAmountInput(minor, currency)} -> ${roundTripped}`)
+  }
 } finally {
   await pool.end()
 }

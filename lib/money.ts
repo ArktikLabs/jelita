@@ -16,7 +16,11 @@ export type CurrencyCode = keyof typeof SUPPORTED_CURRENCIES
 export const isCurrencyCode = (v: string): v is CurrencyCode =>
   Object.prototype.hasOwnProperty.call(SUPPORTED_CURRENCIES, v)
 
-/** Minor units -> a display string in the salon's locale. */
+/**
+ * Minor units -> a display string in the salon's locale, symbol included.
+ * DISPLAY ONLY -- never feed this back into parseMoney (it round-trips
+ * through toAmountInput instead, which has no symbol or grouping to strip).
+ */
 export function formatMoney(minor: number, currency: CurrencyCode): string {
   const { exponent, locale } = SUPPORTED_CURRENCIES[currency]
   return new Intl.NumberFormat(locale, {
@@ -28,15 +32,33 @@ export function formatMoney(minor: number, currency: CurrencyCode): string {
 }
 
 /**
- * A typed amount -> minor units. Returns null when the input is not a
- * non-negative number, so callers surface a form error rather than storing
- * NaN. Digits, one separator, nothing else.
+ * Minor units -> a bare numeric string for a form field's value: no symbol,
+ * no grouping, '.' as the decimal separator. The counterpart to parseMoney
+ * that formatMoney is not -- what a price input prefills and reads back.
+ */
+export function toAmountInput(minor: number, currency: CurrencyCode): string {
+  const { exponent } = SUPPORTED_CURRENCIES[currency]
+  return (minor / 10 ** exponent).toFixed(exponent)
+}
+
+/**
+ * A typed amount -> minor units. No separator-position guessing: a lone
+ * '.' or ',' is always grouping for a 0-exponent currency, and for a
+ * 2-exponent currency only a trailing '.' followed by 1-2 digits is ever a
+ * decimal point. An amount like '1.500' for USD is genuinely ambiguous
+ * (1,500 or 1.50?) and is refused rather than silently guessed either way.
+ * Returns null when the input doesn't match, so callers surface a form
+ * error rather than storing NaN or a 10x-wrong amount.
  */
 export function parseMoney(input: string, currency: CurrencyCode): number | null {
   const { exponent } = SUPPORTED_CURRENCIES[currency]
-  const cleaned = input.trim().replace(/[.,\s]/g, (m, i, s) =>
-    exponent > 0 && s.length - i - 1 === exponent ? '.' : '')
-  if (!/^\d+(\.\d+)?$/.test(cleaned)) return null
-  const scaled = Math.round(Number(cleaned) * 10 ** exponent)
-  return Number.isFinite(scaled) && scaled >= 0 ? scaled : null
+  const trimmed = input.trim()
+  if (exponent === 0) {
+    const cleaned = trimmed.replace(/[.,\s]/g, '')
+    if (!/^\d+$/.test(cleaned)) return null
+    return Number(cleaned)
+  }
+  const cleaned = trimmed.replace(/[,\s]/g, '')
+  if (!new RegExp(`^\\d+(\\.\\d{1,${exponent}})?$`).test(cleaned)) return null
+  return Math.round(Number(cleaned) * 10 ** exponent)
 }
