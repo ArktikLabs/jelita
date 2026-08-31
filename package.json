@@ -16,6 +16,7 @@
     "branch:check": "node --env-file=.env.local scripts/branch-check.mjs",
     "ui:check": "node --env-file=.env.local scripts/ui-check.mjs",
     "staff:check": "node --env-file=.env.local scripts/staff-check.mjs",
+    "service:check": "node --env-file=.env.local scripts/service-check.mjs",
     "plan:seed": "node --env-file=.env.local scripts/seed-plans.mjs"
   },
   "dependencies": {
