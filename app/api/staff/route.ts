@@ -1,3 +1,4 @@
+import { APIError } from 'better-auth/api'
 import { requirePermission } from '@/lib/session'
 import { roles, type SalonRole } from '@/lib/permissions'
 import { PlanError } from '@/lib/plan/entitlements'
@@ -40,7 +41,7 @@ export async function POST(req: Request) {
     const organizationId = session.session.activeOrganizationId
     if (!organizationId) throw new Error('NO_ACTIVE_ORGANIZATION')
 
-    const { userId } = await provisionStaff({
+    const { user } = await provisionStaff({
       organizationId,
       name,
       email,
@@ -49,10 +50,21 @@ export async function POST(req: Request) {
       teamId: branchId,
     })
 
-    return Response.json({ user: { id: userId } }, { status: 201 })
+    return Response.json({ user }, { status: 201 })
   } catch (e) {
     if (e instanceof PlanError) {
       return Response.json({ error: e.code, ...e.meta }, { status: 402 })
+    }
+    // provisionStaff calls better-auth's own addMember/addTeamMember, which
+    // throw APIError, not a plain Error whose .message is one of our own
+    // codes -- .message on an APIError is a human sentence ("You are not
+    // allowed..."), so it would never hit the STATUS lookup below and would
+    // always fall through to the generic 400 default. .statusCode is the
+    // numeric code better-call derives from the string .status (see
+    // app/(app)/branches/actions.ts for the same 402 case) -- use it
+    // directly so a FORBIDDEN from addTeamMember reports 403, not 400.
+    if (e instanceof APIError) {
+      return Response.json({ error: e.status }, { status: e.statusCode })
     }
     const msg = e instanceof Error ? e.message : 'ERROR'
     return Response.json({ error: msg }, { status: STATUS[msg] ?? 400 })

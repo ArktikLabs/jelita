@@ -23,7 +23,7 @@ export async function provisionStaff(input: {
   password: string
   role: SalonRole
   teamId?: string | null
-}): Promise<{ userId: string }> {
+}) {
   if (!(input.role in roles)) throw new Error('UNKNOWN_ROLE')
   await requireQuota('staff')
 
@@ -40,7 +40,7 @@ export async function provisionStaff(input: {
   // Verified true, not false: this account never goes through
   // sendVerificationEmail at all, so requireEmailVerification would lock the
   // new hire out of sign-in forever. The owner creating the login IS the
-  // verification.
+  // verification -- the same trust that lets this route skip signUpEmail.
   const created = await ctx.internalAdapter.createUser(
     { email, name: input.name, emailVerified: true },
     { method: 'email-password' },
@@ -65,19 +65,25 @@ export async function provisionStaff(input: {
   // The members insert fired the trigger, so a profile exists with team_id
   // null. Assignment is this module's job -- see the pairing note below.
   if (input.teamId) await assignBranch(created.id, input.organizationId, input.teamId)
-  return { userId: created.id }
+  return { user: created }
 }
 
 /**
- * Assignment is TWO rows and they must never drift.
+ * Assignment is TWO rows:
  *
  *   staff_profiles.team_id  -- who works here (this app's authority)
  *   team_members            -- navigational; the session hook reads it to
  *                              resolve activeTeamId on login (lib/auth.ts),
  *                              and setActiveTeam refuses a user without it
  *
- * Every write of either goes through this function so the pair is atomic in
- * intent. scripts/staff-check.mjs asserts they never diverge.
+ * Through the only path that exists today (provisionStaff), better-auth's
+ * addMember already validated teamId against the org and wrote team_members
+ * itself, with rollback if that failed -- so this function's `exists()`
+ * guard and its own addTeamMember call are a safety net for a future
+ * standalone caller (e.g. a branch-transfer action), not something exercised
+ * yet. scripts/staff-check.mjs asserts the pair agrees on the provisioning
+ * path; a standalone assignBranch call has no coverage until that caller
+ * exists.
  */
 export async function assignBranch(
   userId: string, organizationId: string, teamId: string | null,
