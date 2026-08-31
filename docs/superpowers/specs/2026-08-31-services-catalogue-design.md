@@ -330,14 +330,20 @@ Five assertions in this project have passed for the wrong reason; each was
 caught only because someone broke the code and watched. The most recent was
 vacuous because `FormData` normalised the input the test was trying to send.
 
-**Pinned suites:** `auth:check` 70, `ui:check` 16, `branch:check` 44,
-`staff:check` 188.
+**Pinned suites:** `auth:check` 70, `plan:check` 38, `ui:check` 16,
+`branch:check` 44, `staff:check` 188 — all of them, including `plan:check`.
 
-`plan:check` is **not** pinned for this feature. Adding `services` to
-`CAPPED_RESOURCES` touches `lib/plan/catalog.ts`, which that suite asserts
-over, so its count of 38 may legitimately move. Any change must be a
-deliberate, justified addition recorded in the plan — never a number adjusted
-to make a suite green.
+Corrected after checking the code: `services` is **already** in
+`CAPPED_RESOURCES` (`lib/plan/catalog.ts`), the caps are already seeded
+(free 10, starter 50, `scripts/seed-plans.mjs`), and `countResource` already
+has a placeholder returning `null` for it, commented "services, products —
+Task 9". So this feature fills in an anticipated hole rather than extending
+the catalogue, and `plan:check` should not move.
+
+If it does move, that is a signal to investigate — not to adjust the number.
+Note that implementing the `services` branch means `requireQuota('services')`
+starts enforcing where it previously no-opped on a null count; any plan:check
+assertion that depended on the old no-op behaviour is a real finding.
 
 ## 8. Known limitation: working owners cannot be booked
 
