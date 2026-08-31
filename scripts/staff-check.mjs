@@ -223,6 +223,63 @@ try {
       await setDefaultStaffCap(seededStaffCap)
     }
   }
+
+  head('5. provisioning writes the assignment pair')
+  // Real owner via the HTTP path (the raw-SQL fixtures in sections 1-3 have
+  // no credential account and cannot sign in). business has no plan_limits
+  // rows at all, so quota can never interfere with this section regardless
+  // of whatever the default tier's staff cap is seeded to right now.
+  const assignOwner = new Client()
+  await assignOwner.req('/sign-up/email',
+    { name: 'SC Assign Owner', email: `assign-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`assign-owner@${DOMAIN}`])
+  await assignOwner.req('/sign-in/email', { email: `assign-owner@${DOMAIN}`, password: PW })
+  const assignOrg = await assignOwner.req('/organization/create',
+    { name: 'Staff Check Assign', slug: 'staffcheck-assign' })
+  const assignOrgId = assignOrg.data?.id
+  await assignOwner.req('/organization/set-active', { organizationId: assignOrgId })
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [assignOrgId])
+
+  const branch = await assignOwner.req('/organization/create-team',
+    { name: 'Cabang Assign', organizationId: assignOrgId })
+  const branchId = branch.data?.id
+  ok('branch created', !!branchId, JSON.stringify(branch.data))
+
+  const stylistEmail = `assign-stylist@${DOMAIN}`
+  const madeStylist = await assignOwner.req('/staff',
+    { name: 'SC Assign Stylist', email: stylistEmail, password: PW, role: 'stylist', branchId },
+    'POST', APP)
+  ok('provisioning a stylist with a branchId succeeds',
+    madeStylist.status === 201, `got ${madeStylist.status} ${JSON.stringify(madeStylist.data)}`)
+  const stylistId = madeStylist.data?.user?.id
+
+  const { rows: [stylistProfile2] } = await pool.query(`
+    select team_id from staff_profiles
+     where user_id = $1 and organization_id = $2`, [stylistId, assignOrgId])
+  ok('provisioning writes staff_profiles.team_id to the requested branch',
+    stylistProfile2?.team_id === branchId, `got ${JSON.stringify(stylistProfile2)}`)
+
+  const { rows: [teamMemberRow] } = await pool.query(`
+    select 1 from team_members where user_id = $1 and team_id = $2`, [stylistId, branchId])
+  ok('provisioning also writes the matching team_members row',
+    teamMemberRow !== undefined, `got ${JSON.stringify(teamMemberRow)}`)
+
+  const adminEmail = `assign-admin@${DOMAIN}`
+  const madeAdmin = await assignOwner.req('/staff',
+    { name: 'SC Assign Admin', email: adminEmail, password: PW, role: 'admin' },
+    'POST', APP)
+  ok('provisioning without a branchId succeeds',
+    madeAdmin.status === 201, `got ${madeAdmin.status} ${JSON.stringify(madeAdmin.data)}`)
+  const adminId = madeAdmin.data?.user?.id
+
+  const { rows: [adminProfile] } = await pool.query(`
+    select team_id from staff_profiles
+     where user_id = $1 and organization_id = $2`, [adminId, assignOrgId])
+  ok('provisioning with no branch leaves staff_profiles.team_id null',
+    adminProfile?.team_id === null, `got ${JSON.stringify(adminProfile)}`)
 } finally {
   await pool.end()
 }

@@ -1,8 +1,7 @@
-import { createLocalAccountIssuer } from 'better-auth'
-import { auth } from '@/lib/auth'
 import { requirePermission } from '@/lib/session'
 import { roles, type SalonRole } from '@/lib/permissions'
-import { PlanError, requireQuota } from '@/lib/plan/entitlements'
+import { PlanError } from '@/lib/plan/entitlements'
+import { provisionStaff } from '@/lib/staff'
 
 const STATUS: Record<string, number> = {
   UNAUTHORIZED: 401,
@@ -40,46 +39,17 @@ export async function POST(req: Request) {
     const session = await requirePermission({ staff: ['create'] })
     const organizationId = session.session.activeOrganizationId
     if (!organizationId) throw new Error('NO_ACTIVE_ORGANIZATION')
-    await requireQuota('staff')
 
-    // Create the login directly instead of via signUpEmail: that endpoint
-    // mints a session, and nextCookies() would then write the NEW user's
-    // session cookie onto this response — logging the owner in as the staff
-    // member they just created. Building the user + credential account by
-    // hand creates no session at all.
-    const ctx = await auth.$context
-    const normalizedEmail = email.toLowerCase()
-    if (await ctx.internalAdapter.findUserByEmail(normalizedEmail)) {
-      throw new Error('EMAIL_TAKEN')
-    }
-
-    const hash = await ctx.password.hash(password)
-    // Verified true, not false: this account never goes through
-    // sendVerificationEmail at all, so requireEmailVerification would lock
-    // the new hire out of sign-in forever. The owner creating the login IS
-    // the verification — the same trust that lets this route skip signUpEmail.
-    const created = await ctx.internalAdapter.createUser(
-      { email: normalizedEmail, name, emailVerified: true },
-      { method: 'email-password' },
-    )
-    await ctx.internalAdapter.linkAccount({
-      userId: created.id,
-      providerId: 'credential',
-      issuer: createLocalAccountIssuer('credential'),
-      accountId: created.id,
-      password: hash,
+    const { userId } = await provisionStaff({
+      organizationId,
+      name,
+      email,
+      password,
+      role: role as SalonRole,
+      teamId: branchId,
     })
 
-    await auth.api.addMember({
-      body: {
-        userId: created.id,
-        organizationId,
-        role: role as SalonRole,
-        ...(branchId ? { teamId: branchId } : {}),
-      },
-    })
-
-    return Response.json({ user: created }, { status: 201 })
+    return Response.json({ user: { id: userId } }, { status: 201 })
   } catch (e) {
     if (e instanceof PlanError) {
       return Response.json({ error: e.code, ...e.meta }, { status: 402 })
