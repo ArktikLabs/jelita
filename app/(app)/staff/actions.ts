@@ -5,10 +5,18 @@ import { redirect } from 'next/navigation'
 import { PlanError } from '@/lib/plan/entitlements'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { provisionStaff } from '@/lib/staff'
+import { listBranches } from '@/lib/branch'
 import { formError, type FormState } from '@/lib/form-state'
 import type { SalonRole } from '@/lib/permissions'
 
 const NEEDS_BRANCH = ['stylist', 'frontdesk']
+
+// Allow-list, not "not owner": stays correct when a role is added later, and
+// dynamicAccessControl means a custom role must be refused here too, not
+// just the built-in 'owner'. staff:['create'] is held by admin as well as
+// owner -- without this an admin could mint an owner and inherit rights
+// (deleting the organization) they never held themselves.
+const ASSIGNABLE_ROLES: SalonRole[] = ['admin', 'stylist', 'frontdesk']
 
 export async function createStaffAction(
   _prev: FormState, formData: FormData,
@@ -24,11 +32,22 @@ export async function createStaffAction(
 
   if (!name || !email || !password) return { error: 'Nama, email dan kata sandi wajib diisi.' }
   if (password.length < 8) return { error: 'Kata sandi minimal 8 karakter.' }
+  // This screen mints new logins -- it must never be the path to a second
+  // owner or an unrecognised (custom) role. Promoting an existing member is
+  // a different operation (better-auth's updateMemberRole), not this form.
+  if (!ASSIGNABLE_ROLES.includes(role)) return { error: 'Peran tidak valid.' }
   // Role decides assignment (spec §4): front desk has branch:read and no
   // switch, so an unassigned one would have nowhere to be; owners and admins
   // are salon-wide.
   if (NEEDS_BRANCH.includes(role) && !teamId) return { error: 'Pilih cabang untuk peran ini.' }
   if (!NEEDS_BRANCH.includes(role) && teamId) return { error: 'Peran ini tidak ditempatkan di cabang.' }
+  // A teamId from the client is untrusted -- checked against this org's own
+  // branches before it ever reaches provisionStaff/addMember, so a foreign
+  // or bogus id gets our own Indonesian copy instead of addMember's English
+  // "Team not found" surfacing verbatim through formError.
+  if (teamId && !(await listBranches(organizationId)).some((b) => b.teamId === teamId)) {
+    return { error: 'Cabang tidak ditemukan.' }
+  }
 
   try {
     await provisionStaff({ organizationId, name, email, password, role, teamId })

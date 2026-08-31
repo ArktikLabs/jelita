@@ -442,6 +442,65 @@ try {
   ok('the admin created through the form has no branch',
     listAdminProfile?.team_id === null, `got ${JSON.stringify(listAdminProfile)}`)
 
+  // Negative directions of the pairing rule -- correct in source, never
+  // exercised until now: a stylist with no branch, and an admin with one.
+  const badStylistEmail = `list-bad-stylist@${DOMAIN}`
+  const badStylist = await submitForm(listOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC Bad Stylist', email: badStylistEmail, password: PW, role: 'stylist',
+  })
+  ok('a stylist with no branch is refused, not redirected',
+    badStylist.status === 200 && badStylist.html.includes('Pilih cabang untuk peran ini.'),
+    `got ${badStylist.status}`)
+  const { rows: badStylistRows } = await pool.query(
+    `select 1 from users where email = $1`, [badStylistEmail])
+  ok('and no user was created for it', badStylistRows.length === 0)
+
+  const badAdminEmail = `list-bad-admin@${DOMAIN}`
+  const badAdmin = await submitForm(listOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC Bad Admin', email: badAdminEmail, password: PW, role: 'admin', teamId: listBranchId,
+  })
+  ok('an admin with a branch is refused, not redirected',
+    badAdmin.status === 200 && badAdmin.html.includes('Peran ini tidak ditempatkan di cabang.'),
+    `got ${badAdmin.status}`)
+  const { rows: badAdminRows } = await pool.query(
+    `select 1 from users where email = $1`, [badAdminEmail])
+  ok('and no user was created for it', badAdminRows.length === 0)
+
+  // A teamId belonging to ANOTHER salon (section 3's 'sc_team1', under ORG,
+  // not this section's listOrgId) must get our own Indonesian copy, not
+  // addMember's English "Team not found" leaking verbatim through formError.
+  const badTeamEmail = `list-bad-team@${DOMAIN}`
+  const badTeam = await submitForm(listOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC Bad Team', email: badTeamEmail, password: PW, role: 'stylist', teamId: 'sc_team1',
+  })
+  ok('a teamId from another salon is refused with Indonesian copy, not the English addMember message',
+    badTeam.status === 200 && badTeam.html.includes('Cabang tidak ditemukan.')
+      && !badTeam.html.includes('Team not found'),
+    `got ${badTeam.status}`)
+  const { rows: badTeamRows } = await pool.query(
+    `select 1 from users where email = $1`, [badTeamEmail])
+  ok('and no user was created for it', badTeamRows.length === 0)
+
+  // The escalation this fix closes: role=owner with no branch used to pass
+  // both pairing checks (NEEDS_BRANCH excludes 'owner', so neither line
+  // objects) and provisionStaff's own `role in roles` gate (which also
+  // includes 'owner'). staff:['create'] is held by admin as well as owner,
+  // so this was a path from admin to owner. Asserted on the actual members
+  // row count, not merely "an error came back" -- a refusal that still wrote
+  // the user would pass a weaker check.
+  const escalateEmail = `list-escalate@${DOMAIN}`
+  const escalate = await submitForm(listOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC Escalate', email: escalateEmail, password: PW, role: 'owner',
+  })
+  ok('posting role=owner is refused, not redirected',
+    escalate.status === 200 && escalate.html.includes('Peran tidak valid.'),
+    `got ${escalate.status}`)
+  const { rows: escalateMembers } = await pool.query(`
+    select 1 from members m join users u on u.id = m.user_id
+     where u.email = $1 and m.organization_id = $2`, [escalateEmail, listOrgId])
+  ok('and it created no member row', escalateMembers.length === 0,
+    `got ${JSON.stringify(escalateMembers)}`)
+
   // 3/4. Only owner and admin hold staff:read -- front desk and stylist are
   // both redirected away from /staff (§7.12). The stylist from assertion 1
   // above is reused; a front desk account is provisioned fresh via the JSON
