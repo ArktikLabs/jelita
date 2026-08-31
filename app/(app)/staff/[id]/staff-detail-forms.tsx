@@ -1,10 +1,14 @@
 'use client'
 
 import { useActionState, useState } from 'react'
-import { updateStaffRoleAction, transferStaffAction } from '../actions'
+import {
+  updateStaffRoleAction, transferStaffAction,
+  deactivateStaffAction, reactivateStaffAction, resetStaffPasswordAction,
+} from '../actions'
 import type { FormState } from '@/lib/form-state'
 import type { StaffRow } from '@/lib/staff'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
@@ -111,6 +115,60 @@ export function TransferForm({ staff, branches }: { staff: StaffRow; branches: B
       </div>
       <Button type="submit" disabled={pending}>
         {pending ? 'Memindahkan…' : 'Pindahkan'}
+      </Button>
+    </form>
+  )
+}
+
+export function StatusForm({ staff }: { staff: StaffRow }) {
+  const statusAction = staff.active ? deactivateStaffAction : reactivateStaffAction
+  const [state, action, pending] = useActionState(statusAction, initial)
+  return (
+    <form action={action} className="space-y-4">
+      {state.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{state.error}</AlertDescription>
+        </Alert>
+      )}
+      {state.done && (
+        <Alert>
+          <AlertDescription>Status staf diperbarui.</AlertDescription>
+        </Alert>
+      )}
+      <input type="hidden" name="userId" value={staff.userId} />
+      <Button type="submit" variant={staff.active ? 'destructive' : 'default'} disabled={pending}>
+        {pending
+          ? 'Memproses…'
+          : staff.active ? 'Nonaktifkan staf' : 'Aktifkan staf'}
+      </Button>
+    </form>
+  )
+}
+
+export function PasswordForm({ staff }: { staff: StaffRow }) {
+  const [state, action, pending] = useActionState(resetStaffPasswordAction, initial)
+  return (
+    <form action={action} className="space-y-4">
+      {state.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{state.error}</AlertDescription>
+        </Alert>
+      )}
+      {state.done && (
+        <Alert>
+          <AlertDescription>Kata sandi diperbarui. Sesi staf ini diakhiri.</AlertDescription>
+        </Alert>
+      )}
+      <input type="hidden" name="userId" value={staff.userId} />
+      <div className="space-y-2">
+        <Label htmlFor="password">Kata sandi baru</Label>
+        <Input
+          id="password" name="password" type="password"
+          autoComplete="new-password" minLength={8} required
+        />
+      </div>
+      <Button type="submit" disabled={pending}>
+        {pending ? 'Menyimpan…' : 'Atur ulang kata sandi'}
       </Button>
     </form>
   )

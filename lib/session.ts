@@ -1,6 +1,9 @@
+import { cache } from 'react'
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { sql } from 'drizzle-orm'
 import { auth } from './auth'
+import { db } from './db'
 import { PlanError } from './plan/entitlements'
 import { getBranchStatus } from './plan/branch'
 import type { statement } from './permissions'
@@ -13,10 +16,30 @@ export async function getSession() {
   return auth.api.getSession({ headers: await headers() })
 }
 
+/**
+ * A deactivated staff member must not keep working on a live cookie.
+ * Deactivation revokes their sessions, so this is the second line: a session
+ * minted in the same instant, or a profile flipped by any other path, still
+ * stops here. Checked at the point both guard families converge, so no caller
+ * can forget it. Memoised per request -- requireUser alone is reached several
+ * times on one page through requireBranch and currentEntitlements.
+ */
+const isDeactivated = cache(async (userId: string, organizationId: string | null | undefined) => {
+  if (!organizationId) return false
+  const { rows } = await db.execute(sql`
+    select active from staff_profiles
+     where user_id = ${userId} and organization_id = ${organizationId}`)
+  return (rows[0] as { active: boolean } | undefined)?.active === false
+})
+
 /** Session or throw. Use at the top of any authenticated server action. */
 export async function requireUser() {
   const session = await getSession()
   if (!session?.user) throw new Error('UNAUTHORIZED')
+  // Their credentials are gone, not their permissions -- 401, not 403.
+  if (await isDeactivated(session.user.id, session.session.activeOrganizationId)) {
+    throw new Error('UNAUTHORIZED')
+  }
   return session
 }
 
@@ -73,6 +96,11 @@ export async function requirePermission(permissions: Permissions) {
 export async function requirePageSession() {
   const session = await getSession()
   if (!session?.user) redirect('/login')
+  // Same refusal as requireUser, in this family's idiom. /login is a client
+  // page that does not bounce a signed-in visitor, so this cannot loop.
+  if (await isDeactivated(session.user.id, session.session.activeOrganizationId)) {
+    redirect('/login')
+  }
   return session
 }
 

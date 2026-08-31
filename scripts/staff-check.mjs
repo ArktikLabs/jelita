@@ -808,6 +808,326 @@ try {
   const ownerPage = await getPage(guardOwner.jar, `/staff/${guardOwnerRow.user_id}`)
   ok('and the owner\'s own detail page does not offer the transfer card',
     !ownerPage.html.includes('Pindahkan</button>'))
+
+  head('9. departure -- deactivate, rehire, password reset')
+  const QUOTA_MSG = 'Kuota staf paket Anda sudah tercapai. Upgrade untuk mengaktifkan kembali.'
+  const LAST_OWNER_MSG = 'Ini pemilik terakhir yang aktif. Tunjuk pemilik lain lebih dulu.'
+  const SELF_MSG = 'Anda tidak dapat menonaktifkan akun Anda sendiri.'
+  const NEWPW = 'demo987654'
+  const activeOf = async (userId, orgId) => (await pool.query(
+    `select active from staff_profiles where user_id = $1 and organization_id = $2`,
+    [userId, orgId])).rows[0]?.active
+
+  // 9a/9b. The seat. Reuses section 4's dynamically-read `seededStaffCap` and
+  // `setDefaultStaffCap` rather than re-deriving them -- one restore path, and
+  // the value restored is the seeded one, never a literal.
+  const capOwner = new Client()
+  await capOwner.req('/sign-up/email',
+    { name: 'SC Cap Owner', email: `cap-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`cap-owner@${DOMAIN}`])
+  await capOwner.req('/sign-in/email', { email: `cap-owner@${DOMAIN}`, password: PW })
+  const capOrg = await capOwner.req('/organization/create',
+    { name: 'Staff Check Cap', slug: 'staffcheck-cap' })
+  const capOrgId = capOrg.data?.id
+  await capOwner.req('/organization/set-active', { organizationId: capOrgId })
+
+  let capLeaverId
+  try {
+    // Cap 2: the owner holds one seat, so exactly one hire fits.
+    await setDefaultStaffCap(2)
+
+    const leaver = await capOwner.req('/staff',
+      { name: 'SC Cap Leaver', email: `cap-leaver@${DOMAIN}`, password: PW, role: 'admin' },
+      'POST', APP)
+    ok('the one free seat can be hired into', leaver.status === 201,
+      `got ${leaver.status} ${JSON.stringify(leaver.data)}`)
+    capLeaverId = leaver.data?.user?.id
+
+    // The product decision, not a count query: the SAME hire is refused at a
+    // full cap and then succeeds once a seat is freed. A count re-read would
+    // pass even if deactivation freed nothing that creation actually consults.
+    const hire = () => capOwner.req('/staff',
+      { name: 'SC Cap Hire', email: `cap-hire@${DOMAIN}`, password: PW, role: 'admin' },
+      'POST', APP)
+
+    const refused = await hire()
+    ok('at a full cap the next hire is refused with 402',
+      refused.status === 402, `got ${refused.status} ${JSON.stringify(refused.data)}`)
+    const { rows: noHire } = await pool.query(
+      `select 1 from users where email = $1`, [`cap-hire@${DOMAIN}`])
+    ok('and no user was created for the refused hire', noHire.length === 0)
+
+    const left = await submitForm(capOwner.jar, `/staff/${capLeaverId}`,
+      'Nonaktifkan staf</button>', { userId: capLeaverId })
+    ok('deactivating the hire succeeds',
+      left.status === 200 && await activeOf(capLeaverId, capOrgId) === false,
+      `got ${left.status}`)
+
+    const rehire = await hire()
+    ok('deactivating frees the seat -- the identical hire now succeeds (spec 7.4)',
+      rehire.status === 201, `got ${rehire.status} ${JSON.stringify(rehire.data)}`)
+
+    // The cap is full again (owner + the new hire), so rehiring the leaver is
+    // a 402, exactly like hiring (spec 7.5).
+    const rehireLeaver = await submitForm(capOwner.jar, `/staff/${capLeaverId}`,
+      'Aktifkan staf</button>', { userId: capLeaverId })
+    ok('reactivating at the cap returns the 402 copy',
+      rehireLeaver.status === 200 && rehireLeaver.html.includes(QUOTA_MSG),
+      `got ${rehireLeaver.status}`)
+    ok('and the profile is still inactive',
+      await activeOf(capLeaverId, capOrgId) === false)
+  } finally {
+    if (seededStaffCap === null) {
+      await pool.query(`
+        delete from plan_limits l using plans p
+         where l.plan_id = p.id and p.is_default and l.resource = 'staff'`)
+    } else {
+      await setDefaultStaffCap(seededStaffCap)
+    }
+  }
+  const { rows: [restoredCap] } = await pool.query(`
+    select l.cap from plan_limits l join plans p on p.id = l.plan_id
+     where p.is_default and l.resource = 'staff'`)
+  ok('the shared staff cap is back to its seeded value',
+    (restoredCap?.cap ?? null) === seededStaffCap, `got ${JSON.stringify(restoredCap)}`)
+
+  // 9c-9h. Session revocation and password reset, on the business plan so the
+  // quota never interferes.
+  const exitOwner = new Client()
+  await exitOwner.req('/sign-up/email',
+    { name: 'SC Exit Owner', email: `exit-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`exit-owner@${DOMAIN}`])
+  await exitOwner.req('/sign-in/email', { email: `exit-owner@${DOMAIN}`, password: PW })
+  const exitOrg = await exitOwner.req('/organization/create',
+    { name: 'Staff Check Exit', slug: 'staffcheck-exit' })
+  const exitOrgId = exitOrg.data?.id
+  await exitOwner.req('/organization/set-active', { organizationId: exitOrgId })
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [exitOrgId])
+  const { rows: [exitOwnerRow] } = await pool.query(
+    `select user_id from members where organization_id = $1 and role = 'owner'`, [exitOrgId])
+
+  const madeExitStaff = await exitOwner.req('/staff',
+    { name: 'SC Exit Staff', email: `exit-staff@${DOMAIN}`, password: PW, role: 'admin' },
+    'POST', APP)
+  ok('exit staff provisioned', madeExitStaff.status === 201,
+    `got ${madeExitStaff.status} ${JSON.stringify(madeExitStaff.data)}`)
+  const exitStaffId = madeExitStaff.data?.user?.id
+
+  // Precondition, asserted rather than assumed: the cookie works BEFORE the
+  // deactivation. Without this the "no longer authenticates" check below would
+  // pass just as well against a sign-in that never succeeded.
+  const exitStaffClient = new Client()
+  await exitStaffClient.req('/sign-in/email', { email: `exit-staff@${DOMAIN}`, password: PW })
+  const beforeExit = await exitStaffClient.get('/get-session')
+  ok('the staff cookie authenticates before deactivation',
+    beforeExit.data?.user?.id === exitStaffId, JSON.stringify(beforeExit.data))
+
+  await submitForm(exitOwner.jar, `/staff/${exitStaffId}`,
+    'Nonaktifkan staf</button>', { userId: exitStaffId })
+  const afterExit = await exitStaffClient.get('/get-session')
+  ok('deactivation revokes sessions -- the same cookie no longer authenticates (spec 7.11)',
+    !afterExit.data?.user, JSON.stringify(afterExit.data))
+  const { rows: exitSessions } = await pool.query(
+    `select 1 from sessions where user_id = $1`, [exitStaffId])
+  ok('and no session row survives for them', exitSessions.length === 0)
+
+  // Rehire (business plan, no cap) so the password path has a live account.
+  await submitForm(exitOwner.jar, `/staff/${exitStaffId}`,
+    'Aktifkan staf</button>', { userId: exitStaffId })
+  ok('reactivation with room in the plan succeeds',
+    await activeOf(exitStaffId, exitOrgId) === true)
+
+  const pwClient = new Client()
+  await pwClient.req('/sign-in/email', { email: `exit-staff@${DOMAIN}`, password: PW })
+  const beforeReset = await pwClient.get('/get-session')
+  ok('the rehired staff can sign in again', beforeReset.data?.user?.id === exitStaffId)
+
+  const reset = await submitForm(exitOwner.jar, `/staff/${exitStaffId}`,
+    'name="password"', { userId: exitStaffId, password: NEWPW })
+  ok('the reset form returns without an error', reset.status === 200
+    && !reset.html.includes('Kata sandi minimal'), `got ${reset.status}`)
+  const afterReset = await pwClient.get('/get-session')
+  ok('password reset revokes sessions -- the pre-reset cookie is dead (spec 7.11)',
+    !afterReset.data?.user, JSON.stringify(afterReset.data))
+
+  // The password actually changed: a reset that only killed sessions would
+  // pass the two checks above and nothing else.
+  const oldPw = await new Client().req('/sign-in/email',
+    { email: `exit-staff@${DOMAIN}`, password: PW })
+  ok('the old password no longer signs in', oldPw.status !== 200,
+    `got ${oldPw.status} ${JSON.stringify(oldPw.data)}`)
+  const newPwClient = new Client()
+  const newPw = await newPwClient.req('/sign-in/email',
+    { email: `exit-staff@${DOMAIN}`, password: NEWPW })
+  ok('the new password does', newPw.status === 200 && !!newPw.data?.user,
+    `got ${newPw.status} ${JSON.stringify(newPw.data)}`)
+
+  // 9e. Self-deactivation, forged from ANOTHER staff member's page with the
+  // userId swapped -- the point is that the server refuses it, not that the
+  // owner's own page hides the card (a client can post any userId it likes).
+  const selfAttempt = await submitForm(exitOwner.jar, `/staff/${exitStaffId}`,
+    'Nonaktifkan staf</button>', { userId: exitOwnerRow.user_id })
+  ok('an owner cannot deactivate themselves (spec 7.9)',
+    selfAttempt.status === 200 && selfAttempt.html.includes(SELF_MSG),
+    `got ${selfAttempt.status}`)
+  ok('and they are still active',
+    await activeOf(exitOwnerRow.user_id, exitOrgId) === true)
+  const ownSelfPage = await getPage(exitOwner.jar, `/staff/${exitOwnerRow.user_id}`)
+  ok('and their own detail page does not offer the status card at all',
+    !ownSelfPage.html.includes('Nonaktifkan staf</button>'))
+
+  // 9g. Handing an admin the owner's password hands them the owner's account.
+  const madeExitAdmin = await exitOwner.req('/staff',
+    { name: 'SC Exit Admin', email: `exit-admin@${DOMAIN}`, password: PW, role: 'admin' },
+    'POST', APP)
+  ok('exit admin provisioned', madeExitAdmin.status === 201,
+    `got ${madeExitAdmin.status} ${JSON.stringify(madeExitAdmin.data)}`)
+  const exitAdminClient = new Client()
+  await exitAdminClient.req('/sign-in/email', { email: `exit-admin@${DOMAIN}`, password: PW })
+  const adminResetsOwner = await submitForm(exitAdminClient.jar, `/staff/${exitOwnerRow.user_id}`,
+    'name="password"', { userId: exitOwnerRow.user_id, password: NEWPW })
+  ok('an admin cannot reset the owner\'s password',
+    adminResetsOwner.status === 200
+      && adminResetsOwner.html.includes('Hanya pemilik yang dapat mengatur ulang kata sandi pemilik.'),
+    `got ${adminResetsOwner.status}`)
+  const ownerStillSignsIn = await new Client().req('/sign-in/email',
+    { email: `exit-owner@${DOMAIN}`, password: PW })
+  ok('and the owner\'s own password is untouched', ownerStillSignsIn.status === 200)
+
+  // 9h. lib/session.ts. The row is flipped in SQL, NOT through the action, so
+  // no session is revoked -- this is the guard, not the revocation, and it is
+  // the only way to reach it.
+  await pool.query(
+    `update staff_profiles set active = false where user_id = $1 and organization_id = $2`,
+    [exitStaffId, exitOrgId])
+  const deadPage = await fetch(`${ORIGIN}/dashboard`, {
+    headers: { cookie: cookieOf(newPwClient.jar) }, redirect: 'manual',
+  })
+  ok('a deactivated member on a live cookie is bounced off pages to /login',
+    deadPage.status === 307 && (deadPage.headers.get('location') ?? '').includes('/login'),
+    `got ${deadPage.status} ${deadPage.headers.get('location')}`)
+  const deadApi = await fetch(`${ORIGIN}/api/me/entitlements`, {
+    headers: { cookie: cookieOf(newPwClient.jar) },
+  })
+  ok('and the throwing guard refuses them with 401',
+    deadApi.status === 401, `got ${deadApi.status} ${JSON.stringify(await deadApi.json())}`)
+
+  // 9i. The last owner. A salon that can be left ownerless has no recovery
+  // short of a database edit.
+  const ownersOwner = new Client()
+  await ownersOwner.req('/sign-up/email',
+    { name: 'SC Owners Owner', email: `owners-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`owners-owner@${DOMAIN}`])
+  await ownersOwner.req('/sign-in/email', { email: `owners-owner@${DOMAIN}`, password: PW })
+  const ownersOrg = await ownersOwner.req('/organization/create',
+    { name: 'Staff Check Owners', slug: 'staffcheck-owners' })
+  const ownersOrgId = ownersOrg.data?.id
+  await ownersOwner.req('/organization/set-active', { organizationId: ownersOrgId })
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [ownersOrgId])
+  const { rows: [ownersOwnerRow] } = await pool.query(
+    `select user_id from members where organization_id = $1 and role = 'owner'`, [ownersOrgId])
+
+  // A second owner, raw -- the trigger seeds the profile, exactly as an
+  // invitation accepted into the owner role would.
+  await pool.query(`
+    insert into users (id, name, email, email_verified, created_at, updated_at)
+    values ('sc_owner2', 'SC Owner Two', $1, true, now(), now())`, [`owner2@${DOMAIN}`])
+  await pool.query(`
+    insert into members (id, user_id, organization_id, role, created_at)
+    values ('sc_m_owner2', 'sc_owner2', $1, 'owner', now())`, [ownersOrgId])
+  ok('the second owner has an active profile',
+    await activeOf('sc_owner2', ownersOrgId) === true)
+
+  const madeOwnersAdmin = await ownersOwner.req('/staff',
+    { name: 'SC Owners Admin', email: `owners-admin@${DOMAIN}`, password: PW, role: 'admin' },
+    'POST', APP)
+  ok('owners admin provisioned', madeOwnersAdmin.status === 201,
+    `got ${madeOwnersAdmin.status} ${JSON.stringify(madeOwnersAdmin.data)}`)
+  const ownersAdminClient = new Client()
+  await ownersAdminClient.req('/sign-in/email', { email: `owners-admin@${DOMAIN}`, password: PW })
+
+  // While TWO owners are active, deactivating one is allowed. Without this the
+  // refusal below would pass just as well against a rule that simply never
+  // lets an owner go.
+  const dropSecond = await submitForm(ownersAdminClient.jar, `/staff/sc_owner2`,
+    'Nonaktifkan staf</button>', { userId: 'sc_owner2' })
+  ok('with two owners active, one of them can be deactivated',
+    dropSecond.status === 200 && await activeOf('sc_owner2', ownersOrgId) === false
+      && !dropSecond.html.includes(LAST_OWNER_MSG),
+    `got ${dropSecond.status}`)
+
+  const dropLast = await submitForm(ownersAdminClient.jar, `/staff/${ownersOwnerRow.user_id}`,
+    'Nonaktifkan staf</button>', { userId: ownersOwnerRow.user_id })
+  ok('the last active owner cannot be deactivated (spec 7.8)',
+    dropLast.status === 200 && dropLast.html.includes(LAST_OWNER_MSG),
+    `got ${dropLast.status}`)
+  ok('and they are still active',
+    await activeOf(ownersOwnerRow.user_id, ownersOrgId) === true)
+
+  // 9j. The same rule under real concurrency, from two live connections.
+  // The statement is READ OUT OF actions.ts, not copied here: a copy proves
+  // the copy. Two admins deactivating two DIFFERENT owners is the case a
+  // check-then-act guard passes twice.
+  await pool.query(`
+    update staff_profiles set active = true, deactivated_at = null
+     where user_id = 'sc_owner2' and organization_id = $1`, [ownersOrgId])
+  const actionsSrc = readFileSync('app/(app)/staff/actions.ts', 'utf8')
+  const sqlStart = actionsSrc.indexOf('with owners as materialized')
+  const sqlEnd = actionsSrc.indexOf('returning user_id', sqlStart)
+  const deactivateSql = actionsSrc.slice(sqlStart, sqlEnd + 'returning user_id'.length)
+    .replaceAll('${organizationId}', '$1').replaceAll('${userId}', '$2')
+  ok('the deactivation statement was read out of actions.ts, locking clause and all',
+    sqlStart !== -1 && sqlEnd !== -1 && deactivateSql.includes('for update of'),
+    deactivateSql.slice(0, 120))
+
+  const c1 = await pool.connect()
+  const c2 = await pool.connect()
+  let raceA, raceB
+  try {
+    await c1.query('begin')
+    await c2.query('begin')
+    // c1 takes the owner lock set and deactivates owner #1, uncommitted.
+    raceA = await c1.query(deactivateSql, [ownersOrgId, ownersOwnerRow.user_id])
+    // c2 goes for the OTHER owner. It must block on the same lock set rather
+    // than reading a stale "2 owners" and writing.
+    const pending = c2.query(deactivateSql, [ownersOrgId, 'sc_owner2'])
+    let settled = false
+    pending.then(() => { settled = true }, () => { settled = true })
+    await new Promise((r) => setTimeout(r, 400))
+    ok('the second connection blocks instead of reading a stale owner count', !settled)
+    await c1.query('commit')
+    raceB = await pending
+    await c2.query('commit')
+  } finally {
+    c1.release()
+    c2.release()
+  }
+  ok('one concurrent deactivation succeeds', raceA.rows.length === 1,
+    JSON.stringify(raceA.rows))
+  ok('the other refuses, having re-read under the lock', raceB.rows.length === 0,
+    JSON.stringify(raceB.rows))
+  const { rows: [ownersLeft] } = await pool.query(`
+    select count(*)::int n from staff_profiles s
+      join members m on m.user_id = s.user_id and m.organization_id = s.organization_id
+     where s.organization_id = $1 and s.active
+       and (string_to_array(m.role, ',') && array['owner'])`, [ownersOrgId])
+  ok('and the salon still has an owner', ownersLeft.n >= 1, JSON.stringify(ownersLeft))
+
+  // 9k. spec 7.14, across every fixture this run created.
+  const { rows: [pairing] } = await pool.query(`
+    select count(*)::int n from staff_profiles s
+     where s.team_id is not null
+       and not exists (select 1 from team_members tm
+                        where tm.user_id = s.user_id and tm.team_id = s.team_id)`)
+  ok('every staff_profiles row with a branch has a matching team_members row (spec 7.14)',
+    pairing.n === 0, `${pairing.n} unpaired`)
 } finally {
   await pool.end()
 }

@@ -3,10 +3,11 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { headers } from 'next/headers'
+import { createLocalAccountIssuer } from 'better-auth'
 import { sql } from 'drizzle-orm'
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
-import { PlanError } from '@/lib/plan/entitlements'
+import { PlanError, requireQuota } from '@/lib/plan/entitlements'
 import { getBranchStatus } from '@/lib/plan/branch'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { provisionStaff, assignBranch, getStaff } from '@/lib/staff'
@@ -208,6 +209,159 @@ export async function transferStaffAction(
   // query duplicating what assignBranch already does.
   const updated = await assignBranch(userId, organizationId, teamId)
   if (!updated) return { error: 'Cabang tidak ditemukan.' }
+
+  revalidateStaff(userId)
+  return { done: true }
+}
+
+/**
+ * Deactivation is a departure, not a flag: it frees the plan seat
+ * (countResource counts only active profiles) and cuts the session off.
+ */
+export async function deactivateStaffAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  // staff:['deactivate'], not ['update'] -- the statement already names this
+  // operation separately (lib/permissions.ts). Owner and admin hold both, so
+  // this changes nothing today; it means a role granted 'update' alone later
+  // does not silently inherit the power to end someone's employment.
+  const actor = await requirePagePermission({ staff: ['deactivate'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  if (!userId) return NOT_FOUND
+  // Before the SQL, and before the not-found read: a one-owner salon whose
+  // owner deactivates themselves is locked out of its own tenant with no
+  // recovery short of a database edit. The last-owner rule below would catch
+  // that one case, but not an owner among several -- who would still be
+  // signing themselves out with a button labelled as an HR action.
+  if (userId === actor.user.id) {
+    return { error: 'Anda tidak dapat menonaktifkan akun Anda sendiri.' }
+  }
+  if (!(await getStaff(userId, organizationId))) return NOT_FOUND
+
+  // "The last owner cannot be deactivated" is PREVENTED, not handled, so the
+  // count and the write are ONE statement. Folding the count into the WHERE
+  // alone is not enough: under READ COMMITTED two admins deactivating two
+  // DIFFERENT owners would each read "2 owners" and both write, leaving the
+  // salon ownerless. The materialized CTE locks every active owner row of the
+  // salon first (ordered, so two of these cannot deadlock), so the second
+  // transaction blocks there, re-reads the now-inactive row under EvalPlanQual,
+  // counts 1 and refuses. Same shape as deactivateBranchAction.
+  const { rows: closed } = await db.execute(sql`
+    with owners as materialized (
+      select s.user_id from staff_profiles s
+        join members m on m.user_id = s.user_id
+                      and m.organization_id = s.organization_id
+       where s.organization_id = ${organizationId} and s.active
+         and (string_to_array(m.role, ',') && array['owner'])
+       order by s.user_id
+         for update of s
+    )
+    update staff_profiles
+       set active = false, deactivated_at = now(), updated_at = now()
+     where user_id = ${userId} and organization_id = ${organizationId}
+       and active
+       and (user_id not in (select user_id from owners)
+            or (select count(*) from owners) > 1)
+    returning user_id`)
+
+  if (closed.length === 0) {
+    // Two remaining ways to affect no rows, and they are not the same news:
+    // already inactive (a double submit) is a no-op, anything else is the
+    // last-owner refusal. Re-read rather than trust the pre-read above -- the
+    // pre-read is stale in exactly the racing case, which is how the branch
+    // screen once told an owner they had one branch when they had three.
+    const target = await getStaff(userId, organizationId)
+    if (!target) return NOT_FOUND
+    return target.active
+      ? { error: 'Ini pemilik terakhir yang aktif. Tunjuk pemilik lain lebih dulu.' }
+      : { done: true }
+  }
+
+  // Without this a dismissed employee keeps working until their cookie
+  // expires. deleteUserSessions drops every session row for the user
+  // (node_modules/better-auth/dist/db/internal-adapter.mjs:504);
+  // revokeUserSessions belongs to the admin plugin, which this project does
+  // not use because its roles are global.
+  const ctx = await auth.$context
+  await ctx.internalAdapter.deleteUserSessions(userId)
+
+  revalidateStaff(userId)
+  return { done: true }
+}
+
+/** Rehiring into a full plan is a 402, exactly like hiring. */
+export async function reactivateStaffAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ staff: ['deactivate'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  const target = await getStaff(userId, organizationId)
+  if (!target) return NOT_FOUND
+  if (target.active) return { done: true }
+
+  try {
+    // Before the write, not after: an inactive profile is not counted, so the
+    // seat is genuinely re-consumed here.
+    await requireQuota('staff', organizationId)
+  } catch (e) {
+    if (e instanceof PlanError) {
+      return { error: 'Kuota staf paket Anda sudah tercapai. Upgrade untuk mengaktifkan kembali.' }
+    }
+    return { error: formError(e, 'Gagal mengaktifkan staf.') }
+  }
+
+  await db.execute(sql`
+    update staff_profiles
+       set active = true, deactivated_at = null, updated_at = now()
+     where user_id = ${userId} and organization_id = ${organizationId}`)
+  revalidateStaff(userId)
+  return { done: true }
+}
+
+/**
+ * A forgotten password, reset at the front desk -- PRD §3 staff have no
+ * working email, so better-auth's token round-trip is unavailable to them.
+ */
+export async function resetStaffPasswordAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  const actor = await requirePagePermission({ staff: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  const password = String(formData.get('password') ?? '')
+  const target = await getStaff(userId, organizationId)
+  if (!target) return NOT_FOUND
+  if (password.length < 8) return { error: 'Kata sandi minimal 8 karakter.' }
+  // Same rule as updateStaffRoleAction (spec §6.1), and for a sharper reason:
+  // handing an admin the owner's password is handing them the owner's account,
+  // including rights (deleting the organization) an admin never held.
+  if (target.role.split(',').includes('owner') && !(await isOwner(actor.user.id, organizationId))) {
+    return { error: 'Hanya pemilik yang dapat mengatur ulang kata sandi pemilik.' }
+  }
+
+  const ctx = await auth.$context
+  const hash = await ctx.password.hash(password)
+  // Mirrors better-auth's own reset-password route
+  // (node_modules/better-auth/dist/api/routes/password.mjs:163-171):
+  // updatePassword matches on userId + providerId + issuer + accountId, so a
+  // member who never had a credential account would take a silent no-op --
+  // it creates one instead, exactly as that route does.
+  if (await ctx.internalAdapter.findCredentialAccount(userId)) {
+    await ctx.internalAdapter.updatePassword(userId, hash)
+  } else {
+    await ctx.internalAdapter.createAccount({
+      userId,
+      providerId: 'credential',
+      issuer: createLocalAccountIssuer('credential'),
+      accountId: userId,
+      password: hash,
+    })
+  }
+  // A reset that leaves the old sessions alive does not lock out whoever
+  // prompted the reset.
+  await ctx.internalAdapter.deleteUserSessions(userId)
 
   revalidateStaff(userId)
   return { done: true }

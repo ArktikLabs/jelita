@@ -5,7 +5,7 @@ import { listBranches } from '@/lib/branch'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
-import { RoleForm, TransferForm } from './staff-detail-forms'
+import { RoleForm, TransferForm, StatusForm, PasswordForm } from './staff-detail-forms'
 
 // Mirrors actions.ts's NEEDS_BRANCH -- duplicated, not imported, since that
 // file is 'use server' and only its async actions can cross into this page.
@@ -16,7 +16,7 @@ export default async function StaffDetailPage({
 }: {
   params: Promise<{ id: string }>
 }) {
-  await requirePagePermission({ staff: ['read'] })
+  const actor = await requirePagePermission({ staff: ['read'] })
   const { organizationId } = await requirePageOrg()
   const { id } = await params
 
@@ -33,6 +33,11 @@ export default async function StaffDetailPage({
   // transferStaffAction refuses this server-side regardless, but the card
   // shouldn't offer an operation that can only fail.
   const canTransfer = staff.role.split(',').some((r) => NEEDS_BRANCH.includes(r))
+  // deactivateStaffAction refuses this server-side regardless -- the card is
+  // hidden for the same reason the transfer card is: an operation that can
+  // only ever fail should not be offered. Signing yourself out with a button
+  // labelled as an HR action would also strand a one-owner salon.
+  const isSelf = staff.userId === actor.user.id
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
@@ -64,6 +69,31 @@ export default async function StaffDetailPage({
           </CardContent>
         </Card>
       )}
+      {!isSelf && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Status</CardTitle>
+            <CardDescription>
+              {staff.active
+                ? 'Menonaktifkan staf mengakhiri sesinya dan membebaskan satu kursi paket.'
+                : 'Mengaktifkan kembali staf ini memakai satu kursi paket.'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <StatusForm staff={staff} />
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Kata sandi</CardTitle>
+          <CardDescription>Atur ulang kata sandi staf ini di tempat.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PasswordForm staff={staff} />
+        </CardContent>
+      </Card>
     </div>
   )
 }
