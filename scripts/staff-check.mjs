@@ -314,7 +314,7 @@ try {
     const r = await fetch(ORIGIN + path, {
       method: 'POST', headers: { cookie: cookieOf(j) }, body, redirect: 'manual',
     })
-    return { status: r.status, html: await r.text() }
+    return { status: r.status, location: r.headers.get('location'), html: await r.text() }
   }
   const isBranchActive = async (teamId) => (await pool.query(
     `select active from branch_profiles where team_id = $1`, [teamId])).rows[0]?.active
@@ -382,6 +382,119 @@ try {
     afterAssign.html.includes('Pindahkan staf berikut lebih dulu: SC Manajer.'),
     `status ${afterAssign.status}`)
   ok('the branch stayed open', await isBranchActive(roleBranchId) === true)
+
+  head('7. /staff and /staff/new')
+  // Fresh owner + branch, business plan so quota never interferes with the
+  // provisioning below.
+  const listOwner = new Client()
+  await listOwner.req('/sign-up/email',
+    { name: 'SC List Owner', email: `list-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`list-owner@${DOMAIN}`])
+  await listOwner.req('/sign-in/email', { email: `list-owner@${DOMAIN}`, password: PW })
+  const listOrg = await listOwner.req('/organization/create',
+    { name: 'Staff Check List', slug: 'staffcheck-list' })
+  const listOrgId = listOrg.data?.id
+  await listOwner.req('/organization/set-active', { organizationId: listOrgId })
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [listOrgId])
+
+  const listBranch = await listOwner.req('/organization/create-team',
+    { name: 'Cabang List', organizationId: listOrgId })
+  const listBranchId = listBranch.data?.id
+  ok('branch created', !!listBranchId, JSON.stringify(listBranch.data))
+
+  // 1. A stylist created through the real /staff/new page and its Server
+  // Action -- not the JSON API -- lands staff_profiles.team_id on the chosen
+  // branch (spec §7.6, exercised through the new UI this time). Marker is
+  // `name="password"`, unique to this page's form regardless of how the
+  // Submit button's own text renders.
+  const listStylistEmail = `list-stylist@${DOMAIN}`
+  const createdStylist = await submitForm(listOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC List Stylist', email: listStylistEmail, password: PW,
+    role: 'stylist', teamId: listBranchId,
+  })
+  ok('creating a stylist with a branch redirects to /staff',
+    createdStylist.status === 303 && (createdStylist.location ?? '').includes('/staff'),
+    `got ${createdStylist.status} ${createdStylist.location}`)
+
+  const { rows: [listStylistProfile] } = await pool.query(`
+    select s.team_id from staff_profiles s
+      join users u on u.id = s.user_id
+     where u.email = $1 and s.organization_id = $2`, [listStylistEmail, listOrgId])
+  ok('the stylist created through the form has team_id set to the chosen branch',
+    listStylistProfile?.team_id === listBranchId, `got ${JSON.stringify(listStylistProfile)}`)
+
+  // 2. An admin created without a branch has team_id null (§7.6).
+  const listAdminEmail = `list-admin@${DOMAIN}`
+  const createdAdmin = await submitForm(listOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC List Admin', email: listAdminEmail, password: PW, role: 'admin',
+  })
+  ok('creating an admin with no branch redirects to /staff',
+    createdAdmin.status === 303 && (createdAdmin.location ?? '').includes('/staff'),
+    `got ${createdAdmin.status} ${createdAdmin.location}`)
+
+  const { rows: [listAdminProfile] } = await pool.query(`
+    select s.team_id from staff_profiles s
+      join users u on u.id = s.user_id
+     where u.email = $1 and s.organization_id = $2`, [listAdminEmail, listOrgId])
+  ok('the admin created through the form has no branch',
+    listAdminProfile?.team_id === null, `got ${JSON.stringify(listAdminProfile)}`)
+
+  // 3/4. Only owner and admin hold staff:read -- front desk and stylist are
+  // both redirected away from /staff (§7.12). The stylist from assertion 1
+  // above is reused; a front desk account is provisioned fresh via the JSON
+  // API (simpler than a second form submission for a role this section
+  // doesn't otherwise need).
+  const listDeskEmail = `list-desk@${DOMAIN}`
+  const madeDesk = await listOwner.req('/staff',
+    { name: 'SC List Desk', email: listDeskEmail, password: PW, role: 'frontdesk', branchId: listBranchId },
+    'POST', APP)
+  ok('front desk provisioned for the redirect check',
+    madeDesk.status === 201, `got ${madeDesk.status} ${JSON.stringify(madeDesk.data)}`)
+
+  const deskClient = new Client()
+  await deskClient.req('/sign-in/email', { email: listDeskEmail, password: PW })
+  const deskStaffPage = await fetch(`${ORIGIN}/staff`, {
+    headers: { cookie: cookieOf(deskClient.jar) }, redirect: 'manual',
+  })
+  ok('front desk is redirected away from /staff',
+    deskStaffPage.status === 307 && (deskStaffPage.headers.get('location') ?? '').includes('/dashboard'),
+    `got ${deskStaffPage.status} ${deskStaffPage.headers.get('location')}`)
+
+  const stylistClient = new Client()
+  await stylistClient.req('/sign-in/email', { email: listStylistEmail, password: PW })
+  const stylistStaffPage = await fetch(`${ORIGIN}/staff`, {
+    headers: { cookie: cookieOf(stylistClient.jar) }, redirect: 'manual',
+  })
+  ok('a stylist is likewise redirected away from /staff',
+    stylistStaffPage.status === 307 && (stylistStaffPage.headers.get('location') ?? '').includes('/dashboard'),
+    `got ${stylistStaffPage.status} ${stylistStaffPage.headers.get('location')}`)
+
+  // 5. Another salon's staff id reads as not-found (§7.13). Correction to
+  // the brief: lib/staff.ts imports ./auth, which plain Node type-stripping
+  // cannot load (confirmed the same way section 6's note confirms
+  // lib/branch.ts is unloadable -- assume nothing under lib/ is importable
+  // here unless proven otherwise). Driven over HTTP instead, from both ends
+  // of the claim: the staff_profiles query is proven scoped by organization
+  // (so it can never match ORG2's user for this org), and the route itself --
+  // there is no /staff/[id] page in this task, so the request falls through
+  // to Next's own not-found, not a 200 with data. ORG2 / 'sc_dup' is section
+  // 1's fixture, reused per the brief -- inserting it again would collide on
+  // the primary key.
+  const { rows: crossScopeRows } = await pool.query(`
+    select 1 from staff_profiles where user_id = 'sc_dup' and organization_id = $1`, [listOrgId])
+  ok('the staff query is scoped by organization -- no row for another salon\'s user',
+    crossScopeRows.length === 0)
+
+  const crossPage = await fetch(`${ORIGIN}/staff/sc_dup`, {
+    headers: { cookie: cookieOf(listOwner.jar) }, redirect: 'manual',
+  })
+  const crossHtml = await crossPage.text()
+  ok('another salon\'s staff id is not a 200 with data',
+    crossPage.status !== 200, `got ${crossPage.status}`)
+  ok('and their name never appears in the response', !crossHtml.includes('SC Dup'))
 } finally {
   await pool.end()
 }
