@@ -149,6 +149,12 @@ try {
   await pool.query(`
     insert into teams (id, name, organization_id, created_at)
     values ('svc_t1', 'Cabang Satu', $1, now())`, [ORG])
+  // No override row is ever inserted for this branch -- it stays that way
+  // for the whole section, so it can prove the active check applies even
+  // where an override never existed.
+  await pool.query(`
+    insert into teams (id, name, organization_id, created_at)
+    values ('svc_t3', 'Cabang Tanpa Override', $1, now())`, [ORG])
   const priceAt = async (serviceId, teamId) => {
     const { rows } = await pool.query(`
       select price, offered, currency from service_branch_pricing
@@ -167,6 +173,21 @@ try {
   ok('resolution carries the currency',
      (await priceAt('svc_s1', 'svc_t1')).currency === 'IDR')
 
+  // Every fixture above uses the IDR default, so a hardcoded 'IDR' literal
+  // in the view -- or a join that resolved the wrong organization's profile
+  // -- would still read IDR and pass the assertion above. Prove the join is
+  // per-organization by exercising a second salon on a different currency
+  // in the same run.
+  await pool.query(`
+    insert into services (id, organization_id, name, duration_minutes, price)
+    values ('svc_s2', $1, 'Creambath', 45, 90000)`, [ORG2])
+  await pool.query(`
+    update salon_profiles set currency = 'SGD' where organization_id = $1`, [ORG2])
+  ok('a different salon on a different currency resolves its own',
+     (await priceAt('svc_s2', 'svc_t2')).currency === 'SGD')
+  ok('while the first salon still resolves IDR',
+     (await priceAt('svc_s1', 'svc_t1')).currency === 'IDR')
+
   await pool.query(`
     update service_branch_overrides set offered = false
      where service_id = 'svc_s1' and team_id = 'svc_t1'`)
@@ -177,8 +198,15 @@ try {
     update service_branch_overrides set offered = true, price = null
      where service_id = 'svc_s1' and team_id = 'svc_t1'`)
   await pool.query(`update services set active = false where id = 'svc_s1'`)
-  ok('an inactive service is hidden everywhere',
+  ok('an inactive service is hidden everywhere (branch with an override row)',
      (await priceAt('svc_s1', 'svc_t1')).offered === false)
+  // svc_t3 never had an override row at all. An implementation like
+  // `case when o.service_id is null then true else s.active and o.offered
+  // end` would apply the active check only where an override exists, pass
+  // the assertion above, and still show an inactive service as bookable at
+  // every branch that never had one -- the common case for most branches.
+  ok('an inactive service is hidden everywhere (branch with no override row)',
+     (await priceAt('svc_s1', 'svc_t3')).offered === false)
   await pool.query(`update services set active = true where id = 'svc_s1'`)
 
   // An override whose price EQUALS the salon price is still an override. If
