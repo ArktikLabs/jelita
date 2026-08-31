@@ -17,7 +17,9 @@ const initial: FormState = {}
 export function BranchSwitcher({
   branches, activeTeamId,
 }: {
-  branches: BranchRow[]
+  // Exactly what an option needs: an id and what branchLabel reads. Anything
+  // wider would ride into the RSC payload of every page in this layout.
+  branches: Pick<BranchRow, 'teamId' | 'name' | 'active' | 'withinCap'>[]
   activeTeamId: string | null
 }) {
   const [state, action, pending] = useActionState(switchBranchAction, initial)

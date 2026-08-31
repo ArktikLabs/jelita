@@ -97,20 +97,20 @@ try {
   await mkTeam2('bc_s1', 'Satu', 1)
   await mkTeam2('bc_s2', 'Dua', 2)
 
-  ok('an active branch within cap is ok', await getBranchStatus('bc_s1') === 'ok')
+  ok('an active branch within cap is ok', await getBranchStatus('bc_s1', ORG2) === 'ok')
 
   await pool.query(`
     insert into plan_limits (plan_id, resource, cap)
     select id, 'branches', 1 from plans where is_default
     on conflict (plan_id, resource) do update set cap = 1`)
   ok('an active branch over cap is over_cap',
-    await getBranchStatus('bc_s2') === 'over_cap', await getBranchStatus('bc_s2'))
+    await getBranchStatus('bc_s2', ORG2) === 'over_cap', await getBranchStatus('bc_s2', ORG2))
 
   await pool.query(`update branch_profiles set active = false where team_id = 'bc_s2'`)
   ok('a deactivated branch is closed, not over_cap',
-    await getBranchStatus('bc_s2') === 'closed', await getBranchStatus('bc_s2'))
+    await getBranchStatus('bc_s2', ORG2) === 'closed', await getBranchStatus('bc_s2', ORG2))
 
-  ok('an unknown branch id is ok', await getBranchStatus('bc_nonexistent') === 'ok')
+  ok('an unknown branch id is ok', await getBranchStatus('bc_nonexistent', ORG2) === 'ok')
 
   head('4. a fresh login lands on an active branch')
   // call/jar/org2 are declared at try-block level (no nested block scope)
@@ -269,14 +269,14 @@ try {
   ok('there is exactly one cap holder to deactivate', capHolder.length === 1,
     JSON.stringify(capHolder))
   ok('the cap holder genuinely reads ok before deactivation (the precondition)',
-    await getBranchStatus(capHolder[0].team_id) === 'ok',
-    await getBranchStatus(capHolder[0].team_id))
+    await getBranchStatus(capHolder[0].team_id, org2.data.id) === 'ok',
+    await getBranchStatus(capHolder[0].team_id, org2.data.id))
 
   await pool.query(`update branch_profiles set active = false where team_id = $1`,
     [capHolder[0].team_id])
   ok('a deactivated branch reports closed even though it was within cap',
-    await getBranchStatus(capHolder[0].team_id) === 'closed',
-    await getBranchStatus(capHolder[0].team_id))
+    await getBranchStatus(capHolder[0].team_id, org2.data.id) === 'closed',
+    await getBranchStatus(capHolder[0].team_id, org2.data.id))
   await pool.query(`update branch_profiles set active = true where team_id = $1`,
     [capHolder[0].team_id])
 
@@ -356,7 +356,15 @@ try {
     })
     return { status: r.status, html: await r.text() }
   }
-  /** The BranchRow the layout handed the switcher, read out of the RSC payload. */
+  /** The Staf cell for one branch, read off the /branches table itself -- the
+   *  switcher prop is narrowed to what a label needs and no longer carries it. */
+  const staffCountOn = async (j, teamId) => {
+    const { html } = await getPage(j, '/branches')
+    const row = html.split('<tr').find((r) => r.includes(`/branches/${teamId}"`))
+    const cells = [...(row ?? '').matchAll(/<td[^>]*>(.*?)<\/td>/g)].map((m) => m[1])
+    return cells.length ? Number(cells.at(-1).replace(/<[^>]*>/g, '')) : null
+  }
+  /** The branch option the layout handed the switcher, read out of the RSC payload. */
   const branchProp = async (j, teamId) => {
     const { html } = await getPage(j, '/dashboard')
     const m = html.replace(/\\+"/g, '"').match(new RegExp(`\\{"teamId":"${teamId}"[^}]*\\}`))
@@ -420,15 +428,22 @@ try {
   // switched into a branch — a number that changes because someone looked at a
   // page. newTeam's only member so far is its creator.
   ok('a branch whose only members are management reports 0 staff',
-    (await branchProp(jar, newTeam))?.staffCount === 0,
-    JSON.stringify(await branchProp(jar, newTeam)))
+    await staffCountOn(jar, newTeam) === 0,
+    JSON.stringify(await staffCountOn(jar, newTeam)))
 
   await pool.query(
     `insert into team_members (id, team_id, user_id, created_at)
      values ('bl_tm3', $1, $2, now())`, [newTeam, desk[0].id])
+  // staff_profiles is the source of truth now, not this team_members row --
+  // the trigger seeded desk's profile with team_id null when they were
+  // invited, so the raw team_members insert above is navigational only until
+  // this assignment is recorded too.
+  await pool.query(
+    `update staff_profiles set team_id = $1 where user_id = $2 and organization_id = $3`,
+    [newTeam, desk[0].id, org2.data.id])
   ok('assigning a front-desk/stylist member takes it to 1',
-    (await branchProp(jar, newTeam))?.staffCount === 1,
-    JSON.stringify(await branchProp(jar, newTeam)))
+    await staffCountOn(jar, newTeam) === 1,
+    JSON.stringify(await staffCountOn(jar, newTeam)))
 
   const blocked = await submitForm(jar, `/branches/${newTeam}`, 'Nonaktifkan cabang</button>')
   ok('deactivation is refused while staff are assigned, and the error names them',
@@ -488,7 +503,7 @@ try {
   ok('a closed branch is selectable', enterClosed.status === 200,
     JSON.stringify(enterClosed).slice(0, 160))
   ok('and standing in it is read-only as closed, not locked',
-    await getBranchStatus(t0[0].id) === 'closed')
+    await getBranchStatus(t0[0].id, org2.data.id) === 'closed')
 
   // Front desk cannot switch, so the branch table must never enter their RSC
   // payload — props to a client component are serialized whether or not the

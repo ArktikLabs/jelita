@@ -1,8 +1,8 @@
-import { createLocalAccountIssuer } from 'better-auth'
-import { auth } from '@/lib/auth'
+import { APIError } from 'better-auth/api'
 import { requirePermission } from '@/lib/session'
-import { roles, type SalonRole } from '@/lib/permissions'
-import { PlanError, requireQuota } from '@/lib/plan/entitlements'
+import type { SalonRole } from '@/lib/permissions'
+import { PlanError } from '@/lib/plan/entitlements'
+import { provisionStaff } from '@/lib/staff'
 
 const STATUS: Record<string, number> = {
   UNAUTHORIZED: 401,
@@ -10,6 +10,14 @@ const STATUS: Record<string, number> = {
   NO_ACTIVE_ORGANIZATION: 409,
   ORGANIZATION_NOT_FOUND: 409,
   EMAIL_TAKEN: 409,
+  // Both from provisionStaff, both plain bad input: 'owner' (or a custom role)
+  // is not assignable by ANY caller, so it is a 400, not the 403 a role that
+  // merely lacked permission would get.
+  UNKNOWN_ROLE: 400,
+  PASSWORD_TOO_SHORT: 400,
+  // provisionStaff throws this for a deactivated branch (lib/staff.ts);
+  // BRANCH_LOCKED (over-cap) is a PlanError, already mapped to 402 above.
+  BRANCH_CLOSED: 409,
 }
 
 /**
@@ -32,57 +40,39 @@ export async function POST(req: Request) {
   if (!name || !email || !password) {
     return Response.json({ error: 'MISSING_FIELDS' }, { status: 400 })
   }
-  if (!(role in roles)) {
-    return Response.json({ error: 'UNKNOWN_ROLE' }, { status: 400 })
-  }
 
   try {
     const session = await requirePermission({ staff: ['create'] })
     const organizationId = session.session.activeOrganizationId
     if (!organizationId) throw new Error('NO_ACTIVE_ORGANIZATION')
-    await requireQuota('staff')
 
-    // Create the login directly instead of via signUpEmail: that endpoint
-    // mints a session, and nextCookies() would then write the NEW user's
-    // session cookie onto this response — logging the owner in as the staff
-    // member they just created. Building the user + credential account by
-    // hand creates no session at all.
-    const ctx = await auth.$context
-    const normalizedEmail = email.toLowerCase()
-    if (await ctx.internalAdapter.findUserByEmail(normalizedEmail)) {
-      throw new Error('EMAIL_TAKEN')
-    }
-
-    const hash = await ctx.password.hash(password)
-    // Verified true, not false: this account never goes through
-    // sendVerificationEmail at all, so requireEmailVerification would lock
-    // the new hire out of sign-in forever. The owner creating the login IS
-    // the verification — the same trust that lets this route skip signUpEmail.
-    const created = await ctx.internalAdapter.createUser(
-      { email: normalizedEmail, name, emailVerified: true },
-      { method: 'email-password' },
-    )
-    await ctx.internalAdapter.linkAccount({
-      userId: created.id,
-      providerId: 'credential',
-      issuer: createLocalAccountIssuer('credential'),
-      accountId: created.id,
-      password: hash,
+    // Role, password length and branch status are provisionStaff's to enforce
+    // (lib/staff.ts) -- this route had its own weaker `role in roles` copy,
+    // which let an admin mint an owner. One authority, not four (spec §8).
+    const { user } = await provisionStaff({
+      organizationId,
+      name,
+      email,
+      password,
+      role: role as SalonRole,
+      teamId: branchId,
     })
 
-    await auth.api.addMember({
-      body: {
-        userId: created.id,
-        organizationId,
-        role: role as SalonRole,
-        ...(branchId ? { teamId: branchId } : {}),
-      },
-    })
-
-    return Response.json({ user: created }, { status: 201 })
+    return Response.json({ user }, { status: 201 })
   } catch (e) {
     if (e instanceof PlanError) {
       return Response.json({ error: e.code, ...e.meta }, { status: 402 })
+    }
+    // provisionStaff calls better-auth's own addMember/addTeamMember, which
+    // throw APIError, not a plain Error whose .message is one of our own
+    // codes -- .message on an APIError is a human sentence ("You are not
+    // allowed..."), so it would never hit the STATUS lookup below and would
+    // always fall through to the generic 400 default. .statusCode is the
+    // numeric code better-call derives from the string .status (see
+    // app/(app)/branches/actions.ts for the same 402 case) -- use it
+    // directly so a FORBIDDEN from addTeamMember reports 403, not 400.
+    if (e instanceof APIError) {
+      return Response.json({ error: e.status }, { status: e.statusCode })
     }
     const msg = e instanceof Error ? e.message : 'ERROR'
     return Response.json({ error: msg }, { status: STATUS[msg] ?? 400 })

@@ -15,6 +15,7 @@
     "plan:check": "node --env-file=.env.local scripts/plan-check.mjs",
     "branch:check": "node --env-file=.env.local scripts/branch-check.mjs",
     "ui:check": "node --env-file=.env.local scripts/ui-check.mjs",
+    "staff:check": "node --env-file=.env.local scripts/staff-check.mjs",
     "plan:seed": "node --env-file=.env.local scripts/seed-plans.mjs"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "better-auth": "^1.7.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "csv-parse": "^7.0.2",
     "drizzle-orm": "^0.45.2",
     "lucide-react": "^1.37.0",
     "next": "16.3.3",

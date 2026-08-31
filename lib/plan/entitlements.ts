@@ -95,9 +95,16 @@ export async function countResource(
     return (rows[0] as { n: number }).n
   }
   if (resource === 'staff') {
+    // Counts members who can actually work. A departed stylist releases their
+    // seat (spec §2.4); the owner keeps theirs. coalesce(..., true) so a member
+    // with no profile row still counts -- a missing row must never silently
+    // hand out a free seat.
     const { rows } = await db.execute(sql`
-      select count(*)::int as n from members
-       where organization_id = ${organizationId}`)
+      select count(*)::int as n from members m
+       where m.organization_id = ${organizationId}
+         and coalesce((select s.active from staff_profiles s
+                        where s.user_id = m.user_id
+                          and s.organization_id = m.organization_id), true)`)
     return (rows[0] as { n: number }).n
   }
   return null // services, products — Task 9

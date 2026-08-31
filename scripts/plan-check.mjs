@@ -420,14 +420,14 @@ try {
     `select team_id, seq from branch_entitlement
       where organization_id = $1 order by seq`, [orgId])
   const [branch1, branch2] = branchRows
-  const bothOnPro = [await getBranchStatus(branch1.team_id), await getBranchStatus(branch2.team_id)]
+  const bothOnPro = [await getBranchStatus(branch1.team_id, orgId), await getBranchStatus(branch2.team_id, orgId)]
   ok('getBranchStatus is ok for branches within the cap (pro, both branches)',
     bothOnPro.every((s) => s === 'ok'), JSON.stringify(bothOnPro))
 
   await pool.query(`
     update subscriptions set plan_id = (select id from plans where key = 'free')
      where organization_id = $1`, [orgId])
-  const afterDowngrade = [await getBranchStatus(branch1.team_id), await getBranchStatus(branch2.team_id)]
+  const afterDowngrade = [await getBranchStatus(branch1.team_id, orgId), await getBranchStatus(branch2.team_id, orgId)]
   ok('getBranchStatus is over_cap for the newer branch after a downgrade',
     afterDowngrade[0] === 'ok' && afterDowngrade[1] === 'over_cap',
     JSON.stringify(afterDowngrade))
@@ -435,11 +435,11 @@ try {
   await pool.query(`
     update subscriptions set plan_id = (select id from plans where key = 'pro')
      where organization_id = $1`, [orgId])
-  const afterRaise = await getBranchStatus(branch2.team_id)
+  const afterRaise = await getBranchStatus(branch2.team_id, orgId)
   ok('getBranchStatus is ok again after raising the cap, no manual unlock',
     afterRaise === 'ok', afterRaise)
 
-  const unknown = await getBranchStatus('plancheck-nonexistent-branch-id')
+  const unknown = await getBranchStatus('plancheck-nonexistent-branch-id', orgId)
   ok('getBranchStatus is ok for an unknown branch id (let other layers 404 it)',
     unknown === 'ok', unknown)
 

@@ -1,6 +1,9 @@
+import { cache } from 'react'
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { sql } from 'drizzle-orm'
 import { auth } from './auth'
+import { db } from './db'
 import { PlanError } from './plan/entitlements'
 import { getBranchStatus } from './plan/branch'
 import type { statement } from './permissions'
@@ -13,10 +16,42 @@ export async function getSession() {
   return auth.api.getSession({ headers: await headers() })
 }
 
+/**
+ * A deactivated staff member must not keep working on a live cookie.
+ * Deactivation revokes their sessions, so this is the second line: a session
+ * minted in the same instant, or a profile flipped by any other path, still
+ * stops here. Checked at the point both guard families converge, so no caller
+ * can forget it. Memoised per request -- requireUser alone is reached several
+ * times on one page through requireBranch and currentEntitlements.
+ *
+ * It REVOKES rather than merely reporting, because their credentials still
+ * work: signInEmail knows nothing of staff_profiles, so a dismissed employee
+ * can sign in again whenever they like. Refusing a still-live cookie is not
+ * enough -- app/(auth)/layout.tsx bounces anyone holding a session to
+ * /dashboard, so /dashboard and /login would trade the request until the
+ * browser gave up, with the sign-out button behind the app layout that never
+ * renders. Killing the session removes that contradiction; teaching the auth
+ * layout this same check would only paper over it.
+ */
+const isDeactivated = cache(async (userId: string, organizationId: string | null | undefined) => {
+  if (!organizationId) return false
+  const { rows } = await db.execute(sql`
+    select active from staff_profiles
+     where user_id = ${userId} and organization_id = ${organizationId}`)
+  if ((rows[0] as { active: boolean } | undefined)?.active !== false) return false
+  const ctx = await auth.$context
+  await ctx.internalAdapter.deleteUserSessions(userId)
+  return true
+})
+
 /** Session or throw. Use at the top of any authenticated server action. */
 export async function requireUser() {
   const session = await getSession()
   if (!session?.user) throw new Error('UNAUTHORIZED')
+  // Their credentials are gone, not their permissions -- 401, not 403.
+  if (await isDeactivated(session.user.id, session.session.activeOrganizationId)) {
+    throw new Error('UNAUTHORIZED')
+  }
   return session
 }
 
@@ -33,7 +68,13 @@ export async function requireBranch(opts: { write?: boolean } = {}) {
   if (!branchId) throw new Error('NO_ACTIVE_BRANCH')
 
   if (opts.write) {
-    const status = await getBranchStatus(branchId)
+    // getBranchStatus is tenant-scoped in its own statement, so it needs the
+    // org. A session with a branch but no organization cannot be written
+    // through at all -- the session hook only ever sets activeTeamId
+    // alongside its organization (lib/auth.ts).
+    const organizationId = session.session.activeOrganizationId
+    if (!organizationId) throw new Error('NO_ACTIVE_ORGANIZATION')
+    const status = await getBranchStatus(branchId, organizationId)
     // Two read-only reasons, two remedies. An upgrade prompt shown to someone
     // who closed their own branch is the same mistake as conflating 403/402.
     if (status === 'over_cap') throw new PlanError('BRANCH_LOCKED', { branchId })
@@ -73,6 +114,11 @@ export async function requirePermission(permissions: Permissions) {
 export async function requirePageSession() {
   const session = await getSession()
   if (!session?.user) redirect('/login')
+  // Same refusal as requireUser, in this family's idiom. /login is a client
+  // page that does not bounce a signed-in visitor, so this cannot loop.
+  if (await isDeactivated(session.user.id, session.session.activeOrganizationId)) {
+    redirect('/login')
+  }
   return session
 }
 
