@@ -23,6 +23,7 @@ const NOT_FOUND = { error: 'Staf tidak ditemukan.' }
 const CLOSED_MSG = 'Cabang ini nonaktif. Aktifkan dulu sebelum menempatkan staf.'
 const OVERCAP_MSG = 'Cabang ini terkunci oleh batas paket. Upgrade untuk menempatkan staf.'
 const BRANCH_NOT_FOUND_MSG = 'Cabang tidak ditemukan.'
+const LAST_OWNER_MSG = 'Ini pemilik terakhir yang aktif. Tunjuk pemilik lain lebih dulu.'
 
 /**
  * What provisionStaff's rejection means in Indonesian -- shared by
@@ -89,6 +90,23 @@ async function isOwner(userId: string, organizationId: string) {
     select role from members where user_id = ${userId} and organization_id = ${organizationId}
      limit 1`)
   return ((rows[0] as { role: string } | undefined)?.role ?? '').split(',').includes('owner')
+}
+
+/**
+ * Active owners of this salon: `members.role` is a comma-separated list, so
+ * owner-ness is array overlap and never equality, and "active" is the
+ * staff_profiles flag -- the same set deactivateStaffAction's own statement
+ * counts, and deliberately NOT better-auth's definition (crud-members.mjs
+ * counts every members row with role owner, active or not, and only on
+ * self-demotion).
+ */
+async function activeOwnerCount(organizationId: string) {
+  const { rows } = await db.execute(sql`
+    select count(*)::int as n from staff_profiles s
+      join members m on m.user_id = s.user_id and m.organization_id = s.organization_id
+     where s.organization_id = ${organizationId} and s.active
+       and (string_to_array(m.role, ',') && array['owner'])`)
+  return Number((rows[0] as { n: number }).n)
 }
 
 /**
@@ -383,6 +401,41 @@ export async function updateStaffRoleAction(
   if (!ASSIGNABLE_ROLES.includes(role)) return { error: 'Peran tidak valid.' }
   if (NEEDS_BRANCH.includes(role) && !teamId) return { error: 'Pilih cabang untuk peran ini.' }
 
+  // Assignment follows role (spec §4): promoting to management clears the
+  // branch, demoting requires one.
+  const nextTeamId = NEEDS_BRANCH.includes(role) ? teamId : null
+  // Checked BEFORE the role write, not after: this was the only assignment
+  // path with no branch guard at all (transferStaffAction has one,
+  // provisionStaff has its own), so a demotion could park someone in a branch
+  // the owner had closed -- staffCount 1 for a branch nobody can work in. And
+  // running it first means a rejected branch leaves the role untouched,
+  // instead of a committed demotion followed by a failed assignment: a
+  // stylist with no branch at all, the very §4 invariant this function exists
+  // to enforce.
+  if (nextTeamId) {
+    const branchError = await branchWriteError(nextTeamId, organizationId)
+    if (branchError) return { error: branchError }
+  }
+
+  // The last active owner cannot be demoted, for the same reason they cannot
+  // be deactivated (§6.3): nothing in this app can mint an owner, so a salon
+  // that loses its last one is locked out of its own tenant with no recovery
+  // short of a database edit. This action carried NO last-owner clause, and
+  // better-auth's own guard counts every members row with role owner --
+  // active or not -- and only fires on self-demotion, so "deactivate co-owner
+  // B, then demote yourself" left ZERO active owners with every guard
+  // satisfied. Reproduced in two clicks.
+  //
+  // A sequential check-then-act, deliberately: the write it guards is
+  // better-auth's updateMemberRole on its own connection, so there is no
+  // single statement to fold the count into the way deactivateStaffAction
+  // does. The concurrent direction is covered from the other side -- that
+  // action's materialized `for update of s, m` lock set makes a deactivation
+  // block behind an uncommitted demotion and re-check (staff-check §9k).
+  if (target.role.split(',').includes('owner') && (await activeOwnerCount(organizationId)) <= 1) {
+    return { error: LAST_OWNER_MSG }
+  }
+
   const memberId = await memberIdFor(userId, organizationId)
   if (!memberId) return NOT_FOUND
 
@@ -394,9 +447,13 @@ export async function updateStaffRoleAction(
   } catch (e) {
     return { error: formError(e, 'Gagal mengubah peran.') }
   }
-  // Assignment follows role (spec §4): promoting to management clears the
-  // branch, demoting requires one.
-  await assignBranch(userId, organizationId, NEEDS_BRANCH.includes(role) ? teamId : null)
+  // The return value is the assignment, not decoration: assignBranch reports
+  // false when no profile row matched, and reporting success on a demotion
+  // that left team_id untouched means claiming a stylist has a branch when
+  // they have none. transferStaffAction maps it the same way.
+  if (!(await assignBranch(userId, organizationId, nextTeamId))) {
+    return { error: BRANCH_NOT_FOUND_MSG }
+  }
 
   revalidateStaff(userId)
   return { done: true }
@@ -510,10 +567,10 @@ export async function deactivateStaffAction(
     // last-owner refusal. Re-read rather than trust the pre-read above -- the
     // pre-read is stale in exactly the racing case, which is how the branch
     // screen once told an owner they had one branch when they had three.
-    const target = await getStaff(userId, organizationId)
-    if (!target) return NOT_FOUND
-    return target.active
-      ? { error: 'Ini pemilik terakhir yang aktif. Tunjuk pemilik lain lebih dulu.' }
+    const fresh = await getStaff(userId, organizationId)
+    if (!fresh) return NOT_FOUND
+    return fresh.active
+      ? { error: LAST_OWNER_MSG }
       : { done: true }
   }
 

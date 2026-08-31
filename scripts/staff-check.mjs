@@ -927,6 +927,70 @@ try {
   ok('and no user was created for it', foreignCreateRows.length === 0)
   await pool.query(`update branch_profiles set active = true where team_id = 'sc_team1'`)
 
+  // 8k. The role form is an assignment path too, and it was the only one with
+  // no branch guard at all: RoleForm lists closed branches, so a demotion
+  // could park someone in a branch nobody can work in with no crafted request
+  // (§6.2/§6.3). The role must stay unchanged too -- the guard runs before
+  // updateMemberRole, so a rejected branch never leaves a half-applied change.
+  const roleOf = async (userId, orgId) => (await pool.query(
+    `select role from members where user_id = $1 and organization_id = $2`,
+    [userId, orgId])).rows[0]?.role
+
+  const roleClosed = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Simpan peran</button>',
+    { userId: guardStylistId, role: 'stylist', teamId: closedBranchId })
+  ok('a role change onto a closed branch returns the closed copy',
+    roleClosed.status === 200 && roleClosed.html.includes(CLOSED_MSG),
+    `got ${roleClosed.status}`)
+  ok('and the assignment did not change',
+    await teamIdOf(guardStylistId) === 'sc_guard_fill2', await teamIdOf(guardStylistId))
+
+  const roleOverCap = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Simpan peran</button>',
+    { userId: guardStylistId, role: 'stylist', teamId: overCapBranchId })
+  ok('a role change onto a locked (over-cap) branch returns the over-cap copy',
+    roleOverCap.status === 200 && roleOverCap.html.includes(OVERCAP_MSG),
+    `got ${roleOverCap.status}`)
+  ok('and the assignment still did not change',
+    await teamIdOf(guardStylistId) === 'sc_guard_fill2', await teamIdOf(guardStylistId))
+
+  // The other half: assignBranch's return value was dropped, so a demotion
+  // naming a branch that is not this salon's wrote members.role and left
+  // team_id untouched -- a stylist with NO branch at all (the §4 invariant
+  // this action exists to enforce), reported as "Peran diperbarui."
+  const guardAdminEmail = `guard-admin@${DOMAIN}`
+  const madeGuardAdmin = await guardOwner.req('/staff',
+    { name: 'SC Guard Admin', email: guardAdminEmail, password: PW, role: 'admin' },
+    'POST', APP)
+  ok('guard admin provisioned', madeGuardAdmin.status === 201,
+    `got ${madeGuardAdmin.status} ${JSON.stringify(madeGuardAdmin.data)}`)
+  const guardAdminId = madeGuardAdmin.data?.user?.id
+
+  const demoteForeign = await submitForm(guardOwner.jar, `/staff/${guardAdminId}`,
+    'Simpan peran</button>',
+    { userId: guardAdminId, role: 'stylist', teamId: 'sc_team1' })
+  ok('demoting onto another salon\'s branch is refused, not reported as success',
+    demoteForeign.status === 200 && demoteForeign.html.includes('Cabang tidak ditemukan.')
+      && !demoteForeign.html.includes('Peran diperbarui.'), `got ${demoteForeign.status}`)
+  ok('and the role was NOT changed -- no stylist left with no branch',
+    await roleOf(guardAdminId, guardOrgId) === 'admin',
+    await roleOf(guardAdminId, guardOrgId))
+  ok('and no assignment was written', await teamIdOf(guardAdminId) === null,
+    await teamIdOf(guardAdminId))
+
+  // The happy path, so the four refusals above cannot pass by refusing
+  // everything: a real demotion onto a real branch still works.
+  const demoteOk = await submitForm(guardOwner.jar, `/staff/${guardAdminId}`,
+    'Simpan peran</button>',
+    { userId: guardAdminId, role: 'stylist', teamId: 'sc_guard_fill3' })
+  ok('demoting onto an open branch still succeeds',
+    demoteOk.status === 200 && demoteOk.html.includes('Peran diperbarui.'),
+    `got ${demoteOk.status}`)
+  ok('with both halves written: the role and the assignment',
+    await roleOf(guardAdminId, guardOrgId) === 'stylist'
+      && await teamIdOf(guardAdminId) === 'sc_guard_fill3',
+    `${await roleOf(guardAdminId, guardOrgId)} / ${await teamIdOf(guardAdminId)}`)
+
   head('9. departure -- deactivate, rehire, password reset')
   const QUOTA_MSG = 'Kuota staf paket Anda sudah tercapai. Upgrade untuk mengaktifkan kembali.'
   const LAST_OWNER_MSG = 'Ini pemilik terakhir yang aktif. Tunjuk pemilik lain lebih dulu.'
@@ -1344,6 +1408,41 @@ try {
     demoteRace.rows.length === 0, JSON.stringify(demoteRace.rows))
   ok('so demote-one-owner || deactivate-the-other still leaves an active owner',
     await activeOwners() >= 1, `${await activeOwners()} left`)
+
+  // 9m. Two clicks to an ownerless salon, driven through the real screens.
+  // Three guards disagreed about what an owner is: deactivateStaffAction
+  // counts owners whose PROFILE is active, better-auth's own guard counts
+  // every members row with role owner (active or not) and only on
+  // self-demotion, and updateStaffRoleAction had no last-owner clause at all.
+  // So: deactivate co-owner B (legitimate, two are active), then demote
+  // yourself -- better-auth still counts B's inactive members row, sees two
+  // owners, and allows it. Zero active owners, and nothing in this app can
+  // mint one.
+  await pool.query(`
+    update staff_profiles set active = true, deactivated_at = null
+     where organization_id = $1`, [ownersOrgId])
+  await pool.query(`
+    update members set role = 'owner'
+     where user_id = 'sc_owner2' and organization_id = $1`, [ownersOrgId])
+  ok('both owners are active again (precondition for the two-click sequence)',
+    await activeOwners() === 2, `${await activeOwners()} owners`)
+
+  const dropCoOwner = await submitForm(ownersOwner.jar, `/staff/sc_owner2`,
+    'Nonaktifkan staf</button>', { userId: 'sc_owner2' })
+  ok('click 1: deactivating the co-owner is allowed, two are active',
+    dropCoOwner.status === 200 && await activeOf('sc_owner2', ownersOrgId) === false,
+    `got ${dropCoOwner.status}`)
+
+  const selfDemote = await submitForm(ownersOwner.jar, `/staff/${ownersOwnerRow.user_id}`,
+    'Simpan peran</button>', { userId: ownersOwnerRow.user_id, role: 'admin' })
+  ok('click 2: demoting the last ACTIVE owner is refused, with the same copy deactivation uses',
+    selfDemote.status === 200 && selfDemote.html.includes(LAST_OWNER_MSG),
+    `got ${selfDemote.status} ${selfDemote.html.includes('Peran diperbarui.') ? 'reported success' : ''}`)
+  ok('and members.role is untouched -- still an owner',
+    (await pool.query(`select role from members where user_id = $1 and organization_id = $2`,
+      [ownersOwnerRow.user_id, ownersOrgId])).rows[0]?.role === 'owner')
+  ok('so the salon still has an active owner', await activeOwners() === 1,
+    `${await activeOwners()} left`)
 
   // 9l. spec 7.14, across every fixture this run created.
   const { rows: [pairing] } = await pool.query(`
