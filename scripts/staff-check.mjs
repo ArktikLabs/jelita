@@ -554,6 +554,228 @@ try {
   ok('another salon\'s staff id is not a 200 with data',
     crossPage.status !== 200, `got ${crossPage.status}`)
   ok('and their name never appears in the response', !crossHtml.includes('SC Dup'))
+
+  head('8. /staff/[id] -- role change and branch transfer')
+  const CLOSED_MSG = 'Cabang ini nonaktif. Aktifkan dulu sebelum menempatkan staf.'
+  const OVERCAP_MSG = 'Cabang ini terkunci oleh batas paket. Upgrade untuk menempatkan staf.'
+
+  // getBranchStatus is importable by plain Node (self-contained, imports
+  // '../pg-pool.ts' with an explicit extension) -- branch-check.mjs already
+  // relies on this, confirmed the same way here rather than assumed.
+  const { getBranchStatus } = await import('../lib/plan/branch.ts')
+
+  // 8a. Role change (§7.7). Reuses section 7's fixtures: listStylistEmail
+  // (assigned to listBranchId) and listAdminEmail (no branch).
+  const { rows: [roleStylist] } = await pool.query(`
+    select s.user_id from staff_profiles s join users u on u.id = s.user_id
+     where u.email = $1 and s.organization_id = $2`, [listStylistEmail, listOrgId])
+  const { rows: [roleAdmin] } = await pool.query(`
+    select s.user_id from staff_profiles s join users u on u.id = s.user_id
+     where u.email = $1 and s.organization_id = $2`, [listAdminEmail, listOrgId])
+
+  const promoted = await submitForm(listOwner.jar, `/staff/${roleStylist.user_id}`,
+    'Simpan peran</button>', { userId: roleStylist.user_id, role: 'admin' })
+  ok('promoting a stylist to admin succeeds', promoted.status === 200,
+    `got ${promoted.status}`)
+  const { rows: [afterPromote] } = await pool.query(`
+    select m.role, s.team_id from members m
+      join staff_profiles s on s.user_id = m.user_id and s.organization_id = m.organization_id
+     where m.user_id = $1 and m.organization_id = $2`, [roleStylist.user_id, listOrgId])
+  ok('the member role is now admin', afterPromote?.role === 'admin', JSON.stringify(afterPromote))
+  ok('promoting to a management role clears the branch (spec §7.7)',
+    afterPromote?.team_id === null, JSON.stringify(afterPromote))
+
+  const demoted = await submitForm(listOwner.jar, `/staff/${roleAdmin.user_id}`,
+    'Simpan peran</button>', { userId: roleAdmin.user_id, role: 'stylist' })
+  ok('demoting an admin to stylist without a branch is refused',
+    demoted.status === 200 && demoted.html.includes('Pilih cabang untuk peran ini.'),
+    `got ${demoted.status}`)
+  const { rows: [stillAdmin] } = await pool.query(`
+    select role from members where user_id = $1 and organization_id = $2`,
+    [roleAdmin.user_id, listOrgId])
+  ok('and the role was left unchanged', stillAdmin?.role === 'admin', JSON.stringify(stillAdmin))
+
+  // 8b. An admin cannot demote or remove the owner (§6.1, carried forward).
+  const adminClient = new Client()
+  await adminClient.req('/sign-in/email', { email: listAdminEmail, password: PW })
+  const { rows: [ownerRow] } = await pool.query(`
+    select user_id from members where organization_id = $1 and role = 'owner'`, [listOrgId])
+  const demoteOwner = await submitForm(adminClient.jar, `/staff/${ownerRow.user_id}`,
+    'Simpan peran</button>', { userId: ownerRow.user_id, role: 'stylist', teamId: listBranchId })
+  ok('an admin cannot change the owner\'s role',
+    demoteOwner.status === 200 && demoteOwner.html.includes('Hanya pemilik yang dapat mengubah peran pemilik.'),
+    `got ${demoteOwner.status}`)
+  const { rows: [ownerStillOwner] } = await pool.query(`
+    select role from members where user_id = $1 and organization_id = $2`,
+    [ownerRow.user_id, listOrgId])
+  ok('and the owner keeps their role', ownerStillOwner?.role === 'owner',
+    JSON.stringify(ownerStillOwner))
+
+  // 8c. Branch-status guard fixtures -- a fresh owner + org on the 'pro'
+  // plan (branches cap 3, fixed by seed-plans.mjs, so nothing shared here
+  // needs restoring afterward, unlike sections 4 and 6's default-plan cap).
+  // Extra branches are raw INSERTs into teams, not '/organization/create-team'
+  // -- that endpoint's own assertQuota would refuse anything past the cap
+  // (proven in branch-check.mjs section 6), which is exactly the state this
+  // fixture needs to reach.
+  const guardOwner = new Client()
+  await guardOwner.req('/sign-up/email',
+    { name: 'SC Guard Owner', email: `guard-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`guard-owner@${DOMAIN}`])
+  await guardOwner.req('/sign-in/email', { email: `guard-owner@${DOMAIN}`, password: PW })
+  const guardOrg = await guardOwner.req('/organization/create',
+    { name: 'Staff Check Guard', slug: 'staffcheck-guard' })
+  const guardOrgId = guardOrg.data?.id
+  await guardOwner.req('/organization/set-active', { organizationId: guardOrgId })
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'pro')
+     where organization_id = $1`, [guardOrgId])
+
+  const mkGuardBranch = (id, name, offsetSec) => pool.query(`
+    insert into teams (id, name, organization_id, created_at)
+    values ($1, $2, $3, now() + ($4 || ' seconds')::interval)`,
+    [id, name, guardOrgId, offsetSec])
+  await mkGuardBranch('sc_guard_fill2', 'Cabang Guard 2', 1)
+  await mkGuardBranch('sc_guard_fill3', 'Cabang Guard 3', 2)
+  await mkGuardBranch('sc_guard_overcap', 'Cabang Guard Overcap', 3)
+  await mkGuardBranch('sc_guard_closed', 'Cabang Guard Closed', 4)
+  await mkGuardBranch('sc_guard_both', 'Cabang Guard Both', 5)
+
+  const { rows: [guardDefault] } = await pool.query(`
+    select id from teams where organization_id = $1 order by created_at limit 1`, [guardOrgId])
+  const withinBranchId = guardDefault.id
+  const overCapBranchId = 'sc_guard_overcap'
+  const closedBranchId = 'sc_guard_closed'
+  const bothBranchId = 'sc_guard_both'
+
+  const { rows: guardRanked } = await pool.query(`
+    select team_id, seq, within_cap from branch_entitlement
+     where organization_id = $1 order by seq`, [guardOrgId])
+  ok('the fixture has 6 branches ranked, cap 3 leaves exactly 3 within and 3 over',
+    guardRanked.length === 6 && guardRanked.filter((r) => r.within_cap).length === 3,
+    JSON.stringify(guardRanked))
+  ok('the "overcap" fixture branch genuinely reads over_cap before any test touches it',
+    await getBranchStatus(overCapBranchId) === 'over_cap', await getBranchStatus(overCapBranchId))
+
+  // 8d. The branch-status guard applies to creation too (carried-forward
+  // requirement 2), not only to transfer -- checked here before closedBranchId
+  // is deactivated, then again below through transferStaffAction.
+  const createOverCapEmail = `guard-create-overcap@${DOMAIN}`
+  const createOverCap = await submitForm(guardOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC Guard Create Overcap', email: createOverCapEmail, password: PW,
+    role: 'stylist', teamId: overCapBranchId,
+  })
+  ok('creating a stylist on an over-cap branch is refused with the over-cap copy',
+    createOverCap.status === 200 && createOverCap.html.includes(OVERCAP_MSG),
+    `got ${createOverCap.status}`)
+  const { rows: overCapCreateRows } = await pool.query(
+    `select 1 from users where email = $1`, [createOverCapEmail])
+  ok('and no user was created for it', overCapCreateRows.length === 0)
+
+  // The precondition this section's fixture needs: genuinely over cap BEFORE
+  // it is also closed, asserted here (not assumed) -- the trap this project
+  // shipped once already, per the brief.
+  ok('the "closed" fixture branch genuinely reads over_cap before it is closed',
+    await getBranchStatus(closedBranchId) === 'over_cap', await getBranchStatus(closedBranchId))
+  await pool.query(`update branch_profiles set active = false where team_id = $1`,
+    [closedBranchId])
+  ok('and now reads closed once deactivated',
+    await getBranchStatus(closedBranchId) === 'closed', await getBranchStatus(closedBranchId))
+
+  const createClosedEmail = `guard-create-closed@${DOMAIN}`
+  const createClosed = await submitForm(guardOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC Guard Create Closed', email: createClosedEmail, password: PW,
+    role: 'stylist', teamId: closedBranchId,
+  })
+  ok('creating a stylist on a closed branch is refused with the closed copy',
+    createClosed.status === 200 && createClosed.html.includes(CLOSED_MSG),
+    `got ${createClosed.status}`)
+  const { rows: closedCreateRows } = await pool.query(
+    `select 1 from users where email = $1`, [createClosedEmail])
+  ok('and no user was created for it', closedCreateRows.length === 0)
+
+  // 8e. The same guard, exercised through transferStaffAction. A real
+  // stylist, parked on the within-cap default branch, is the moving target.
+  const guardStylistEmail = `guard-stylist@${DOMAIN}`
+  const madeGuardStylist = await guardOwner.req('/staff',
+    { name: 'SC Guard Stylist', email: guardStylistEmail, password: PW,
+      role: 'stylist', branchId: withinBranchId },
+    'POST', APP)
+  ok('guard stylist provisioned', madeGuardStylist.status === 201,
+    `got ${madeGuardStylist.status} ${JSON.stringify(madeGuardStylist.data)}`)
+  const guardStylistId = madeGuardStylist.data?.user?.id
+
+  const teamIdOf = async (userId) => (await pool.query(
+    `select team_id from staff_profiles where user_id = $1 and organization_id = $2`,
+    [userId, guardOrgId])).rows[0]?.team_id
+
+  const xferClosed = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Pindahkan</button>', { userId: guardStylistId, teamId: closedBranchId })
+  ok('transfer to a closed branch returns the closed copy (§7.10)',
+    xferClosed.status === 200 && xferClosed.html.includes(CLOSED_MSG),
+    `got ${xferClosed.status}`)
+  ok('and the assignment did not change', await teamIdOf(guardStylistId) === withinBranchId)
+
+  const xferOverCap = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Pindahkan</button>', { userId: guardStylistId, teamId: overCapBranchId })
+  ok('transfer to a locked (over-cap) branch returns the over-cap copy (§7.10)',
+    xferOverCap.status === 200 && xferOverCap.html.includes(OVERCAP_MSG),
+    `got ${xferOverCap.status}`)
+  ok('and the assignment did not change', await teamIdOf(guardStylistId) === withinBranchId)
+
+  // 8f. Genuinely both: verified over_cap while active (precondition,
+  // asserted above in the ranked-branches check and again here directly),
+  // then closed -- closed must win (§7.10 assertion 5).
+  ok('the "both" fixture branch genuinely reads over_cap before it is closed',
+    await getBranchStatus(bothBranchId) === 'over_cap', await getBranchStatus(bothBranchId))
+  await pool.query(`update branch_profiles set active = false where team_id = $1`,
+    [bothBranchId])
+  ok('and now reads closed once deactivated',
+    await getBranchStatus(bothBranchId) === 'closed', await getBranchStatus(bothBranchId))
+
+  const xferBoth = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Pindahkan</button>', { userId: guardStylistId, teamId: bothBranchId })
+  ok('a branch that is both closed and locked yields the closed message (§7.10)',
+    xferBoth.status === 200 && xferBoth.html.includes(CLOSED_MSG)
+      && !xferBoth.html.includes(OVERCAP_MSG),
+    `got ${xferBoth.status}`)
+  ok('and the assignment did not change', await teamIdOf(guardStylistId) === withinBranchId)
+
+  // 8g. assignBranch's own org-scoping exists() guard, exercised standalone
+  // for the first time (carried-forward requirement 3). 'sc_team1' is
+  // section 3's fixture, under ORG -- a different salon than guardOrgId.
+  const { rows: beforeCross } = await pool.query(
+    `select 1 from team_members where team_id = 'sc_team1' and user_id = $1`, [guardStylistId])
+  ok('no team_members row for the foreign team exists yet (precondition)',
+    beforeCross.length === 0)
+
+  const xferCross = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Pindahkan</button>', { userId: guardStylistId, teamId: 'sc_team1' })
+  ok('a transfer to another salon\'s team reads as not-found, not the foreign team\'s status',
+    xferCross.status === 200 && xferCross.html.includes('Cabang tidak ditemukan.')
+      && !xferCross.html.includes(CLOSED_MSG) && !xferCross.html.includes(OVERCAP_MSG),
+    `got ${xferCross.status}`)
+  ok('and the assignment did not change',
+    await teamIdOf(guardStylistId) === withinBranchId, await teamIdOf(guardStylistId))
+  const { rows: afterCross } = await pool.query(
+    `select 1 from team_members where team_id = 'sc_team1' and user_id = $1`, [guardStylistId])
+  ok('and no team_members row was created for the foreign team either',
+    afterCross.length === 0)
+
+  // 8h. The happy path: a transfer to a genuinely open, within-cap branch
+  // succeeds and moves the assignment.
+  const xferOk = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Pindahkan</button>', { userId: guardStylistId, teamId: 'sc_guard_fill2' })
+  ok('transfer to an open branch succeeds', xferOk.status === 200,
+    `got ${xferOk.status}`)
+  ok('and the assignment moved', await teamIdOf(guardStylistId) === 'sc_guard_fill2',
+    await teamIdOf(guardStylistId))
+  const { rows: movedTeamMember } = await pool.query(
+    `select 1 from team_members where team_id = 'sc_guard_fill2' and user_id = $1`,
+    [guardStylistId])
+  ok('and addTeamMember wrote the navigational team_members row too',
+    movedTeamMember.length === 1)
 } finally {
   await pool.end()
 }
