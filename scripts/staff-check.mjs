@@ -2,6 +2,7 @@
  * Staff management checks. No framework on purpose.
  *   pnpm staff:check      (dev server must be running for later sections)
  */
+import { readFileSync } from 'node:fs'
 import { Pool } from 'pg'
 
 let pass = 0, fail = 0
@@ -113,7 +114,66 @@ try {
   ok('a new member gets a profile', seeded !== undefined)
   ok('seeded active, with no branch', seeded?.active === true && seeded?.team_id === null)
 
-  head('3. seat counting')
+  head('3. the backfill carries real rosters across (run from the migration file itself)')
+  // Fix round 1: section 1's "every existing member has a profile" check runs
+  // long after the trigger exists, so it reads 0 whether or not the
+  // backfill's own INSERT ever matched a row -- it proves the trigger, which
+  // section 2 already proves. The UPDATE that carries team_id across was
+  // completely untested. Rather than hand-copy the backfill SQL into this
+  // script (a copy only proves the copy, not the migration -- the trap this
+  // project has fallen into twice), read the actual statements out of the
+  // migration file and execute those.
+  const migrationSql = readFileSync('db/migrations/0009_staff_profiles.sql', 'utf8')
+  const statements = migrationSql.split('--> statement-breakpoint').map((s) => s.trim())
+  const backfillInsert = statements.find((s) =>
+    s.includes('insert into staff_profiles (user_id, organization_id)') && s.includes('from members m'))
+  const backfillUpdate = statements.find((s) =>
+    s.includes('update staff_profiles s') && s.includes('set team_id'))
+  ok('found both backfill statements in the migration file', !!backfillInsert && !!backfillUpdate)
+
+  // Pre-migration fixture: a branch (team) in the salon, a stylist and an
+  // owner both already assigned to it via team_members, and -- critically --
+  // NO staff_profiles row yet. The trigger exists now and would normally
+  // seed one on member insert, so the trigger-created rows are deleted
+  // afterward to recreate the state the real migration ran against.
+  await pool.query(`
+    insert into teams (id, name, organization_id, created_at)
+    values ('sc_team1', 'Cabang Satu', $1, now())`, [ORG])
+  await pool.query(`
+    insert into users (id, name, email, email_verified, created_at, updated_at)
+    values ('sc_stylist', 'SC Stylist', $1, true, now(), now())`,
+    [`stylist@${DOMAIN}`])
+  await pool.query(`
+    insert into members (id, user_id, organization_id, role, created_at)
+    values ('sc_m_stylist', 'sc_stylist', $1, 'stylist', now())`, [ORG])
+  await pool.query(`
+    insert into team_members (id, team_id, user_id, created_at)
+    values ('sc_tm_stylist', 'sc_team1', 'sc_stylist', now())`)
+  // sc_owner already exists from section 2 -- give it a stray team_members
+  // row too. Real invites never do this to an owner, but the migration must
+  // not care: the exclusion is by role, not by whether the row exists.
+  await pool.query(`
+    insert into team_members (id, team_id, user_id, created_at)
+    values ('sc_tm_owner', 'sc_team1', 'sc_owner', now())`)
+  await pool.query(`
+    delete from staff_profiles where organization_id = $1
+     and user_id in ('sc_stylist', 'sc_owner')`, [ORG])
+
+  await pool.query(backfillInsert)
+  await pool.query(backfillUpdate)
+
+  const { rows: [stylistProfile] } = await pool.query(`
+    select team_id from staff_profiles where user_id = 'sc_stylist' and organization_id = $1`, [ORG])
+  const { rows: [ownerProfile] } = await pool.query(`
+    select team_id from staff_profiles where user_id = 'sc_owner' and organization_id = $1`, [ORG])
+  ok('backfill insert creates a profile for a member the trigger never covered',
+    stylistProfile !== undefined && ownerProfile !== undefined)
+  ok('backfill update carries an existing team_members assignment onto a non-management member',
+    stylistProfile?.team_id === 'sc_team1', `got ${JSON.stringify(stylistProfile)}`)
+  ok('backfill update excludes management roles -- an owner keeps no branch even with a stray team_members row',
+    ownerProfile?.team_id === null, `got ${JSON.stringify(ownerProfile)}`)
+
+  head('4. seat counting')
   // Correction to the brief: entitlements.ts imports react, ../db and
   // ../session and declares a class, so it cannot be loaded by plain Node
   // type-stripping the way lib/plan/catalog.ts and lib/plan/branch.ts can.
