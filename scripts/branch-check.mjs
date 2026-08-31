@@ -97,20 +97,20 @@ try {
   await mkTeam2('bc_s1', 'Satu', 1)
   await mkTeam2('bc_s2', 'Dua', 2)
 
-  ok('an active branch within cap is ok', await getBranchStatus('bc_s1') === 'ok')
+  ok('an active branch within cap is ok', await getBranchStatus('bc_s1', ORG2) === 'ok')
 
   await pool.query(`
     insert into plan_limits (plan_id, resource, cap)
     select id, 'branches', 1 from plans where is_default
     on conflict (plan_id, resource) do update set cap = 1`)
   ok('an active branch over cap is over_cap',
-    await getBranchStatus('bc_s2') === 'over_cap', await getBranchStatus('bc_s2'))
+    await getBranchStatus('bc_s2', ORG2) === 'over_cap', await getBranchStatus('bc_s2', ORG2))
 
   await pool.query(`update branch_profiles set active = false where team_id = 'bc_s2'`)
   ok('a deactivated branch is closed, not over_cap',
-    await getBranchStatus('bc_s2') === 'closed', await getBranchStatus('bc_s2'))
+    await getBranchStatus('bc_s2', ORG2) === 'closed', await getBranchStatus('bc_s2', ORG2))
 
-  ok('an unknown branch id is ok', await getBranchStatus('bc_nonexistent') === 'ok')
+  ok('an unknown branch id is ok', await getBranchStatus('bc_nonexistent', ORG2) === 'ok')
 
   head('4. a fresh login lands on an active branch')
   // call/jar/org2 are declared at try-block level (no nested block scope)
@@ -269,14 +269,14 @@ try {
   ok('there is exactly one cap holder to deactivate', capHolder.length === 1,
     JSON.stringify(capHolder))
   ok('the cap holder genuinely reads ok before deactivation (the precondition)',
-    await getBranchStatus(capHolder[0].team_id) === 'ok',
-    await getBranchStatus(capHolder[0].team_id))
+    await getBranchStatus(capHolder[0].team_id, org2.data.id) === 'ok',
+    await getBranchStatus(capHolder[0].team_id, org2.data.id))
 
   await pool.query(`update branch_profiles set active = false where team_id = $1`,
     [capHolder[0].team_id])
   ok('a deactivated branch reports closed even though it was within cap',
-    await getBranchStatus(capHolder[0].team_id) === 'closed',
-    await getBranchStatus(capHolder[0].team_id))
+    await getBranchStatus(capHolder[0].team_id, org2.data.id) === 'closed',
+    await getBranchStatus(capHolder[0].team_id, org2.data.id))
   await pool.query(`update branch_profiles set active = true where team_id = $1`,
     [capHolder[0].team_id])
 
@@ -495,7 +495,7 @@ try {
   ok('a closed branch is selectable', enterClosed.status === 200,
     JSON.stringify(enterClosed).slice(0, 160))
   ok('and standing in it is read-only as closed, not locked',
-    await getBranchStatus(t0[0].id) === 'closed')
+    await getBranchStatus(t0[0].id, org2.data.id) === 'closed')
 
   // Front desk cannot switch, so the branch table must never enter their RSC
   // payload — props to a client component are serialized whether or not the

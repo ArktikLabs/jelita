@@ -43,7 +43,7 @@ export async function provisionStaff(input: {
   // (the Server Action and the JSON API both call provisionStaff directly).
   // Same pattern as lib/session.ts's requireBranch({ write: true }).
   if (input.teamId) {
-    const status = await getBranchStatus(input.teamId)
+    const status = await getBranchStatus(input.teamId, input.organizationId)
     if (status === 'over_cap') throw new PlanError('BRANCH_LOCKED', { branchId: input.teamId })
     if (status === 'closed') throw new Error('BRANCH_CLOSED')
   }

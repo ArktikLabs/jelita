@@ -726,7 +726,7 @@ try {
     guardRanked.length === 6 && guardRanked.filter((r) => r.within_cap).length === 3,
     JSON.stringify(guardRanked))
   ok('the "overcap" fixture branch genuinely reads over_cap before any test touches it',
-    await getBranchStatus(overCapBranchId) === 'over_cap', await getBranchStatus(overCapBranchId))
+    await getBranchStatus(overCapBranchId, guardOrgId) === 'over_cap', await getBranchStatus(overCapBranchId, guardOrgId))
 
   // 8d. The branch-status guard applies to creation too (carried-forward
   // requirement 2), not only to transfer -- checked here before closedBranchId
@@ -747,11 +747,11 @@ try {
   // it is also closed, asserted here (not assumed) -- the trap this project
   // shipped once already, per the brief.
   ok('the "closed" fixture branch genuinely reads over_cap before it is closed',
-    await getBranchStatus(closedBranchId) === 'over_cap', await getBranchStatus(closedBranchId))
+    await getBranchStatus(closedBranchId, guardOrgId) === 'over_cap', await getBranchStatus(closedBranchId, guardOrgId))
   await pool.query(`update branch_profiles set active = false where team_id = $1`,
     [closedBranchId])
   ok('and now reads closed once deactivated',
-    await getBranchStatus(closedBranchId) === 'closed', await getBranchStatus(closedBranchId))
+    await getBranchStatus(closedBranchId, guardOrgId) === 'closed', await getBranchStatus(closedBranchId, guardOrgId))
 
   const createClosedEmail = `guard-create-closed@${DOMAIN}`
   const createClosed = await submitForm(guardOwner.jar, '/staff/new', 'name="password"', {
@@ -798,11 +798,11 @@ try {
   // asserted above in the ranked-branches check and again here directly),
   // then closed -- closed must win (§7.10 assertion 5).
   ok('the "both" fixture branch genuinely reads over_cap before it is closed',
-    await getBranchStatus(bothBranchId) === 'over_cap', await getBranchStatus(bothBranchId))
+    await getBranchStatus(bothBranchId, guardOrgId) === 'over_cap', await getBranchStatus(bothBranchId, guardOrgId))
   await pool.query(`update branch_profiles set active = false where team_id = $1`,
     [bothBranchId])
   ok('and now reads closed once deactivated',
-    await getBranchStatus(bothBranchId) === 'closed', await getBranchStatus(bothBranchId))
+    await getBranchStatus(bothBranchId, guardOrgId) === 'closed', await getBranchStatus(bothBranchId, guardOrgId))
 
   const xferBoth = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
     'Pindahkan</button>', { userId: guardStylistId, teamId: bothBranchId })
@@ -867,6 +867,39 @@ try {
   const ownerPage = await getPage(guardOwner.jar, `/staff/${guardOwnerRow.user_id}`)
   ok('and the owner\'s own detail page does not offer the transfer card',
     !ownerPage.html.includes('Pindahkan</button>'))
+
+  // 8j. A foreign branch id must not leak its EXISTENCE or its STATUS.
+  // getBranchStatus used to take no organizationId, so it answered for any
+  // salon's branch: naming another salon's closed branch returned "Cabang ini
+  // nonaktif..." and a locked one returned the over-cap copy -- both of which
+  // confirm the branch exists (spec §6.3: another salon's branch "reads as
+  // not-found, never as a leak of that branch's existence"). 'sc_team1' is
+  // section 3's fixture, under ORG; closed here to make the leak reachable and
+  // reopened straight after.
+  await pool.query(`update branch_profiles set active = false where team_id = 'sc_team1'`)
+  const foreignClosed = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Pindahkan</button>', { userId: guardStylistId, teamId: 'sc_team1' })
+  ok('another salon\'s CLOSED branch reads as not-found, not as closed',
+    foreignClosed.status === 200 && foreignClosed.html.includes('Cabang tidak ditemukan.')
+      && !foreignClosed.html.includes(CLOSED_MSG) && !foreignClosed.html.includes(OVERCAP_MSG),
+    `got ${foreignClosed.status}`)
+  ok('and the assignment did not change',
+    await teamIdOf(guardStylistId) === 'sc_guard_fill2', await teamIdOf(guardStylistId))
+
+  // The same gate on the creation path, which reaches it through a different
+  // caller (createStaffAction, then provisionStaff's own copy).
+  const foreignCreateEmail = `guard-create-foreign@${DOMAIN}`
+  const foreignCreate = await submitForm(guardOwner.jar, '/staff/new', 'name="password"', {
+    name: 'SC Guard Create Foreign', email: foreignCreateEmail, password: PW,
+    role: 'stylist', teamId: 'sc_team1',
+  })
+  ok('creating into another salon\'s closed branch likewise reads as not-found',
+    foreignCreate.status === 200 && foreignCreate.html.includes('Cabang tidak ditemukan.')
+      && !foreignCreate.html.includes(CLOSED_MSG), `got ${foreignCreate.status}`)
+  const { rows: foreignCreateRows } = await pool.query(
+    `select 1 from users where email = $1`, [foreignCreateEmail])
+  ok('and no user was created for it', foreignCreateRows.length === 0)
+  await pool.query(`update branch_profiles set active = true where team_id = 'sc_team1'`)
 
   head('9. departure -- deactivate, rehire, password reset')
   const QUOTA_MSG = 'Kuota staf paket Anda sudah tercapai. Upgrade untuk mengaktifkan kembali.'

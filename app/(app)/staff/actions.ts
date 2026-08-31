@@ -22,6 +22,7 @@ const NOT_FOUND = { error: 'Staf tidak ditemukan.' }
 
 const CLOSED_MSG = 'Cabang ini nonaktif. Aktifkan dulu sebelum menempatkan staf.'
 const OVERCAP_MSG = 'Cabang ini terkunci oleh batas paket. Upgrade untuk menempatkan staf.'
+const BRANCH_NOT_FOUND_MSG = 'Cabang tidak ditemukan.'
 
 /**
  * What provisionStaff's rejection means in Indonesian -- shared by
@@ -48,10 +49,17 @@ type CsvRow = {
 }
 
 /**
- * Used by transferStaffAction only -- createStaffAction goes through
- * provisionStaff, which now carries this same guard itself (lib/staff.ts),
- * so every creation path (this Server Action, the JSON API) gets it once
- * rather than once per caller.
+ * The one gate every untrusted teamId on these screens goes through:
+ * createStaffAction, updateStaffRoleAction, transferStaffAction and
+ * reactivateStaffAction. provisionStaff carries the same status guard itself
+ * (lib/staff.ts) for the paths that reach it -- including the JSON API, which
+ * never runs this function -- so a creation is checked twice and an assignment
+ * of an EXISTING member (which never touches provisionStaff) is checked here.
+ *
+ * Ownership FIRST, and by a query scoped to this org: another salon's branch
+ * must read as not-found, never as closed or locked (spec §6.3). getBranchStatus
+ * is org-scoped too and answers 'ok' for a foreign id, so this listBranches
+ * lookup is what turns that into the right message instead of a silent pass.
  *
  * The order of these two `if`s is NOT load-bearing: getBranchStatus already
  * resolves 'closed' vs 'over_cap' exclusively before returning (it checks
@@ -65,8 +73,11 @@ type CsvRow = {
  * precedence guarantee lives in getBranchStatus, covered by
  * branch-check.mjs:109-111 ("a deactivated branch is closed, not over_cap").
  */
-async function branchWriteError(teamId: string): Promise<string | null> {
-  const status = await getBranchStatus(teamId)
+async function branchWriteError(
+  teamId: string, organizationId: string,
+): Promise<string | null> {
+  if ((await listBranches(organizationId, teamId)).length === 0) return BRANCH_NOT_FOUND_MSG
+  const status = await getBranchStatus(teamId, organizationId)
   if (status === 'closed') return CLOSED_MSG
   if (status === 'over_cap') return OVERCAP_MSG
   return null
@@ -121,8 +132,9 @@ export async function createStaffAction(
   // branches before it ever reaches provisionStaff/addMember, so a foreign
   // or bogus id gets our own Indonesian copy instead of addMember's English
   // "Team not found" surfacing verbatim through formError.
-  if (teamId && !(await listBranches(organizationId)).some((b) => b.teamId === teamId)) {
-    return { error: 'Cabang tidak ditemukan.' }
+  if (teamId) {
+    const branchError = await branchWriteError(teamId, organizationId)
+    if (branchError) return { error: branchError }
   }
 
   try {
@@ -409,7 +421,7 @@ export async function transferStaffAction(
   }
   if (!teamId) return { error: 'Pilih cabang.' }
 
-  const branchError = await branchWriteError(teamId)
+  const branchError = await branchWriteError(teamId, organizationId)
   if (branchError) return { error: branchError }
 
   // No separate ownership pre-check: assignBranch's own exists() guard is
@@ -418,7 +430,7 @@ export async function transferStaffAction(
   // rows and reads as not-found, same as a bogus one, without a second
   // query duplicating what assignBranch already does.
   const updated = await assignBranch(userId, organizationId, teamId)
-  if (!updated) return { error: 'Cabang tidak ditemukan.' }
+  if (!updated) return { error: BRANCH_NOT_FOUND_MSG }
 
   revalidateStaff(userId)
   return { done: true }

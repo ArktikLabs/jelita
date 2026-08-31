@@ -68,7 +68,13 @@ export async function requireBranch(opts: { write?: boolean } = {}) {
   if (!branchId) throw new Error('NO_ACTIVE_BRANCH')
 
   if (opts.write) {
-    const status = await getBranchStatus(branchId)
+    // getBranchStatus is tenant-scoped in its own statement, so it needs the
+    // org. A session with a branch but no organization cannot be written
+    // through at all -- the session hook only ever sets activeTeamId
+    // alongside its organization (lib/auth.ts).
+    const organizationId = session.session.activeOrganizationId
+    if (!organizationId) throw new Error('NO_ACTIVE_ORGANIZATION')
+    const status = await getBranchStatus(branchId, organizationId)
     // Two read-only reasons, two remedies. An upgrade prompt shown to someone
     // who closed their own branch is the same mistake as conflating 403/402.
     if (status === 'over_cap') throw new PlanError('BRANCH_LOCKED', { branchId })
