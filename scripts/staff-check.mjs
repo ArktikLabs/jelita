@@ -80,6 +80,17 @@ try {
     values ('sc_dup', 'SC Dup', $1, true, now(), now())`, [`dup@${DOMAIN}`])
   await pool.query(`
     insert into staff_profiles (user_id, organization_id) values ('sc_dup', $1)`, [ORG2])
+  // sc_dup must be a REAL, complete member of ORG2 -- a users + staff_profiles
+  // row with no members row would make getStaff('sc_dup', anyOtherOrg) return
+  // null (its inner join on members finds nothing) whether or not the query's
+  // own organization_id filter exists at all, so the "another salon's staff
+  // name never appears" assertion in section 7 would pass identically against
+  // an unscoped query. Fix round 1 caught this -- same failure shape as the
+  // brief's own two corrected assumptions about lib/branch.ts and lib/staff.ts,
+  // one level deeper.
+  await pool.query(`
+    insert into members (id, user_id, organization_id, role, created_at)
+    values ('sc_m_dup', 'sc_dup', $1, 'stylist', now())`, [ORG2])
   let refused = false
   try {
     await pool.query(`
@@ -776,6 +787,27 @@ try {
     [guardStylistId])
   ok('and addTeamMember wrote the navigational team_members row too',
     movedTeamMember.length === 1)
+
+  // 8i. transferStaffAction refuses a transfer targeting a management role
+  // (fix round 1, item 1) -- owner and admin must keep team_id null (spec
+  // §4). Forged from guardStylistId's OWN transfer form (their page still
+  // has the Cabang card) with userId swapped to the owner: the point is that
+  // the SERVER refuses this, not merely that the owner's own page hides the
+  // card -- a client can submit whatever userId it likes.
+  const { rows: [guardOwnerRow] } = await pool.query(
+    `select user_id from members where organization_id = $1 and role = 'owner'`, [guardOrgId])
+  const xferOwnerAttempt = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Pindahkan</button>', { userId: guardOwnerRow.user_id, teamId: 'sc_guard_fill2' })
+  ok('a transfer targeting an owner is refused',
+    xferOwnerAttempt.status === 200
+      && xferOwnerAttempt.html.includes('Peran ini tidak ditempatkan di cabang.'),
+    `got ${xferOwnerAttempt.status}`)
+  ok('and the owner\'s team_id is still null (row state, not just the error)',
+    await teamIdOf(guardOwnerRow.user_id) === null, await teamIdOf(guardOwnerRow.user_id))
+
+  const ownerPage = await getPage(guardOwner.jar, `/staff/${guardOwnerRow.user_id}`)
+  ok('and the owner\'s own detail page does not offer the transfer card',
+    !ownerPage.html.includes('Pindahkan</button>'))
 } finally {
   await pool.end()
 }

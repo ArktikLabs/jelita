@@ -25,16 +25,31 @@ const ASSIGNABLE_ROLES: SalonRole[] = ['admin', 'stylist', 'frontdesk']
 
 const NOT_FOUND = { error: 'Staf tidak ditemukan.' }
 
+const CLOSED_MSG = 'Cabang ini nonaktif. Aktifkan dulu sebelum menempatkan staf.'
+const OVERCAP_MSG = 'Cabang ini terkunci oleh batas paket. Upgrade untuk menempatkan staf.'
+
 /**
- * Shared by createStaffAction and transferStaffAction: a branch the salon
- * has shut or outgrown must not silently acquire staff. `closed` is checked
- * before `over_cap` -- matching getBranchStatus's own precedence -- because
- * the remedy for a closed branch is reactivation, not an upgrade.
+ * Used by transferStaffAction only -- createStaffAction goes through
+ * provisionStaff, which now carries this same guard itself (lib/staff.ts),
+ * so every creation path (this Server Action, the JSON API) gets it once
+ * rather than once per caller.
+ *
+ * The order of these two `if`s is NOT load-bearing: getBranchStatus already
+ * resolves 'closed' vs 'over_cap' exclusively before returning (it checks
+ * `!active` first and only inspects `within_cap` while still active), and a
+ * deactivated branch is excluded from branch_entitlement's ranking entirely,
+ * so `within_cap` reads NULL, never `false`, once closed. Swapping these two
+ * checks cannot change the result for any input -- verified by actually
+ * swapping them and re-running staff:check (see task-5-report.md). Kept in
+ * this order anyway because it reads the way the copy is decided: closed
+ * first, because the remedy is reactivation, not an upgrade. The real
+ * precedence guarantee lives in getBranchStatus, covered by
+ * branch-check.mjs:109-111 ("a deactivated branch is closed, not over_cap").
  */
 async function branchWriteError(teamId: string): Promise<string | null> {
   const status = await getBranchStatus(teamId)
-  if (status === 'closed') return 'Cabang ini nonaktif. Aktifkan dulu sebelum menempatkan staf.'
-  if (status === 'over_cap') return 'Cabang ini terkunci oleh batas paket. Upgrade untuk menempatkan staf.'
+  if (status === 'closed') return CLOSED_MSG
+  if (status === 'over_cap') return OVERCAP_MSG
   return null
 }
 
@@ -90,16 +105,19 @@ export async function createStaffAction(
   if (teamId && !(await listBranches(organizationId)).some((b) => b.teamId === teamId)) {
     return { error: 'Cabang tidak ditemukan.' }
   }
-  // A branch the owner closed, or one the plan tier has outgrown, must not
-  // silently acquire a new hire -- same guard the transfer action below uses.
-  if (teamId) {
-    const branchError = await branchWriteError(teamId)
-    if (branchError) return { error: branchError }
-  }
 
   try {
     await provisionStaff({ organizationId, name, email, password, role, teamId })
   } catch (e) {
+    // A branch the owner closed, or one the plan tier has outgrown, must not
+    // silently acquire a new hire -- provisionStaff itself throws these
+    // (lib/staff.ts), so every creation path gets the guard once.
+    if (e instanceof PlanError && e.code === 'BRANCH_LOCKED') {
+      return { error: OVERCAP_MSG }
+    }
+    if (e instanceof Error && e.message === 'BRANCH_CLOSED') {
+      return { error: CLOSED_MSG }
+    }
     if (e instanceof PlanError) {
       return { error: 'Kuota staf paket Anda sudah tercapai. Upgrade untuk menambah staf.' }
     }
@@ -134,6 +152,12 @@ export async function updateStaffRoleAction(
     return { error: 'Hanya pemilik yang dapat mengubah peran pemilik.' }
   }
 
+  // Same allow-list createStaffAction uses, and for the same reason: without
+  // it, a raw role=owner POST still gets refused (better-auth's own
+  // updateMemberRole blocks the escalation, since the caller isn't the
+  // creator), but its English APIError message would surface verbatim
+  // through formError into this Indonesian-only screen.
+  if (!ASSIGNABLE_ROLES.includes(role)) return { error: 'Peran tidak valid.' }
   if (NEEDS_BRANCH.includes(role) && !teamId) return { error: 'Pilih cabang untuk peran ini.' }
 
   const memberId = await memberIdFor(userId, organizationId)
@@ -165,22 +189,25 @@ export async function transferStaffAction(
 
   const target = await getStaff(userId, organizationId)
   if (!target) return NOT_FOUND
-  if (!teamId) return { error: 'Pilih cabang.' }
-  // teamId is untrusted client input. getBranchStatus below has no
-  // organization scoping of its own (it only knows a bare team id), so a
-  // foreign teamId would read that OTHER salon's real status instead of
-  // failing closed -- leaking that the branch exists (and its status) even
-  // when the write itself is safely a no-op. Confirming ownership here
-  // first, before ever calling getBranchStatus or assignBranch, makes a
-  // foreign id read as not-found, the same as a bogus one.
-  if (!(await listBranches(organizationId)).some((b) => b.teamId === teamId)) {
-    return { error: 'Cabang tidak ditemukan.' }
+  // Owner and admin are salon-wide and must keep team_id null (spec §4) --
+  // the same invariant createStaffAction's pairing check protects at
+  // creation time. Without this, the page would let an admin park an owner
+  // on a branch with no error anywhere.
+  if (!target.role.split(',').some((r) => NEEDS_BRANCH.includes(r))) {
+    return { error: 'Peran ini tidak ditempatkan di cabang.' }
   }
+  if (!teamId) return { error: 'Pilih cabang.' }
 
   const branchError = await branchWriteError(teamId)
   if (branchError) return { error: branchError }
 
-  await assignBranch(userId, organizationId, teamId)
+  // No separate ownership pre-check: assignBranch's own exists() guard is
+  // authoritative here (it's the first standalone caller that actually
+  // exercises it -- see lib/staff.ts). A foreign or bogus teamId updates 0
+  // rows and reads as not-found, same as a bogus one, without a second
+  // query duplicating what assignBranch already does.
+  const updated = await assignBranch(userId, organizationId, teamId)
+  if (!updated) return { error: 'Cabang tidak ditemukan.' }
 
   revalidateStaff(userId)
   return { done: true }

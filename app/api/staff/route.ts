@@ -10,6 +10,9 @@ const STATUS: Record<string, number> = {
   NO_ACTIVE_ORGANIZATION: 409,
   ORGANIZATION_NOT_FOUND: 409,
   EMAIL_TAKEN: 409,
+  // provisionStaff throws this for a deactivated branch (lib/staff.ts);
+  // BRANCH_LOCKED (over-cap) is a PlanError, already mapped to 402 above.
+  BRANCH_CLOSED: 409,
 }
 
 /**

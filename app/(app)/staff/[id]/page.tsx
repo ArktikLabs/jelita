@@ -7,6 +7,10 @@ import {
 } from '@/components/ui/card'
 import { RoleForm, TransferForm } from './staff-detail-forms'
 
+// Mirrors actions.ts's NEEDS_BRANCH -- duplicated, not imported, since that
+// file is 'use server' and only its async actions can cross into this page.
+const NEEDS_BRANCH = ['stylist', 'frontdesk']
+
 export default async function StaffDetailPage({
   params,
 }: {
@@ -25,6 +29,10 @@ export default async function StaffDetailPage({
   // Narrowed to what the forms need, same as /staff/new -- a full BranchRow
   // would serialize into the RSC payload for fields these forms never show.
   const branchOptions = branches.map((b) => ({ teamId: b.teamId, name: b.name }))
+  // Owner and admin are salon-wide (team_id always null, spec §4) --
+  // transferStaffAction refuses this server-side regardless, but the card
+  // shouldn't offer an operation that can only fail.
+  const canTransfer = staff.role.split(',').some((r) => NEEDS_BRANCH.includes(r))
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
@@ -45,15 +53,17 @@ export default async function StaffDetailPage({
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Cabang</CardTitle>
-          <CardDescription>Pindahkan staf ini ke cabang lain.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <TransferForm staff={staff} branches={branchOptions} />
-        </CardContent>
-      </Card>
+      {canTransfer && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Cabang</CardTitle>
+            <CardDescription>Pindahkan staf ini ke cabang lain.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <TransferForm staff={staff} branches={branchOptions} />
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

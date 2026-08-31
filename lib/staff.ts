@@ -4,7 +4,8 @@ import { headers } from 'next/headers'
 import { auth } from './auth'
 import { db } from './db'
 import { roles, type SalonRole } from './permissions'
-import { requireQuota } from './plan/entitlements'
+import { PlanError, requireQuota } from './plan/entitlements'
+import { getBranchStatus } from './plan/branch'
 
 export type StaffRow = {
   userId: string
@@ -25,6 +26,16 @@ export async function provisionStaff(input: {
   teamId?: string | null
 }) {
   if (!(input.role in roles)) throw new Error('UNKNOWN_ROLE')
+  // A branch the owner closed, or one the plan tier has outgrown, must not
+  // silently acquire a new hire -- every creation path routes through this
+  // function, so the guard lives here once rather than once per caller
+  // (the Server Action and the JSON API both call provisionStaff directly).
+  // Same pattern as lib/session.ts's requireBranch({ write: true }).
+  if (input.teamId) {
+    const status = await getBranchStatus(input.teamId)
+    if (status === 'over_cap') throw new PlanError('BRANCH_LOCKED', { branchId: input.teamId })
+    if (status === 'closed') throw new Error('BRANCH_CLOSED')
+  }
   await requireQuota('staff')
 
   // Create the login directly instead of via signUpEmail: that endpoint mints
@@ -76,25 +87,35 @@ export async function provisionStaff(input: {
  *                              resolve activeTeamId on login (lib/auth.ts),
  *                              and setActiveTeam refuses a user without it
  *
- * Through the only path that exists today (provisionStaff), better-auth's
- * addMember already validated teamId against the org and wrote team_members
- * itself, with rollback if that failed -- so this function's `exists()`
- * guard and its own addTeamMember call are a safety net for a future
- * standalone caller (e.g. a branch-transfer action), not something exercised
- * yet. scripts/staff-check.mjs asserts the pair agrees on the provisioning
- * path; a standalone assignBranch call has no coverage until that caller
- * exists.
+ * Through provisionStaff, better-auth's addMember already validated teamId
+ * against the org and wrote team_members itself, with rollback if that
+ * failed -- so there this function's `exists()` guard is a safety net, not
+ * something exercised. app/(app)/staff/actions.ts's transferStaffAction is
+ * the first standalone caller: it moves an EXISTING member, so there is no
+ * addMember to have already validated teamId, and it is authoritative --
+ * the caller no longer pre-checks teamId ownership itself, it trusts the
+ * `updated` return value here. scripts/staff-check.mjs section 8 exercises
+ * this directly, including a teamId belonging to another salon.
+ *
+ * Returns whether a row was actually updated: false means either the
+ * (userId, organizationId) pair doesn't exist, or teamId doesn't belong to
+ * organizationId -- the caller can't tell which, and shouldn't need to (both
+ * read as "not found" to the operator).
  */
 export async function assignBranch(
   userId: string, organizationId: string, teamId: string | null,
-) {
-  await db.execute(sql`
+): Promise<boolean> {
+  const result = await db.execute(sql`
     update staff_profiles set team_id = ${teamId}, updated_at = now()
      where user_id = ${userId} and organization_id = ${organizationId}
        and (${teamId}::text is null or exists (
          select 1 from teams where id = ${teamId}
            and organization_id = ${organizationId}))`)
-  if (teamId) {
+  const updated = (result.rowCount ?? 0) > 0
+  // Only reachable once the update above actually matched a row -- otherwise
+  // teamId may not belong to organizationId at all, and addTeamMember (which
+  // org-scopes teamId itself) would throw rather than no-op.
+  if (teamId && updated) {
     // addTeamMember requires a real session (orgSessionMiddleware): unlike
     // addMember above, it checks the CALLING session's own member:update
     // permission via better-auth's `hasPermission`, so it needs the actual
@@ -110,6 +131,7 @@ export async function assignBranch(
       headers: await headers(),
     })
   }
+  return updated
 }
 
 /** Staff of one salon. Pass userId to narrow to one; the org scoping is in
