@@ -1235,6 +1235,160 @@ try {
                         where tm.user_id = s.user_id and tm.team_id = s.team_id)`)
   ok('every staff_profiles row with a branch has a matching team_members row (spec 7.14)',
     pairing.n === 0, `${pairing.n} unpaired`)
+
+  head('10. /staff/import -- bulk creation')
+  // Fresh owner + branch, business plan (no plan_limits row) so quota never
+  // interferes with the validation-focused assertions below -- the seat
+  // shortfall case gets its own org on the capped default plan further down.
+  const importOwner = new Client()
+  await importOwner.req('/sign-up/email',
+    { name: 'SC Import Owner', email: `import-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`import-owner@${DOMAIN}`])
+  await importOwner.req('/sign-in/email', { email: `import-owner@${DOMAIN}`, password: PW })
+  const importOrg = await importOwner.req('/organization/create',
+    { name: 'Staff Check Import', slug: 'staffcheck-import' })
+  const importOrgId = importOrg.data?.id
+  await importOwner.req('/organization/set-active', { organizationId: importOrgId })
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [importOrgId])
+
+  const importBranchName = 'Cabang Impor'
+  const importBranch = await importOwner.req('/organization/create-team',
+    { name: importBranchName, organizationId: importOrgId })
+  const importBranchId = importBranch.data?.id
+  ok('branch created', !!importBranchId, JSON.stringify(importBranch.data))
+
+  const memberCount = async (orgId) => (await pool.query(
+    `select count(*)::int n from members where organization_id = $1`, [orgId])).rows[0].n
+  const userExists = async (email) => (await pool.query(
+    `select 1 from users where email = $1`, [email])).rows.length > 0
+
+  // 10a. A clean file creates every row, each with the right role and
+  // branch (spec §7.17).
+  const cleanAdminEmail = `import-admin@${DOMAIN}`
+  const cleanStylistEmail = `import-stylist@${DOMAIN}`
+  const cleanCsv = [
+    `SC Import Admin,${cleanAdminEmail},demo12345,admin,`,
+    `SC Import Stylist,${cleanStylistEmail},demo12345,stylist,${importBranchName}`,
+  ].join('\n')
+  const cleanImport = await submitForm(importOwner.jar, '/staff/import', 'name="csv"',
+    { csv: cleanCsv })
+  ok('a clean file redirects to /staff',
+    cleanImport.status === 303 && (cleanImport.location ?? '').includes('/staff'),
+    `got ${cleanImport.status} ${cleanImport.location}`)
+
+  const { rows: [cleanAdminRow] } = await pool.query(`
+    select m.role, s.team_id from members m
+      join users u on u.id = m.user_id
+      join staff_profiles s on s.user_id = m.user_id and s.organization_id = m.organization_id
+     where u.email = $1 and m.organization_id = $2`, [cleanAdminEmail, importOrgId])
+  ok('the imported admin has the right role and no branch',
+    cleanAdminRow?.role === 'admin' && cleanAdminRow?.team_id === null,
+    `got ${JSON.stringify(cleanAdminRow)}`)
+
+  const { rows: [cleanStylistRow] } = await pool.query(`
+    select m.role, s.team_id from members m
+      join users u on u.id = m.user_id
+      join staff_profiles s on s.user_id = m.user_id and s.organization_id = m.organization_id
+     where u.email = $1 and m.organization_id = $2`, [cleanStylistEmail, importOrgId])
+  ok('the imported stylist has the right role and branch',
+    cleanStylistRow?.role === 'stylist' && cleanStylistRow?.team_id === importBranchId,
+    `got ${JSON.stringify(cleanStylistRow)}`)
+
+  // 10b. A file with one bad row creates NOTHING -- the row count must be
+  // unchanged, not merely "an error came back" (spec §7.15, load-bearing:
+  // code that creates 2 of 3 rows and then fails would satisfy a weaker
+  // check that only looked for an error).
+  const beforeBadCount = await memberCount(importOrgId)
+  const bad1Email = `import-bad1@${DOMAIN}`
+  const bad2Email = `import-bad2@${DOMAIN}`
+  const badRowEmail = `import-badrow@${DOMAIN}`
+  const badCsv = [
+    `SC Import Good1,${bad1Email},demo12345,admin,`,
+    `SC Import Good2,${bad2Email},demo12345,stylist,${importBranchName}`,
+    `SC Import Bad,${badRowEmail},short,admin,`,
+  ].join('\n')
+  const badImport = await submitForm(importOwner.jar, '/staff/import', 'name="csv"',
+    { csv: badCsv })
+  ok('a file with one bad row is refused, not redirected',
+    badImport.status === 200 && badImport.html.includes('1 baris gagal divalidasi'),
+    `got ${badImport.status}`)
+  ok('the bad row is reported with its actual reason',
+    badImport.html.includes('Kata sandi minimal 8 karakter'), badImport.html.slice(0, 400))
+  ok('the member count for the org is UNCHANGED -- not 2 of 3 created',
+    await memberCount(importOrgId) === beforeBadCount,
+    `before ${beforeBadCount}, after ${await memberCount(importOrgId)}`)
+  ok('neither of the two otherwise-valid rows was created',
+    !(await userExists(bad1Email)) && !(await userExists(bad2Email)))
+  ok('nor was the bad row itself', !(await userExists(badRowEmail)))
+
+  // 10d. A management row naming a branch is a validation error, not a
+  // silently-ignored value (spec §5.4) -- management is not placed in a
+  // branch at all.
+  const mgmtEmail = `import-mgmt@${DOMAIN}`
+  const mgmtCsv = `SC Import Mgmt,${mgmtEmail},demo12345,admin,${importBranchName}`
+  const mgmtImport = await submitForm(importOwner.jar, '/staff/import', 'name="csv"',
+    { csv: mgmtCsv })
+  ok('an admin row naming a branch is a validation error',
+    mgmtImport.status === 200
+      && mgmtImport.html.includes('Peran ini tidak ditempatkan di cabang.'),
+    `got ${mgmtImport.status}`)
+  ok('and it created nothing', !(await userExists(mgmtEmail)))
+
+  // 10c. A file needing more seats than remain returns one error naming the
+  // shortfall, and creates nothing (spec §7.16). Fresh org on the (capped)
+  // default plan, owner alone, so the owner's own seat sets a known
+  // remaining count -- same setDefaultStaffCap/seededStaffCap restore path
+  // as sections 4 and 9, one shared value, restored once.
+  const seatOwner2 = new Client()
+  await seatOwner2.req('/sign-up/email',
+    { name: 'SC Import Seat Owner', email: `import-seat@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`import-seat@${DOMAIN}`])
+  await seatOwner2.req('/sign-in/email', { email: `import-seat@${DOMAIN}`, password: PW })
+  const seatOrg2 = await seatOwner2.req('/organization/create',
+    { name: 'Staff Check Import Seat', slug: 'staffcheck-import-seat' })
+  const seatOrg2Id = seatOrg2.data?.id
+  await seatOwner2.req('/organization/set-active', { organizationId: seatOrg2Id })
+
+  try {
+    // Cap 2: the owner holds one seat, so exactly one more fits -- a
+    // two-row file needs two and must be refused as a whole.
+    await setDefaultStaffCap(2)
+
+    const importSeatPage = await getPage(seatOwner2.jar, '/staff/import')
+    ok('the import page shows the seat budget before a file is even chosen (step 1)',
+      importSeatPage.html.includes('Sisa kuota staf: 1 dari 2'),
+      importSeatPage.html.slice(0, 300))
+
+    const shortEmail1 = `import-short1@${DOMAIN}`
+    const shortEmail2 = `import-short2@${DOMAIN}`
+    const shortCsv = [
+      `SC Import Short1,${shortEmail1},demo12345,admin,`,
+      `SC Import Short2,${shortEmail2},demo12345,admin,`,
+    ].join('\n')
+    const beforeShortCount = await memberCount(seatOrg2Id)
+    const shortImport = await submitForm(seatOwner2.jar, '/staff/import', 'name="csv"',
+      { csv: shortCsv })
+    ok('needing 2 seats with 1 remaining is refused, naming the shortfall (spec 7.16)',
+      shortImport.status === 200
+        && shortImport.html.includes('Butuh 2 kursi staf, tersisa 1.'),
+      `got ${shortImport.status} ${shortImport.html.slice(0, 300)}`)
+    ok('and NOTHING was created -- not one of the two rows',
+      await memberCount(seatOrg2Id) === beforeShortCount
+        && !(await userExists(shortEmail1)) && !(await userExists(shortEmail2)),
+      `before ${beforeShortCount}, after ${await memberCount(seatOrg2Id)}`)
+  } finally {
+    if (seededStaffCap === null) {
+      await pool.query(`
+        delete from plan_limits l using plans p
+         where l.plan_id = p.id and p.is_default and l.resource = 'staff'`)
+    } else {
+      await setDefaultStaffCap(seededStaffCap)
+    }
+  }
 } finally {
   await pool.end()
 }

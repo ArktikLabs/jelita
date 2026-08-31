@@ -7,12 +7,12 @@ import { createLocalAccountIssuer } from 'better-auth'
 import { sql } from 'drizzle-orm'
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
-import { PlanError, requireQuota } from '@/lib/plan/entitlements'
+import { PlanError, requireQuota, countResource, getEntitlements } from '@/lib/plan/entitlements'
 import { getBranchStatus } from '@/lib/plan/branch'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { provisionStaff, assignBranch, getStaff } from '@/lib/staff'
 import { listBranches } from '@/lib/branch'
-import { formError, type FormState } from '@/lib/form-state'
+import { formError, type FormState, type ImportState } from '@/lib/form-state'
 import type { SalonRole } from '@/lib/permissions'
 
 const NEEDS_BRANCH = ['stylist', 'frontdesk']
@@ -127,6 +127,148 @@ export async function createStaffAction(
     }
     return { error: formError(e, 'Gagal menambah staf.') }
   }
+  revalidatePath('/staff')
+  redirect('/staff')
+}
+
+/**
+ * Bulk creation (app/(app)/staff/import), for onboarding a salon that
+ * already has staff. The defining constraint: validate the whole file, then
+ * commit every row or none -- never a partial import that a failed row
+ * leaves half-written.
+ *
+ * Column order: name, email, password, role, branch name. One line per
+ * staff member; blank lines are ignored (they shift nothing -- `line`
+ * always tracks the raw line number so an error points at what the owner
+ * actually pasted).
+ */
+export async function importStaffAction(
+  _prev: ImportState, formData: FormData,
+): Promise<ImportState> {
+  await requirePagePermission({ staff: ['create'] })
+  const { organizationId } = await requirePageOrg()
+
+  const csv = String(formData.get('csv') ?? '')
+  const branches = await listBranches(organizationId)
+  const branchByName = new Map(branches.map((b) => [b.name, b]))
+  const ctx = await auth.$context
+
+  const goodRows: {
+    line: number; name: string; email: string; password: string
+    role: SalonRole; teamId: string | null
+  }[] = []
+  const badRows: { line: number; message: string }[] = []
+  const seenEmails = new Set<string>()
+
+  const lines = csv.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]
+    if (!raw.trim()) continue
+    const line = i + 1
+    const [name = '', email = '', password = '', roleRaw = '', branchName = '']
+      = raw.split(',').map((c) => c.trim())
+    const role = roleRaw as SalonRole
+
+    if (!name || !email || !password) {
+      badRows.push({ line, message: 'Nama, email dan kata sandi wajib diisi.' })
+      continue
+    }
+    if (password.length < 8) {
+      badRows.push({ line, message: 'Kata sandi minimal 8 karakter.' })
+      continue
+    }
+    // Same allow-list createStaffAction uses: a bulk path that accepted
+    // role=owner would reopen the escalation bug fixed there.
+    if (!ASSIGNABLE_ROLES.includes(role)) {
+      badRows.push({ line, message: 'Peran tidak valid.' })
+      continue
+    }
+    const needsBranch = NEEDS_BRANCH.includes(role)
+    if (needsBranch && !branchName) {
+      badRows.push({ line, message: 'Pilih cabang untuk peran ini.' })
+      continue
+    }
+    if (!needsBranch && branchName) {
+      badRows.push({ line, message: 'Peran ini tidak ditempatkan di cabang.' })
+      continue
+    }
+    let teamId: string | null = null
+    if (needsBranch) {
+      const branch = branchByName.get(branchName)
+      if (!branch) {
+        badRows.push({ line, message: `Cabang tidak ditemukan: ${branchName}.` })
+        continue
+      }
+      if (!branch.active) {
+        badRows.push({ line, message: CLOSED_MSG })
+        continue
+      }
+      if (!branch.withinCap) {
+        badRows.push({ line, message: OVERCAP_MSG })
+        continue
+      }
+      teamId = branch.teamId
+    }
+    const emailKey = email.toLowerCase()
+    if (seenEmails.has(emailKey)) {
+      badRows.push({ line, message: 'Email ini duplikat dalam file.' })
+      continue
+    }
+    seenEmails.add(emailKey)
+    if (await ctx.internalAdapter.findUserByEmail(emailKey)) {
+      badRows.push({ line, message: 'Email ini sudah terdaftar.' })
+      continue
+    }
+    goodRows.push({ line, name, email, password, role, teamId })
+  }
+
+  if (badRows.length > 0) {
+    return {
+      error: `${badRows.length} baris gagal divalidasi. Perbaiki dan unggah ulang.`,
+      rows: badRows,
+    }
+  }
+  if (goodRows.length === 0) {
+    return { error: 'File tidak berisi baris staf.' }
+  }
+
+  // One 402-shaped refusal for the whole file, checked before any row is
+  // written -- never a partial import because the seats ran out partway
+  // through.
+  const entitlements = await getEntitlements(organizationId)
+  const cap = entitlements.caps.staff
+  if (cap !== undefined) {
+    const used = await countResource(organizationId, 'staff')
+    const remaining = used === null ? Infinity : cap - used
+    if (goodRows.length > remaining) {
+      return {
+        error: `Butuh ${goodRows.length} kursi staf, tersisa ${remaining}. `
+          + 'Upgrade paket untuk melanjutkan.',
+      }
+    }
+  }
+
+  // Validation above (role, branch status, quota) made every row eligible,
+  // so this loop should never fail partway -- but if it does (a race with
+  // another request, say), report exactly what happened rather than
+  // silently leaving a half-created roster.
+  let created = 0
+  for (const row of goodRows) {
+    try {
+      await provisionStaff({
+        organizationId, name: row.name, email: row.email,
+        password: row.password, role: row.role, teamId: row.teamId,
+      })
+      created++
+    } catch (e) {
+      return {
+        error: `${created} dari ${goodRows.length} staf berhasil dibuat sebelum baris ini gagal.`,
+        rows: [{ line: row.line, message: formError(e, 'Gagal menambah staf.') }],
+        created,
+      }
+    }
+  }
+
   revalidatePath('/staff')
   redirect('/staff')
 }

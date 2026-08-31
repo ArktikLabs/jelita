@@ -47,9 +47,14 @@ export default async function StaffPage({
             </p>
           )}
         </div>
-        <Link href="/staff/new" className={buttonVariants()}>
-          Tambah staf
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/staff/import" className={buttonVariants({ variant: 'outline' })}>
+            Impor staf
+          </Link>
+          <Link href="/staff/new" className={buttonVariants()}>
+            Tambah staf
+          </Link>
+        </div>
       </div>
 
       <form className="flex items-center gap-2">
