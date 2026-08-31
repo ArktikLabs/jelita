@@ -80,9 +80,9 @@ export async function currentEntitlements() {
 
 /**
  * Current usage for a capped resource. Returns null when the resource is
- * not yet countable — `services` and `products` have no tables until the
- * business schema ships, and a cap that cannot be counted must not be
- * silently treated as satisfied.
+ * not yet countable — `products` has no table until the business schema
+ * ships, and a cap that cannot be counted must not be silently treated as
+ * satisfied.
  */
 export async function countResource(
   organizationId: string,
@@ -107,7 +107,17 @@ export async function countResource(
                           and s.organization_id = m.organization_id), true)`)
     return (rows[0] as { n: number }).n
   }
-  return null // services, products — Task 9
+  if (resource === 'services') {
+    // Active only, like staff seats and unlike branches: a retired service
+    // does nothing for the salon, so it should not hold a slot. Branches
+    // count even when deactivated because freeing that slot would let a salon
+    // cycle branches to evade the cap; a retired service retains no such value.
+    const { rows } = await db.execute(sql`
+      select count(*)::int as n from services
+       where organization_id = ${organizationId} and active`)
+    return (rows[0] as { n: number }).n
+  }
+  return null // products — still uncounted
 }
 
 /** Throws PlanError('FEATURE_NOT_IN_PLAN') unless the tier includes `key`. */

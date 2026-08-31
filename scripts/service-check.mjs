@@ -256,6 +256,99 @@ try {
   ok('while an inheriting branch DOES follow it',
      Number((await priceAt('svc_s1', 'svc_t1')).price) === 200000)
 
+  head('6. the plan cap')
+  // Sign in as a fresh salon owner and create through the real action --
+  // copied cookie-jar pattern from scripts/auth-check.mjs; ORG itself was
+  // inserted with raw SQL in section 3 and has no better-auth user behind
+  // it to sign in as. requireQuota('services') is exercised end to end
+  // here, not re-implemented as a count query.
+  const capCookieOf = (j) => [...j].map(([k, v]) => `${k}=${v}`).join('; ')
+  const capDecode = (t) => t.replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+  const capSubmitForm = async (j, path, marker, fields = {}) => {
+    const page = await fetch(ORIGIN + path, { headers: { cookie: capCookieOf(j) }, redirect: 'manual' })
+    const html = await page.text()
+    const form = html.split('<form').find((f) => f.includes(marker))
+    if (!form) throw new Error(`no form matching ${marker} on ${path} (status ${page.status})`)
+    const body = new FormData()
+    for (const m of form.slice(0, form.indexOf('</form>')).matchAll(
+      /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)) {
+      body.set(capDecode(m[1]), capDecode(m[2] ?? ''))
+    }
+    for (const [k, v] of Object.entries(fields)) body.set(k, v)
+    const r = await fetch(ORIGIN + path, {
+      method: 'POST', headers: { cookie: capCookieOf(j) }, body, redirect: 'manual',
+    })
+    return { status: r.status, location: r.headers.get('location'), html: await r.text() }
+  }
+
+  const capOwnerEmail = `cap-owner@${DOMAIN}`
+  const capOwner = new Client()
+  await capOwner.req('/sign-up/email', { name: 'Svc Cap Owner', email: capOwnerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [capOwnerEmail])
+  await capOwner.req('/sign-in/email', { email: capOwnerEmail, password: PW })
+  const capOrg = await capOwner.req('/organization/create',
+    { name: 'Svc Check Cap', slug: 'svccheck-cap' })
+  const capOrgId = capOrg.data?.id
+  ok('cap salon created', !!capOrgId, JSON.stringify(capOrg.data))
+  await capOwner.req('/organization/set-active', { organizationId: capOrgId })
+
+  // Dynamically read the seeded cap so it can be restored exactly, whatever
+  // scripts/seed-plans.mjs currently says free/services is -- do not hardcode 10.
+  const { rows: [freeCapRow] } = await pool.query(`
+    select l.cap from plan_limits l join plans p on p.id = l.plan_id
+     where p.key = 'free' and l.resource = 'services'`)
+  const originalFreeServicesCap = freeCapRow.cap
+
+  try {
+    // One service, created through the real path, so there is something to
+    // both count and later deactivate.
+    const first = await capSubmitForm(capOwner.jar, '/services/new', 'name="price"',
+      { name: 'Layanan Cap Satu', durationMinutes: '30', price: '50000' })
+    ok('a service is created through the real path to seed the cap fixture',
+       first.status === 303 && (first.location ?? '').includes('/services'),
+       `got ${first.status} ${first.location}`)
+
+    // Cap set to the current active count -- the tenant is now exactly full.
+    await pool.query(`
+      update plan_limits set cap = 1
+       where plan_id = (select id from plans where key = 'free') and resource = 'services'`)
+
+    const refused = await capSubmitForm(capOwner.jar, '/services/new', 'name="price"',
+      { name: 'Layanan Cap Dua', durationMinutes: '30', price: '60000' })
+    ok('a creation at the cap is refused with the 402 copy',
+       refused.status === 200
+         && refused.html.includes('Kuota layanan paket Anda sudah tercapai. Upgrade untuk menambah layanan.'),
+       `got ${refused.status}`)
+
+    const { rows: [afterRefusal] } = await pool.query(`
+      select count(*)::int n from services where organization_id = $1`, [capOrgId])
+    ok('and the refused attempt wrote no row', afterRefusal.n === 1, `got ${afterRefusal.n}`)
+
+    // Free the slot with direct SQL -- deactivateServiceAction does not exist
+    // yet, so this is fixture setup, not the path under test. The real path
+    // below is what proves countResource's active-only semantics.
+    await pool.query(`
+      update services set active = false
+       where organization_id = $1 and name = 'Layanan Cap Satu'`, [capOrgId])
+
+    const afterFree = await capSubmitForm(capOwner.jar, '/services/new', 'name="price"',
+      { name: 'Layanan Cap Dua', durationMinutes: '30', price: '60000' })
+    ok('the same creation succeeds once a deactivation frees a slot',
+       afterFree.status === 303 && (afterFree.location ?? '').includes('/services'),
+       `got ${afterFree.status} ${afterFree.location}`)
+
+    const { rows: [afterSuccess] } = await pool.query(`
+      select count(*)::int n from services where organization_id = $1`, [capOrgId])
+    ok('and the new row exists (one deactivated, one active)',
+       afterSuccess.n === 2, `got ${afterSuccess.n}`)
+  } finally {
+    await pool.query(`
+      update plan_limits set cap = $1
+       where plan_id = (select id from plans where key = 'free') and resource = 'services'`,
+      [originalFreeServicesCap])
+  }
+
   head('7. /services and /services/new')
   // Nothing under lib/ is importable here (lib/service.ts imports './db'
   // without an extension, which plain Node ESM resolution refuses -- proven
