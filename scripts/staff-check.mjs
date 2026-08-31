@@ -280,6 +280,108 @@ try {
      where user_id = $1 and organization_id = $2`, [adminId, assignOrgId])
   ok('provisioning with no branch leaves staff_profiles.team_id null',
     adminProfile?.team_id === null, `got ${JSON.stringify(adminProfile)}`)
+
+  head('6. assignment does not depend on role strings')
+  // The bug this replaces: a custom management role like 'manajer' is not in
+  // array['owner', 'admin'], so the old team_members + role-deny-list
+  // predicate counted its holder as staff and made the branch permanently
+  // undeactivatable, naming them as the blocker with no screen to remove
+  // them. Assignment is now a staff_profiles row, not a role match.
+  //
+  // Proven through the real deactivation form, not a direct import: unlike
+  // lib/plan/branch.ts (which imports '../pg-pool.ts' with an explicit
+  // extension), lib/branch.ts imports './db' without one, and Node's native
+  // TypeScript loader requires explicit extensions on relative specifiers --
+  // confirmed by trying `await import('../lib/branch.ts')` here first, which
+  // throws "Cannot find module '.../lib/db'".
+  const cookieOf = (j) => [...j].map(([k, v]) => `${k}=${v}`).join('; ')
+  const decodeHtml = (t) => t.replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+  const getPage = async (j, path) => {
+    const r = await fetch(ORIGIN + path, { headers: { cookie: cookieOf(j) }, redirect: 'manual' })
+    return { status: r.status, html: await r.text() }
+  }
+  const submitForm = async (j, path, marker, fields = {}) => {
+    const page = await getPage(j, path)
+    const form = page.html.split('<form').find((f) => f.includes(marker))
+    if (!form) throw new Error(`no form matching ${marker} on ${path} (status ${page.status})`)
+    const body = new FormData()
+    for (const m of form.slice(0, form.indexOf('</form>')).matchAll(
+      /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)) {
+      body.set(decodeHtml(m[1]), decodeHtml(m[2] ?? ''))
+    }
+    for (const [k, v] of Object.entries(fields)) body.set(k, v)
+    const r = await fetch(ORIGIN + path, {
+      method: 'POST', headers: { cookie: cookieOf(j) }, body, redirect: 'manual',
+    })
+    return { status: r.status, html: await r.text() }
+  }
+  const isBranchActive = async (teamId) => (await pool.query(
+    `select active from branch_profiles where team_id = $1`, [teamId])).rows[0]?.active
+
+  const roleOwner = new Client()
+  await roleOwner.req('/sign-up/email',
+    { name: 'SC Role Owner', email: `role-owner@${DOMAIN}`, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`,
+    [`role-owner@${DOMAIN}`])
+  await roleOwner.req('/sign-in/email', { email: `role-owner@${DOMAIN}`, password: PW })
+  const roleOrg = await roleOwner.req('/organization/create',
+    { name: 'Staff Check Role', slug: 'staffcheck-role' })
+  const roleOrgId = roleOrg.data?.id
+  await roleOwner.req('/organization/set-active', { organizationId: roleOrgId })
+  // The free plan's branch cap is 1, already spent on the org's default
+  // team -- business has no plan_limits rows at all, so a second branch is
+  // unaffected by whatever the default tier's cap is seeded to right now.
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [roleOrgId])
+
+  const roleBranch = await roleOwner.req('/organization/create-team',
+    { name: 'Cabang Role', organizationId: roleOrgId })
+  const roleBranchId = roleBranch.data?.id
+  ok('branch created', !!roleBranchId, JSON.stringify(roleBranch.data))
+
+  // Raw inserts, not provisionStaff: this member's staff_profiles row must be
+  // seeded by the trigger with team_id null, exactly like an invited member --
+  // the point is that a team_members row and a non-management role alone must
+  // not be enough.
+  const managerEmail = `role-manajer@${DOMAIN}`
+  await pool.query(`
+    insert into users (id, name, email, email_verified, created_at, updated_at)
+    values ('sc_manajer', 'SC Manajer', $1, true, now(), now())`, [managerEmail])
+  await pool.query(`
+    insert into members (id, user_id, organization_id, role, created_at)
+    values ('sc_m_manajer', 'sc_manajer', $1, 'manajer', now())`, [roleOrgId])
+  await pool.query(`
+    insert into team_members (id, team_id, user_id, created_at)
+    values ('sc_tm_manajer', $1, 'sc_manajer', now())`, [roleBranchId])
+
+  const { rows: [manajerProfile] } = await pool.query(`
+    select team_id from staff_profiles where user_id = 'sc_manajer' and organization_id = $1`,
+    [roleOrgId])
+  ok('the trigger seeded a profile with no branch, despite the team_members row',
+    manajerProfile?.team_id === null, `got ${JSON.stringify(manajerProfile)}`)
+
+  const beforeAssign = await submitForm(roleOwner.jar,
+    `/branches/${roleBranchId}`, 'Nonaktifkan cabang</button>')
+  ok('a custom-role member with only a team_members row does not block deactivation',
+    await isBranchActive(roleBranchId) === false, `status ${beforeAssign.status}`)
+  ok('and the block message never appears',
+    !beforeAssign.html.includes('Pindahkan staf berikut lebih dulu'),
+    beforeAssign.html.slice(0, 200))
+
+  await submitForm(roleOwner.jar, `/branches/${roleBranchId}`, 'Aktifkan cabang</button>')
+
+  await pool.query(`
+    update staff_profiles set team_id = $1
+     where user_id = 'sc_manajer' and organization_id = $2`, [roleBranchId, roleOrgId])
+
+  const afterAssign = await submitForm(roleOwner.jar,
+    `/branches/${roleBranchId}`, 'Nonaktifkan cabang</button>')
+  ok('once staff_profiles.team_id is set, the same custom-role member blocks deactivation, named',
+    afterAssign.html.includes('Pindahkan staf berikut lebih dulu: SC Manajer.'),
+    `status ${afterAssign.status}`)
+  ok('the branch stayed open', await isBranchActive(roleBranchId) === true)
 } finally {
   await pool.end()
 }

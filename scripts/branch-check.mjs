@@ -426,6 +426,13 @@ try {
   await pool.query(
     `insert into team_members (id, team_id, user_id, created_at)
      values ('bl_tm3', $1, $2, now())`, [newTeam, desk[0].id])
+  // staff_profiles is the source of truth now, not this team_members row --
+  // the trigger seeded desk's profile with team_id null when they were
+  // invited, so the raw team_members insert above is navigational only until
+  // this assignment is recorded too.
+  await pool.query(
+    `update staff_profiles set team_id = $1 where user_id = $2 and organization_id = $3`,
+    [newTeam, desk[0].id, org2.data.id])
   ok('assigning a front-desk/stylist member takes it to 1',
     (await branchProp(jar, newTeam))?.staffCount === 1,
     JSON.stringify(await branchProp(jar, newTeam)))
