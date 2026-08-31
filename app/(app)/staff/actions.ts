@@ -597,6 +597,17 @@ export async function reactivateStaffAction(
   if (!target) return NOT_FOUND
   if (target.active) return { done: true }
 
+  // The branch they were assigned to may have been closed or locked while
+  // they were gone -- and that is the ORDINARY sequence, not an edge case:
+  // closing a branch is correctly allowed once its last active member is
+  // deactivated (assignedStaff counts only active profiles, spec §5), so
+  // deactivate -> close -> reactivate walked a seat straight back into a
+  // branch nobody can work in. requireQuota was the only check here.
+  if (target.teamId) {
+    const branchError = await branchWriteError(target.teamId, organizationId)
+    if (branchError) return { error: branchError }
+  }
+
   try {
     // Before the write, not after: an inactive profile is not counted, so the
     // seat is genuinely re-consumed here.

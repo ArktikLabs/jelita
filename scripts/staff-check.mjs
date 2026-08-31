@@ -991,6 +991,36 @@ try {
       && await teamIdOf(guardAdminId) === 'sc_guard_fill3',
     `${await roleOf(guardAdminId, guardOrgId)} / ${await teamIdOf(guardAdminId)}`)
 
+  // 8l. Reactivation is an assignment too -- it walks a seat back into
+  // whatever branch the profile still points at. Closing a branch once its
+  // last active member has left is CORRECT (assignedStaff counts only active
+  // profiles, spec §5), so deactivate -> close -> reactivate is the ordinary
+  // sequence, and requireQuota was the only check standing in it.
+  const guardStatusActive = async () => (await pool.query(
+    `select active from staff_profiles where user_id = $1 and organization_id = $2`,
+    [guardStylistId, guardOrgId])).rows[0]?.active
+
+  await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Nonaktifkan staf</button>', { userId: guardStylistId })
+  ok('the branch\'s only staff member is deactivated (precondition)',
+    await guardStatusActive() === false)
+  await pool.query(`update branch_profiles set active = false where team_id = 'sc_guard_fill2'`)
+
+  const rehireClosed = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Aktifkan staf</button>', { userId: guardStylistId })
+  ok('reactivating into the branch that was closed meanwhile returns the closed copy',
+    rehireClosed.status === 200 && rehireClosed.html.includes(CLOSED_MSG),
+    `got ${rehireClosed.status}`)
+  ok('and the profile is still inactive -- no seat consumed for a branch nobody can work in',
+    await guardStatusActive() === false)
+
+  await pool.query(`update branch_profiles set active = true where team_id = 'sc_guard_fill2'`)
+  const rehireOpen = await submitForm(guardOwner.jar, `/staff/${guardStylistId}`,
+    'Aktifkan staf</button>', { userId: guardStylistId })
+  ok('and once the branch is open again the same reactivation succeeds',
+    rehireOpen.status === 200 && await guardStatusActive() === true,
+    `got ${rehireOpen.status}`)
+
   head('9. departure -- deactivate, rehire, password reset')
   const QUOTA_MSG = 'Kuota staf paket Anda sudah tercapai. Upgrade untuk mengaktifkan kembali.'
   const LAST_OWNER_MSG = 'Ini pemilik terakhir yang aktif. Tunjuk pemilik lain lebih dulu.'
