@@ -33,10 +33,9 @@ export default async function StaffDetailPage({
   // transferStaffAction refuses this server-side regardless, but the card
   // shouldn't offer an operation that can only fail.
   const canTransfer = staff.role.split(',').some((r) => NEEDS_BRANCH.includes(r))
-  // deactivateStaffAction refuses this server-side regardless -- the card is
-  // hidden for the same reason the transfer card is: an operation that can
-  // only ever fail should not be offered. Signing yourself out with a button
-  // labelled as an HR action would also strand a one-owner salon.
+  // Both self-only cards are hidden for the same reason the transfer card is:
+  // an operation that can only ever fail, or can only hurt you, should not be
+  // offered. The server refuses the deactivation regardless.
   const isSelf = staff.userId === actor.user.id
 
   return (
@@ -85,6 +84,12 @@ export default async function StaffDetailPage({
         </Card>
       )}
 
+      {/* Hidden for self for a second reason: resetStaffPasswordAction revokes
+          every session of its target, so an owner resetting their own password
+          here would sign themselves out mid-click. /profile's
+          changePasswordAction is the self path -- it passes
+          revokeOtherSessions, keeping the caller's own session alive. */}
+      {!isSelf && (
       <Card>
         <CardHeader>
           <CardTitle>Kata sandi</CardTitle>
@@ -94,6 +99,7 @@ export default async function StaffDetailPage({
           <PasswordForm staff={staff} />
         </CardContent>
       </Card>
+      )}
     </div>
   )
 }

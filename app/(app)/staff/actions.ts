@@ -237,13 +237,23 @@ export async function deactivateStaffAction(
   if (userId === actor.user.id) {
     return { error: 'Anda tidak dapat menonaktifkan akun Anda sendiri.' }
   }
-  if (!(await getStaff(userId, organizationId))) return NOT_FOUND
+  const target = await getStaff(userId, organizationId)
+  if (!target) return NOT_FOUND
+  // Same rule as updateStaffRoleAction and resetStaffPasswordAction (spec
+  // §6.1: "an admin attempting to deactivate or demote an owner"). Ending a
+  // co-owner's employment -- sessions revoked, seat freed, locked out of a
+  // tenant they own -- is strictly more than the role change already refused
+  // here. The last-owner clause below stays fully reachable: two OWNERS can
+  // race on two different owner peers, which is what section 9j drives.
+  if (target.role.split(',').includes('owner') && !(await isOwner(actor.user.id, organizationId))) {
+    return { error: 'Hanya pemilik yang dapat menonaktifkan pemilik.' }
+  }
 
   // "The last owner cannot be deactivated" is PREVENTED, not handled, so the
   // count and the write are ONE statement. Folding the count into the WHERE
-  // alone is not enough: under READ COMMITTED two admins deactivating two
-  // DIFFERENT owners would each read "2 owners" and both write, leaving the
-  // salon ownerless. The materialized CTE locks every active owner row of the
+  // alone is not enough: under READ COMMITTED two owners deactivating two
+  // DIFFERENT owner peers would each read "2 owners" and both write, leaving
+  // the salon ownerless. The materialized CTE locks every active owner row of the
   // salon first (ordered, so two of these cannot deadlock), so the second
   // transaction blocks there, re-reads the now-inactive row under EvalPlanQual,
   // counts 1 and refuses. Same shape as deactivateBranchAction.
@@ -255,7 +265,14 @@ export async function deactivateStaffAction(
        where s.organization_id = ${organizationId} and s.active
          and (string_to_array(m.role, ',') && array['owner'])
        order by s.user_id
-         for update of s
+         -- of s, m: owner-ness is read from members.role, which
+         -- updateStaffRoleAction writes while taking no staff_profiles lock.
+         -- Locking only s, the two operations never contend: a demotion of
+         -- owner B could commit while this statement's snapshot still counted
+         -- B as an owner, and deactivating A would leave the salon with none.
+         -- With m in the lock set the demotion serialises this behind it, and
+         -- the EvalPlanQual re-check drops B from the owner set.
+         for update of s, m
     )
     update staff_profiles
        set active = false, deactivated_at = now(), updated_at = now()

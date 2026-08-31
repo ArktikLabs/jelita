@@ -1004,14 +1004,55 @@ try {
   await pool.query(
     `update staff_profiles set active = false where user_id = $1 and organization_id = $2`,
     [exitStaffId, exitOrgId])
-  const deadPage = await fetch(`${ORIGIN}/dashboard`, {
-    headers: { cookie: cookieOf(newPwClient.jar) }, redirect: 'manual',
-  })
-  ok('a deactivated member on a live cookie is bounced off pages to /login',
-    deadPage.status === 307 && (deadPage.headers.get('location') ?? '').includes('/login'),
-    `got ${deadPage.status} ${deadPage.headers.get('location')}`)
+
+  // Fix round 1: the old version of this check used redirect: 'manual' and
+  // asserted ONE hop, which cannot see a loop. app/(auth)/layout.tsx bounces
+  // anyone holding a session to /dashboard, so a deactivated member on a live
+  // cookie used to ping-pong /dashboard <-> /login until the browser gave up --
+  // unable to reach any page and unable to sign out, since the sign-out button
+  // lives in the app layout that never renders. Follow the chain with a cap and
+  // require it to TERMINATE.
+  const followed = async (jar, path, cap = 8) => {
+    const hops = []
+    let url = ORIGIN + path
+    for (let i = 0; i < cap; i++) {
+      const r = await fetch(url, { headers: { cookie: cookieOf(jar) }, redirect: 'manual' })
+      if (r.status < 300 || r.status > 399) return { status: r.status, url, hops }
+      hops.push(r.headers.get('location'))
+      url = new URL(hops[hops.length - 1], ORIGIN).toString()
+    }
+    return { status: null, url, hops }
+  }
+
+  // Their credentials still work -- signInEmail knows nothing of
+  // staff_profiles -- so signing in again is the normal path for a dismissed
+  // employee, not an edge case. Asserted, because it is the precondition that
+  // makes the loop reachable at all.
+  const deadSignIn = new Client()
+  const deadSignInRes = await deadSignIn.req('/sign-in/email',
+    { email: `exit-staff@${DOMAIN}`, password: NEWPW })
+  ok('a deactivated member can still sign in -- the credential is untouched',
+    deadSignInRes.status === 200 && !!deadSignInRes.data?.user,
+    `got ${deadSignInRes.status}`)
+
+  const trapped = await followed(deadSignIn.jar, '/dashboard')
+  ok('and following every redirect terminates instead of looping',
+    trapped.status === 200 && trapped.url.includes('/login'),
+    `status ${trapped.status} after hops ${JSON.stringify(trapped.hops)}`)
+  ok('in a single hop, straight to /login', trapped.hops.length === 1,
+    JSON.stringify(trapped.hops))
+  // The root cause, not the symptom: the cookie stopped being live. Bouncing a
+  // still-valid session between two layouts that disagree about it is what
+  // produced the loop.
+  const { rows: deadSessions } = await pool.query(
+    `select 1 from sessions where user_id = $1`, [exitStaffId])
+  ok('because the page guard revoked the session rather than only redirecting',
+    deadSessions.length === 0, `${deadSessions.length} session rows left`)
+
+  const deadApiClient = new Client()
+  await deadApiClient.req('/sign-in/email', { email: `exit-staff@${DOMAIN}`, password: NEWPW })
   const deadApi = await fetch(`${ORIGIN}/api/me/entitlements`, {
-    headers: { cookie: cookieOf(newPwClient.jar) },
+    headers: { cookie: cookieOf(deadApiClient.jar) },
   })
   ok('and the throwing guard refuses them with 401',
     deadApi.status === 401, `got ${deadApi.status} ${JSON.stringify(await deadApi.json())}`)
@@ -1053,31 +1094,8 @@ try {
   const ownersAdminClient = new Client()
   await ownersAdminClient.req('/sign-in/email', { email: `owners-admin@${DOMAIN}`, password: PW })
 
-  // While TWO owners are active, deactivating one is allowed. Without this the
-  // refusal below would pass just as well against a rule that simply never
-  // lets an owner go.
-  const dropSecond = await submitForm(ownersAdminClient.jar, `/staff/sc_owner2`,
-    'Nonaktifkan staf</button>', { userId: 'sc_owner2' })
-  ok('with two owners active, one of them can be deactivated',
-    dropSecond.status === 200 && await activeOf('sc_owner2', ownersOrgId) === false
-      && !dropSecond.html.includes(LAST_OWNER_MSG),
-    `got ${dropSecond.status}`)
-
-  const dropLast = await submitForm(ownersAdminClient.jar, `/staff/${ownersOwnerRow.user_id}`,
-    'Nonaktifkan staf</button>', { userId: ownersOwnerRow.user_id })
-  ok('the last active owner cannot be deactivated (spec 7.8)',
-    dropLast.status === 200 && dropLast.html.includes(LAST_OWNER_MSG),
-    `got ${dropLast.status}`)
-  ok('and they are still active',
-    await activeOf(ownersOwnerRow.user_id, ownersOrgId) === true)
-
-  // 9j. The same rule under real concurrency, from two live connections.
-  // The statement is READ OUT OF actions.ts, not copied here: a copy proves
-  // the copy. Two admins deactivating two DIFFERENT owners is the case a
-  // check-then-act guard passes twice.
-  await pool.query(`
-    update staff_profiles set active = true, deactivated_at = null
-     where user_id = 'sc_owner2' and organization_id = $1`, [ownersOrgId])
+  // The statement is READ OUT OF actions.ts, not copied here: a copy proves the
+  // copy. Hoisted above the assertions that use it.
   const actionsSrc = readFileSync('app/(app)/staff/actions.ts', 'utf8')
   const sqlStart = actionsSrc.indexOf('with owners as materialized')
   const sqlEnd = actionsSrc.indexOf('returning user_id', sqlStart)
@@ -1086,6 +1104,54 @@ try {
   ok('the deactivation statement was read out of actions.ts, locking clause and all',
     sqlStart !== -1 && sqlEnd !== -1 && deactivateSql.includes('for update of'),
     deactivateSql.slice(0, 120))
+
+  // Fix round 1: spec 6.1 covers deactivation as well as demotion. Ending a
+  // co-owner's employment -- sessions revoked, seat freed, locked out of a
+  // tenant they own -- is strictly more than the role change already refused.
+  // Asserted while sc_owner2 is still active, before the owner-driven success.
+  const adminDropsOwner = await submitForm(ownersAdminClient.jar, `/staff/sc_owner2`,
+    'Nonaktifkan staf</button>', { userId: 'sc_owner2' })
+  ok('an admin cannot deactivate an owner (spec 6.1)',
+    adminDropsOwner.status === 200
+      && adminDropsOwner.html.includes('Hanya pemilik yang dapat menonaktifkan pemilik.'),
+    `got ${adminDropsOwner.status}`)
+  ok('and that owner is still active',
+    await activeOf('sc_owner2', ownersOrgId) === true)
+
+  // An OWNER can. Without this the refusals around it would pass just as well
+  // against a rule that simply never lets an owner go.
+  const dropSecond = await submitForm(ownersOwner.jar, `/staff/sc_owner2`,
+    'Nonaktifkan staf</button>', { userId: 'sc_owner2' })
+  ok('with two owners active, an owner can deactivate the other',
+    dropSecond.status === 200 && await activeOf('sc_owner2', ownersOrgId) === false
+      && !dropSecond.html.includes(LAST_OWNER_MSG),
+    `got ${dropSecond.status}`)
+
+  // The last-owner clause, asserted on the statement itself rather than through
+  // a form. With the 6.1 guard in place there is no single-threaded UI actor
+  // who can reach it: the actor must be an owner, their own session proves
+  // their profile active, and self-deactivation is refused first -- so any
+  // active owner target implies at least two active owners and the write
+  // proceeds. The refusal is a CONCURRENT outcome, driven for real by the two
+  // races below; this checks the same statement the action runs, single-file.
+  const lastOwnerSql = await pool.query(deactivateSql, [ownersOrgId, ownersOwnerRow.user_id])
+  ok('the statement refuses to deactivate the last active owner (spec 7.8)',
+    lastOwnerSql.rows.length === 0, JSON.stringify(lastOwnerSql.rows))
+  ok('and they are still active',
+    await activeOf(ownersOwnerRow.user_id, ownersOrgId) === true)
+
+  await pool.query(`
+    update staff_profiles set active = true, deactivated_at = null
+     where user_id = 'sc_owner2' and organization_id = $1`, [ownersOrgId])
+
+  // 9j. Race one, from two live connections: two OWNERS deactivating each
+  // other. Both snapshots see two owners, so a check-then-act guard writes
+  // twice and the salon ends ownerless.
+  const activeOwners = async () => (await pool.query(`
+    select count(*)::int n from staff_profiles s
+      join members m on m.user_id = s.user_id and m.organization_id = s.organization_id
+     where s.organization_id = $1 and s.active
+       and (string_to_array(m.role, ',') && array['owner'])`, [ownersOrgId])).rows[0].n
 
   const c1 = await pool.connect()
   const c2 = await pool.connect()
@@ -1113,14 +1179,55 @@ try {
     JSON.stringify(raceA.rows))
   ok('the other refuses, having re-read under the lock', raceB.rows.length === 0,
     JSON.stringify(raceB.rows))
-  const { rows: [ownersLeft] } = await pool.query(`
-    select count(*)::int n from staff_profiles s
-      join members m on m.user_id = s.user_id and m.organization_id = s.organization_id
-     where s.organization_id = $1 and s.active
-       and (string_to_array(m.role, ',') && array['owner'])`, [ownersOrgId])
-  ok('and the salon still has an owner', ownersLeft.n >= 1, JSON.stringify(ownersLeft))
+  ok('and the salon still has an owner', await activeOwners() >= 1,
+    `${await activeOwners()} left`)
 
-  // 9k. spec 7.14, across every fixture this run created.
+  // 9k. Race two, the one `for update of s` alone does not cover. Owner-ness
+  // is read from members.role, and updateStaffRoleAction writes members while
+  // taking no staff_profiles lock at all -- so with s alone the two statements
+  // never contend: demote owner B, and concurrently deactivate owner A whose
+  // snapshot still counts B, and both commit for ZERO active owners. The fix
+  // is one token in the lock set, and it is read out of actions.ts like the
+  // rest, so weakening it back to `of s` fails here.
+  await pool.query(`
+    update staff_profiles set active = true, deactivated_at = null
+     where organization_id = $1`, [ownersOrgId])
+  await pool.query(`
+    update members set role = 'owner'
+     where user_id = 'sc_owner2' and organization_id = $1`, [ownersOrgId])
+  ok('both owners are active again (precondition for the demotion race)',
+    await activeOwners() === 2, `${await activeOwners()} owners`)
+
+  const d1 = await pool.connect()
+  const d2 = await pool.connect()
+  let demoteRace
+  try {
+    await d1.query('begin')
+    await d2.query('begin')
+    // Exactly what auth.api.updateMemberRole writes: the members row, nothing
+    // else. Uncommitted, holding that row's lock.
+    await d1.query(`
+      update members set role = 'admin'
+       where user_id = 'sc_owner2' and organization_id = $1`, [ownersOrgId])
+    const pending = d2.query(deactivateSql, [ownersOrgId, ownersOwnerRow.user_id])
+    let settled = false
+    pending.then(() => { settled = true }, () => { settled = true })
+    await new Promise((r) => setTimeout(r, 400))
+    ok('a deactivation blocks behind an uncommitted demotion of the other owner',
+      !settled)
+    await d1.query('commit')
+    demoteRace = await pending
+    await d2.query('commit')
+  } finally {
+    d1.release()
+    d2.release()
+  }
+  ok('and refuses once the demotion lands, the demoted owner dropped on re-check',
+    demoteRace.rows.length === 0, JSON.stringify(demoteRace.rows))
+  ok('so demote-one-owner || deactivate-the-other still leaves an active owner',
+    await activeOwners() >= 1, `${await activeOwners()} left`)
+
+  // 9l. spec 7.14, across every fixture this run created.
   const { rows: [pairing] } = await pool.query(`
     select count(*)::int n from staff_profiles s
      where s.team_id is not null

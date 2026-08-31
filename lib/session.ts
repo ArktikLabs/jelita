@@ -23,13 +23,25 @@ export async function getSession() {
  * stops here. Checked at the point both guard families converge, so no caller
  * can forget it. Memoised per request -- requireUser alone is reached several
  * times on one page through requireBranch and currentEntitlements.
+ *
+ * It REVOKES rather than merely reporting, because their credentials still
+ * work: signInEmail knows nothing of staff_profiles, so a dismissed employee
+ * can sign in again whenever they like. Refusing a still-live cookie is not
+ * enough -- app/(auth)/layout.tsx bounces anyone holding a session to
+ * /dashboard, so /dashboard and /login would trade the request until the
+ * browser gave up, with the sign-out button behind the app layout that never
+ * renders. Killing the session removes that contradiction; teaching the auth
+ * layout this same check would only paper over it.
  */
 const isDeactivated = cache(async (userId: string, organizationId: string | null | undefined) => {
   if (!organizationId) return false
   const { rows } = await db.execute(sql`
     select active from staff_profiles
      where user_id = ${userId} and organization_id = ${organizationId}`)
-  return (rows[0] as { active: boolean } | undefined)?.active === false
+  if ((rows[0] as { active: boolean } | undefined)?.active !== false) return false
+  const ctx = await auth.$context
+  await ctx.internalAdapter.deleteUserSessions(userId)
+  return true
 })
 
 /** Session or throw. Use at the top of any authenticated server action. */
