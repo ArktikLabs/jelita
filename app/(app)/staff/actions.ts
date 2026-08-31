@@ -429,13 +429,24 @@ export async function updateStaffRoleAction(
   // B, then demote yourself" left ZERO active owners with every guard
   // satisfied. Reproduced in two clicks.
   //
-  // A sequential check-then-act, deliberately: the write it guards is
-  // better-auth's updateMemberRole on its own connection, so there is no
-  // single statement to fold the count into the way deactivateStaffAction
-  // does. The concurrent direction is covered from the other side -- that
-  // action's materialized `for update of s, m` lock set makes a deactivation
-  // block behind an uncommitted demotion and re-check (staff-check §9k).
-  if (target.role.split(',').includes('owner') && (await activeOwnerCount(organizationId)) <= 1) {
+  // `target.active` is part of the test, not decoration: deactivateStaffAction
+  // asks whether the target is IN the active-owner set (`user_id not in
+  // (select user_id from owners)`), so an INACTIVE owner is not the last
+  // active one and must stay demotable. Without it, this wave's own documented
+  // sequence -- deactivate co-owner B -- left B permanently un-demotable,
+  // refused with a message that is not even true of them.
+  //
+  // ponytail: sequential check-then-act. Guarded: the single-actor case.
+  // Serialised elsewhere: demote || DEACTIVATE, by deactivateStaffAction's
+  // materialized `for update of s, m` lock set (staff-check §9k). NOT guarded:
+  // demote || DEMOTE -- two owners demoting each other in the same instant
+  // touch no shared lock (better-auth's updateMemberRole writes its own
+  // members row on its own connection, and its own guard fires only on
+  // self-demotion), so both succeed and the salon ends ownerless. Fix shape
+  // when it is picked up: re-check activeOwnerCount AFTER updateMemberRole and
+  // restore the role if it hit zero.
+  if (target.role.split(',').includes('owner') && target.active
+      && (await activeOwnerCount(organizationId)) <= 1) {
     return { error: LAST_OWNER_MSG }
   }
 

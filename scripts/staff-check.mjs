@@ -1474,6 +1474,29 @@ try {
   ok('so the salon still has an active owner', await activeOwners() === 1,
     `${await activeOwners()} left`)
 
+  // Both directions of that clause, asserted separately so a future change
+  // cannot collapse them back into one test. sc_owner2 is an INACTIVE owner
+  // right now: not a member of the active-owner set deactivateStaffAction
+  // guards, so demoting them must be allowed -- refusing it would leave a
+  // deactivated co-owner permanently un-demotable, told they are the last
+  // active owner when they are not active at all.
+  const demoteInactiveOwner = await submitForm(ownersOwner.jar, `/staff/sc_owner2`,
+    'Simpan peran</button>', { userId: 'sc_owner2', role: 'admin' })
+  ok('direction 1: an INACTIVE co-owner can still be demoted while another owner is active',
+    demoteInactiveOwner.status === 200 && !demoteInactiveOwner.html.includes(LAST_OWNER_MSG),
+    `got ${demoteInactiveOwner.status}`)
+  ok('and members.role actually changed', (await pool.query(
+    `select role from members where user_id = 'sc_owner2' and organization_id = $1`,
+    [ownersOrgId])).rows[0]?.role === 'admin')
+
+  const demoteLastAgain = await submitForm(ownersOwner.jar, `/staff/${ownersOwnerRow.user_id}`,
+    'Simpan peran</button>', { userId: ownersOwnerRow.user_id, role: 'admin' })
+  ok('direction 2: the ACTIVE last owner still cannot be demoted',
+    demoteLastAgain.status === 200 && demoteLastAgain.html.includes(LAST_OWNER_MSG),
+    `got ${demoteLastAgain.status}`)
+  ok('and the salon kept its owner', await activeOwners() === 1,
+    `${await activeOwners()} left`)
+
   // 9l. spec 7.14, across every fixture this run created.
   const { rows: [pairing] } = await pool.query(`
     select count(*)::int n from staff_profiles s
