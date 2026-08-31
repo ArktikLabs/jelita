@@ -64,6 +64,13 @@
       "when": 1788078503621,
       "tag": "0008_branch_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788162031916,
+      "tag": "0009_staff_profiles",
+      "breakpoints": true
     }
   ]
 }
