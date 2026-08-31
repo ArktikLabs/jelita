@@ -228,7 +228,7 @@ export async function importStaffAction(
       },
     }) as CsvRow[]
   } catch {
-    return { error: 'File CSV tidak dapat dibaca. Periksa formatnya dan unggah ulang.' }
+    return { error: 'File CSV tidak dapat dibaca. Periksa formatnya dan tempel ulang.' }
   }
 
   for (const { record, info } of parsedRows) {
@@ -292,7 +292,7 @@ export async function importStaffAction(
 
   if (badRows.length > 0) {
     return {
-      error: `${badRows.length} baris gagal divalidasi. Perbaiki dan unggah ulang.`,
+      error: `${badRows.length} baris gagal divalidasi. Perbaiki dan tempel ulang.`,
       rows: badRows,
     }
   }
@@ -306,8 +306,11 @@ export async function importStaffAction(
   const entitlements = await getEntitlements(organizationId)
   const cap = entitlements.caps.staff
   if (cap !== undefined) {
-    const used = await countResource(organizationId, 'staff')
-    const remaining = used === null ? Infinity : cap - used
+    // countResource returns null only for resources it does not count
+    // (services, products), never for 'staff' -- `?? 0` satisfies the type
+    // without an unlimited-seats branch nothing can reach.
+    const used = (await countResource(organizationId, 'staff')) ?? 0
+    const remaining = cap - used
     if (goodRows.length > remaining) {
       return {
         error: `Butuh ${goodRows.length} kursi staf, tersisa ${remaining}. `

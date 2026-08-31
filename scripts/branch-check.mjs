@@ -356,7 +356,15 @@ try {
     })
     return { status: r.status, html: await r.text() }
   }
-  /** The BranchRow the layout handed the switcher, read out of the RSC payload. */
+  /** The Staf cell for one branch, read off the /branches table itself -- the
+   *  switcher prop is narrowed to what a label needs and no longer carries it. */
+  const staffCountOn = async (j, teamId) => {
+    const { html } = await getPage(j, '/branches')
+    const row = html.split('<tr').find((r) => r.includes(`/branches/${teamId}"`))
+    const cells = [...(row ?? '').matchAll(/<td[^>]*>(.*?)<\/td>/g)].map((m) => m[1])
+    return cells.length ? Number(cells.at(-1).replace(/<[^>]*>/g, '')) : null
+  }
+  /** The branch option the layout handed the switcher, read out of the RSC payload. */
   const branchProp = async (j, teamId) => {
     const { html } = await getPage(j, '/dashboard')
     const m = html.replace(/\\+"/g, '"').match(new RegExp(`\\{"teamId":"${teamId}"[^}]*\\}`))
@@ -420,8 +428,8 @@ try {
   // switched into a branch — a number that changes because someone looked at a
   // page. newTeam's only member so far is its creator.
   ok('a branch whose only members are management reports 0 staff',
-    (await branchProp(jar, newTeam))?.staffCount === 0,
-    JSON.stringify(await branchProp(jar, newTeam)))
+    await staffCountOn(jar, newTeam) === 0,
+    JSON.stringify(await staffCountOn(jar, newTeam)))
 
   await pool.query(
     `insert into team_members (id, team_id, user_id, created_at)
@@ -434,8 +442,8 @@ try {
     `update staff_profiles set team_id = $1 where user_id = $2 and organization_id = $3`,
     [newTeam, desk[0].id, org2.data.id])
   ok('assigning a front-desk/stylist member takes it to 1',
-    (await branchProp(jar, newTeam))?.staffCount === 1,
-    JSON.stringify(await branchProp(jar, newTeam)))
+    await staffCountOn(jar, newTeam) === 1,
+    JSON.stringify(await staffCountOn(jar, newTeam)))
 
   const blocked = await submitForm(jar, `/branches/${newTeam}`, 'Nonaktifkan cabang</button>')
   ok('deactivation is refused while staff are assigned, and the error names them',

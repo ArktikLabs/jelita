@@ -90,15 +90,15 @@ export default async function StaffDetailPage({
           changePasswordAction is the self path -- it passes
           revokeOtherSessions, keeping the caller's own session alive. */}
       {!isSelf && (
-      <Card>
-        <CardHeader>
-          <CardTitle>Kata sandi</CardTitle>
-          <CardDescription>Atur ulang kata sandi staf ini di tempat.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <PasswordForm staff={staff} />
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Kata sandi</CardTitle>
+            <CardDescription>Atur ulang kata sandi staf ini di tempat.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <PasswordForm staff={staff} />
+          </CardContent>
+        </Card>
       )}
     </div>
   )

@@ -1673,10 +1673,27 @@ try {
   const compPromise = fetch(ORIGIN + '/staff/import', {
     method: 'POST', headers: { cookie: cookieOf(importOwner.jar) }, body: compBody, redirect: 'manual',
   })
+  // Carried item: the "back to where it started" assertion below would pass
+  // vacuously if the failure hit ROW 1 and nothing was ever written -- the
+  // count would never have moved. Sample it while the request is in flight so
+  // the rise is asserted too, not assumed.
+  let sampling = true
+  const peakCompCount = (async () => {
+    let peak = beforeCompCount
+    while (sampling) {
+      peak = Math.max(peak, await memberCount(importOrgId))
+      await new Promise((r) => setTimeout(r, 100))
+    }
+    return peak
+  })()
   await new Promise((r) => setTimeout(r, 500))
   await pool.query(`update branch_profiles set active = false where team_id = $1`, [compBranchId])
   const compRes = await compPromise
   const compHtml = await compRes.text()
+  sampling = false
+  const compPeak = await peakCompCount
+  ok('rows really did commit before the failure -- the member count ROSE mid-request',
+    compPeak > beforeCompCount, `peak ${compPeak}, started ${beforeCompCount}`)
 
   ok('the third row fails once its branch is closed mid-request, not redirected',
     compRes.status === 200 && !compRes.headers.get('location'), `got ${compRes.status}`)
@@ -1689,6 +1706,52 @@ try {
     `before ${beforeCompCount}, after ${await memberCount(importOrgId)}`)
   ok('none of the three rows -- including the two that briefly committed -- exist',
     !(await userExists(compEmail1)) && !(await userExists(compEmail2)) && !(await userExists(compEmail3)))
+
+  // 10g. Mixed CRLF/LF line endings -- a file assembled from two sources.
+  // csv-parse 7.0.2 with relax_column_count:false counts columns across the
+  // stray \r and skips every row after the first (confirmed directly against
+  // this version: three rows in, ONE record out). The failure mode is a
+  // silently dropped staff row, so the assertion is on the rows created.
+  //
+  // Posted as a HAND-BUILT multipart body, not through FormData: undici's
+  // serializer normalises every \n in a field value to \r\n, so a
+  // FormData-driven version of this test cannot put mixed endings on the wire
+  // at all -- it passes with the normalisation removed, which is exactly the
+  // vacuous assertion this check exists to avoid (confirmed by breaking
+  // actions.ts's .replace(/\r\n?/g, '\n') and watching the FormData version
+  // still pass).
+  const crlf1 = `import-crlf1@${DOMAIN}`
+  const crlf2 = `import-crlf2@${DOMAIN}`
+  const crlf3 = `import-crlf3@${DOMAIN}`
+  const crlfCsv = `SC Import Crlf1,${crlf1},demo12345,admin,\r\n`
+    + `SC Import Crlf2,${crlf2},demo12345,stylist,${importBranchName}\n`
+    + `SC Import Crlf3,${crlf3},demo12345,admin,`
+  const crlfPage = await getPage(importOwner.jar, '/staff/import')
+  const crlfForm = crlfPage.html.split('<form').find((f) => f.includes('name="csv"'))
+  const crlfFields = [...crlfForm.slice(0, crlfForm.indexOf('</form>')).matchAll(
+    /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)]
+    .map((m) => [decodeHtml(m[1]), decodeHtml(m[2] ?? '')])
+  crlfFields.push(['csv', crlfCsv])
+  const boundary = `----staffcheck${Date.now()}`
+  const crlfBody = crlfFields.map(([k, v]) =>
+    `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`).join('')
+    + `--${boundary}--\r\n`
+  const crlfRes = await fetch(ORIGIN + '/staff/import', {
+    method: 'POST',
+    headers: {
+      cookie: cookieOf(importOwner.jar),
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+    body: crlfBody,
+    redirect: 'manual',
+  })
+  const crlfHtml = await crlfRes.text()
+  ok('a file mixing CRLF and LF imports without a validation error',
+    crlfRes.status === 303 && (crlfRes.headers.get('location') ?? '').includes('/staff'),
+    `got ${crlfRes.status} ${crlfHtml.slice(0, 300)}`)
+  ok('and ALL THREE rows were created -- none silently dropped',
+    (await userExists(crlf1)) && (await userExists(crlf2)) && (await userExists(crlf3)),
+    JSON.stringify([await userExists(crlf1), await userExists(crlf2), await userExists(crlf3)]))
 
   // 10c. A file needing more seats than remain returns one error naming the
   // shortfall, and creates nothing (spec §7.16). Fresh org on the (capped)
