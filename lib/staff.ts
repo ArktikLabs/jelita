@@ -120,6 +120,10 @@ export async function provisionStaff(input: {
  * `updated` return value here. scripts/staff-check.mjs section 8 exercises
  * this directly, including a teamId belonging to another salon.
  *
+ * A branch-assigning call also clears any OTHER team_members row this person
+ * holds in the same salon -- one branch each (spec §2.1), and a stale row is
+ * where a fresh login lands (lib/auth.ts reads the oldest one).
+ *
  * Returns whether a row was actually updated: false means either the
  * (userId, organizationId) pair doesn't exist, or teamId doesn't belong to
  * organizationId -- the caller can't tell which, and shouldn't need to (both
@@ -149,10 +153,36 @@ export async function assignBranch(
     // (the API route today, Server Actions next) runs inside a request
     // scope, so next/headers resolves to the same cookies the caller's own
     // permission check already used.
-    await auth.api.addTeamMember({
-      body: { teamId, userId, organizationId },
-      headers: await headers(),
-    })
+    const h = await headers()
+    await auth.api.addTeamMember({ body: { teamId, userId, organizationId }, headers: h })
+
+    // ...and REMOVE the rows this move replaces. Assignment is one branch per
+    // person (spec §2.1) and this module owns the pair (§3.3), but transfer
+    // only ever added: both rows survived, and lib/auth.ts's session hook
+    // resolves activeTeamId from the OLDEST team_members row for the org, so a
+    // transferred front-desk user signed back in at their OLD branch -- and
+    // frontdesk holds branch:['read'] with no switch, so they could not correct
+    // it and every requireBranch()-scoped write landed in a branch they no
+    // longer work at.
+    //
+    // Added first, removed second: if the add fails they keep a navigational
+    // row rather than none. Signature confirmed against the installed source,
+    // node_modules/better-auth/dist/plugins/organization/routes/crud-team.mjs
+    // (removeTeamMember, body { teamId, userId, organizationId? },
+    // `requireHeaders: true, use: [orgMiddleware, orgSessionMiddleware]`, and
+    // it checks the CALLING session's member:['delete'] -- so it needs the
+    // caller's own headers, exactly like addTeamMember above).
+    const { rows: stale } = await db.execute(sql`
+      select tm.team_id from team_members tm
+        join teams t on t.id = tm.team_id
+       where tm.user_id = ${userId} and t.organization_id = ${organizationId}
+         and tm.team_id <> ${teamId}`)
+    for (const row of stale as { team_id: string }[]) {
+      await auth.api.removeTeamMember({
+        body: { teamId: row.team_id, userId, organizationId },
+        headers: h,
+      })
+    }
   }
   return updated
 }

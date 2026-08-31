@@ -847,6 +847,32 @@ try {
   ok('and addTeamMember wrote the navigational team_members row too',
     movedTeamMember.length === 1)
 
+  // The other half of the pair, which transfer never used to do: the OLD row
+  // has to go. lib/auth.ts resolves activeTeamId from the OLDEST team_members
+  // row for the org, so leaving both meant a fresh sign-in landed the staff
+  // member back in the branch they were moved out of -- and frontdesk/stylist
+  // hold branch:['read'] with no switch, so they cannot correct it.
+  const { rows: oldTeamMember } = await pool.query(
+    `select 1 from team_members where team_id = $1 and user_id = $2`,
+    [withinBranchId, guardStylistId])
+  ok('and the OLD team_members row was removed, not left behind',
+    oldTeamMember.length === 0, `${oldTeamMember.length} stale rows`)
+  const { rows: allTeamMembers } = await pool.query(`
+    select tm.team_id from team_members tm join teams t on t.id = tm.team_id
+     where tm.user_id = $1 and t.organization_id = $2`, [guardStylistId, guardOrgId])
+  ok('exactly one navigational row remains, on the new branch (spec §2.1)',
+    allTeamMembers.length === 1 && allTeamMembers[0].team_id === 'sc_guard_fill2',
+    JSON.stringify(allTeamMembers))
+
+  // End to end, the way it was reproduced: sign in fresh and see where the
+  // session lands. A count assertion alone would not prove the consequence.
+  const movedClient = new Client()
+  await movedClient.req('/sign-in/email', { email: guardStylistEmail, password: PW })
+  const movedSession = await movedClient.get('/get-session')
+  ok('so a fresh sign-in lands them in the NEW branch, not the old one',
+    movedSession.data?.session?.activeTeamId === 'sc_guard_fill2',
+    JSON.stringify(movedSession.data?.session?.activeTeamId))
+
   // 8i. transferStaffAction refuses a transfer targeting a management role
   // (fix round 1, item 1) -- owner and admin must keep team_id null (spec
   // §4). Forged from guardStylistId's OWN transfer form (their page still
