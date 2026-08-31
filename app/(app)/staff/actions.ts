@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { headers } from 'next/headers'
 import { createLocalAccountIssuer } from 'better-auth'
+import { parse as parseCsv } from 'csv-parse/sync'
 import { sql } from 'drizzle-orm'
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
@@ -28,6 +29,30 @@ const NOT_FOUND = { error: 'Staf tidak ditemukan.' }
 
 const CLOSED_MSG = 'Cabang ini nonaktif. Aktifkan dulu sebelum menempatkan staf.'
 const OVERCAP_MSG = 'Cabang ini terkunci oleh batas paket. Upgrade untuk menempatkan staf.'
+
+/**
+ * What provisionStaff's rejection means in Indonesian -- shared by
+ * createStaffAction and importStaffAction's commit loop so a failure reads
+ * identically regardless of which screen triggered it. BRANCH_LOCKED and
+ * BRANCH_CLOSED are plain Error/PlanError throws (not APIError), so
+ * formError's fallback alone would lose their specific copy -- these three
+ * checks have to run before the formError fallback catches everything else.
+ */
+function provisionErrorMessage(e: unknown): string {
+  if (e instanceof PlanError && e.code === 'BRANCH_LOCKED') return OVERCAP_MSG
+  if (e instanceof Error && e.message === 'BRANCH_CLOSED') return CLOSED_MSG
+  if (e instanceof PlanError) return 'Kuota staf paket Anda sudah tercapai. Upgrade untuk menambah staf.'
+  if (e instanceof Error && e.message === 'EMAIL_TAKEN') return 'Email ini sudah terdaftar.'
+  return formError(e, 'Gagal menambah staf.')
+}
+
+/** One physical row from the parsed CSV, alongside csv-parse's own line
+ *  count for that record (correct even across an embedded newline inside a
+ *  quoted field, which a naive `split('\n')` would miscount). */
+type CsvRow = {
+  record: { name: string; email: string; password: string; role: string; branch: string }
+  info: { lines: number }
+}
 
 /**
  * Used by transferStaffAction only -- createStaffAction goes through
@@ -113,19 +138,7 @@ export async function createStaffAction(
     // A branch the owner closed, or one the plan tier has outgrown, must not
     // silently acquire a new hire -- provisionStaff itself throws these
     // (lib/staff.ts), so every creation path gets the guard once.
-    if (e instanceof PlanError && e.code === 'BRANCH_LOCKED') {
-      return { error: OVERCAP_MSG }
-    }
-    if (e instanceof Error && e.message === 'BRANCH_CLOSED') {
-      return { error: CLOSED_MSG }
-    }
-    if (e instanceof PlanError) {
-      return { error: 'Kuota staf paket Anda sudah tercapai. Upgrade untuk menambah staf.' }
-    }
-    if (e instanceof Error && e.message === 'EMAIL_TAKEN') {
-      return { error: 'Email ini sudah terdaftar.' }
-    }
-    return { error: formError(e, 'Gagal menambah staf.') }
+    return { error: provisionErrorMessage(e) }
   }
   revalidatePath('/staff')
   redirect('/staff')
@@ -148,9 +161,10 @@ export async function importStaffAction(
   await requirePagePermission({ staff: ['create'] })
   const { organizationId } = await requirePageOrg()
 
-  const csv = String(formData.get('csv') ?? '')
   const branches = await listBranches(organizationId)
-  const branchByName = new Map(branches.map((b) => [b.name, b]))
+  // Lowercased key: "cabang utama" must resolve the same branch as
+  // "Cabang Utama" -- the error copy below still shows what the row typed.
+  const branchByName = new Map(branches.map((b) => [b.name.toLowerCase(), b]))
   const ctx = await auth.$context
 
   const goodRows: {
@@ -160,14 +174,45 @@ export async function importStaffAction(
   const badRows: { line: number; message: string }[] = []
   const seenEmails = new Set<string>()
 
-  const lines = csv.split(/\r?\n/)
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i]
-    if (!raw.trim()) continue
-    const line = i + 1
-    const [name = '', email = '', password = '', roleRaw = '', branchName = '']
-      = raw.split(',').map((c) => c.trim())
-    const role = roleRaw as SalonRole
+  // Normalised to `\n` before parsing: a pasted file mixing CRLF and LF line
+  // endings (e.g. copied from two different sources) confuses csv-parse
+  // 7.0.2's own column-count check into merging an otherwise-good row into
+  // the next bad one instead of reporting them separately -- confirmed
+  // directly against this exact version before shipping. Consistent
+  // endings sidestep it entirely rather than depend on a fix upstream.
+  const csv = String(formData.get('csv') ?? '').replace(/\r\n?/g, '\n')
+
+  let parsedRows: CsvRow[]
+  try {
+    parsedRows = parseCsv(csv, {
+      // Positional, not a header row -- this form has no header, so the
+      // column names come from here, not from row 1.
+      columns: ['name', 'email', 'password', 'role', 'branch'],
+      bom: true, // strips a UTF-8 BOM, which a spreadsheet export often adds
+      trim: true,
+      skip_empty_lines: true,
+      relax_column_count: false, // a mis-shifted row must fail, not silently pad/truncate
+      info: true,
+      skip_records_with_error: true,
+      on_skip: (err) => {
+        badRows.push({
+          // err.lines is set by csv-parse itself from its own line count,
+          // not our own indexing, so it stays correct even past an earlier
+          // multi-line quoted field.
+          line: typeof err?.lines === 'number' ? err.lines : badRows.length + goodRows.length + 1,
+          message: 'Jumlah kolom tidak sesuai. Harus 5: nama, email, kata sandi, peran, cabang.',
+        })
+      },
+    }) as CsvRow[]
+  } catch {
+    return { error: 'File CSV tidak dapat dibaca. Periksa formatnya dan unggah ulang.' }
+  }
+
+  for (const { record, info } of parsedRows) {
+    const line = info.lines
+    const { name, email, password } = record
+    const role = record.role as SalonRole
+    const branchName = record.branch
 
     if (!name || !email || !password) {
       badRows.push({ line, message: 'Nama, email dan kata sandi wajib diisi.' })
@@ -194,7 +239,7 @@ export async function importStaffAction(
     }
     let teamId: string | null = null
     if (needsBranch) {
-      const branch = branchByName.get(branchName)
+      const branch = branchByName.get(branchName.toLowerCase())
       if (!branch) {
         badRows.push({ line, message: `Cabang tidak ditemukan: ${branchName}.` })
         continue
@@ -248,23 +293,53 @@ export async function importStaffAction(
     }
   }
 
-  // Validation above (role, branch status, quota) made every row eligible,
-  // so this loop should never fail partway -- but if it does (a race with
-  // another request, say), report exactly what happened rather than
-  // silently leaving a half-created roster.
-  let created = 0
+  // Validation above (role, branch status, quota) made every row eligible
+  // at the moment it was checked -- but provisionStaff re-reads live state
+  // on every call (requireQuota, and getBranchStatus for a branch row), so a
+  // concurrent change between validation and a later row's write (another
+  // request taking the same email, closing a branch, spending the last
+  // seat) can still make row k fail after 1..k-1 already committed. This is
+  // NOT wrapped in db.transaction(): provisionStaff writes through
+  // better-auth's internalAdapter, which does not join a Drizzle
+  // transaction -- that wrapper would compile, look like it protects the
+  // loop, and protect nothing. Instead, track what this request created and
+  // undo it on any failure, so the all-or-nothing guarantee holds even when
+  // a row succeeds before a later one throws.
+  const createdIds: string[] = []
   for (const row of goodRows) {
     try {
-      await provisionStaff({
+      const { user } = await provisionStaff({
         organizationId, name: row.name, email: row.email,
         password: row.password, role: row.role, teamId: row.teamId,
       })
-      created++
+      createdIds.push(user.id)
     } catch (e) {
+      const stuck: string[] = []
+      for (const id of createdIds) {
+        // deleteUser removes the user row; members and staff_profiles cascade
+        // off it (lib/schema/auth.ts, lib/schema/staff.ts) -- one delete
+        // undoes the whole row, not three.
+        try {
+          await ctx.internalAdapter.deleteUser(id)
+        } catch {
+          stuck.push(id)
+        }
+      }
+      if (stuck.length === 0) {
+        return {
+          error: `Baris ${row.line} gagal (${provisionErrorMessage(e)}). `
+            + `${createdIds.length} staf yang sempat dibuat telah dibatalkan -- tidak ada yang tersimpan.`,
+          rows: [{ line: row.line, message: provisionErrorMessage(e) }],
+        }
+      }
+      // The compensating delete itself failed for some of them -- an honest
+      // partial report, not a claimed all-or-nothing result that isn't true
+      // anymore.
       return {
-        error: `${created} dari ${goodRows.length} staf berhasil dibuat sebelum baris ini gagal.`,
-        rows: [{ line: row.line, message: formError(e, 'Gagal menambah staf.') }],
-        created,
+        error: `Baris ${row.line} gagal. ${stuck.length} dari ${createdIds.length} staf yang `
+          + 'sempat dibuat GAGAL dibatalkan dan masih tersimpan. Segera hubungi dukungan.',
+        rows: [{ line: row.line, message: provisionErrorMessage(e) }],
+        created: stuck.length,
       }
     }
   }

@@ -1337,6 +1337,112 @@ try {
     `got ${mgmtImport.status}`)
   ok('and it created nothing', !(await userExists(mgmtEmail)))
 
+  // 10e. A quoted field containing a comma parses into the right columns,
+  // not a truncated one (fix round 1, item 2). Two branches deliberately
+  // chosen so a naive `split(',')` truncation of the second would collide
+  // with the first: "Cabang Jakarta, Selatan" truncated at the comma reads
+  // as "Cabang Jakarta" -- exactly the shorter branch's own name. A quoted
+  // name containing a comma ("Dewi Lestari, S.Kom") rides along in the same
+  // row to prove the field before it is unaffected too.
+  const truncationBranch = await importOwner.req('/organization/create-team',
+    { name: 'Cabang Jakarta', organizationId: importOrgId })
+  const truncationBranchId = truncationBranch.data?.id
+  const commaBranchName = 'Cabang Jakarta, Selatan'
+  const commaBranch = await importOwner.req('/organization/create-team',
+    { name: commaBranchName, organizationId: importOrgId })
+  const commaBranchId = commaBranch.data?.id
+  ok('two branches created, one a prefix of the other up to the comma',
+    !!truncationBranchId && !!commaBranchId && truncationBranchId !== commaBranchId,
+    JSON.stringify({ truncationBranch: truncationBranch.data, commaBranch: commaBranch.data }))
+
+  const commaEmail = `import-comma@${DOMAIN}`
+  const commaCsv = `"Dewi Lestari, S.Kom",${commaEmail},demo12345,stylist,"${commaBranchName}"`
+  const commaImport = await submitForm(importOwner.jar, '/staff/import', 'name="csv"',
+    { csv: commaCsv })
+  ok('a quoted name and branch, both containing a comma, is accepted and redirects',
+    commaImport.status === 303 && (commaImport.location ?? '').includes('/staff'),
+    `got ${commaImport.status} ${commaImport.html.slice(0, 400)}`)
+
+  const { rows: [commaRow] } = await pool.query(`
+    select u.name, s.team_id from users u
+      join staff_profiles s on s.user_id = u.id and s.organization_id = $2
+     where u.email = $1`, [commaEmail, importOrgId])
+  ok('the name survived the embedded comma untruncated',
+    commaRow?.name === 'Dewi Lestari, S.Kom', `got ${JSON.stringify(commaRow)}`)
+  ok('and it landed in the LONGER branch, not the shorter one the truncation would collide with',
+    commaRow?.team_id === commaBranchId && commaRow?.team_id !== truncationBranchId,
+    `got ${JSON.stringify(commaRow)}, wanted ${commaBranchId}, not ${truncationBranchId}`)
+
+  // 10f. Mid-commit failure triggers compensation, restoring the
+  // all-or-nothing guarantee (fix round 1, item 1, the blocking one).
+  // provisionStaff re-reads live branch status on every call, so a branch
+  // closed by someone else BETWEEN this request's validation snapshot and
+  // a later row's own write reproduces the exact partial-commit shape the
+  // original break-and-restore evidence exposed.
+  //
+  // Timed deliberately, not on a guess: this dev server's own
+  // requirePagePermission alone costs ~200ms (a real hasPermission round
+  // trip), so the GET this section's own /staff/import check needs is done
+  // and fully read BEFORE the clock starts, and the deactivation is fired
+  // against a raw, separate connection (no app overhead) after the POST is
+  // in flight. Measured directly against this exact request shape before
+  // picking the delay: closing the branch under 300ms after the POST starts
+  // still lands before this action's own listBranches() snapshot runs (the
+  // row is then refused at VALIDATION, never reaching the commit loop at
+  // all -- a different, weaker test), while every delay from 300ms to at
+  // least 1200ms lands after validation but before the third row's own
+  // commit, with total request time consistently ~2.3-2.5s (two real
+  // password hashes). 500ms sits in the middle of that measured window,
+  // not at either edge.
+  const compBranch = await importOwner.req('/organization/create-team',
+    { name: 'Cabang Kompensasi', organizationId: importOrgId })
+  const compBranchId = compBranch.data?.id
+  ok('compensation-test branch created', !!compBranchId, JSON.stringify(compBranch.data))
+
+  const beforeCompCount = await memberCount(importOrgId)
+  const compEmail1 = `import-comp1@${DOMAIN}`
+  const compEmail2 = `import-comp2@${DOMAIN}`
+  const compEmail3 = `import-comp3@${DOMAIN}`
+  const compCsv = [
+    `SC Import Comp1,${compEmail1},demo12345,admin,`,
+    `SC Import Comp2,${compEmail2},demo12345,stylist,${importBranchName}`,
+    `SC Import Comp3,${compEmail3},demo12345,stylist,Cabang Kompensasi`,
+  ].join('\n')
+
+  // Built by hand instead of submitForm: submitForm's own GET-then-POST is
+  // one un-timed unit, and that GET alone costs several hundred ms on this
+  // dev server -- timing a delay against submitForm's start would mean
+  // racing against an unpredictable mix of GET and POST instead of against
+  // the POST alone.
+  const compPage = await getPage(importOwner.jar, '/staff/import')
+  const compForm = compPage.html.split('<form')
+    .find((f) => f.includes('name="csv"'))
+  const compBody = new FormData()
+  for (const m of compForm.slice(0, compForm.indexOf('</form>')).matchAll(
+    /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)) {
+    compBody.set(decodeHtml(m[1]), decodeHtml(m[2] ?? ''))
+  }
+  compBody.set('csv', compCsv)
+  const compPromise = fetch(ORIGIN + '/staff/import', {
+    method: 'POST', headers: { cookie: cookieOf(importOwner.jar) }, body: compBody, redirect: 'manual',
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  await pool.query(`update branch_profiles set active = false where team_id = $1`, [compBranchId])
+  const compRes = await compPromise
+  const compHtml = await compRes.text()
+
+  ok('the third row fails once its branch is closed mid-request, not redirected',
+    compRes.status === 200 && !compRes.headers.get('location'), `got ${compRes.status}`)
+  ok('it went through the COMMIT path, not validation -- proves the race actually landed where intended',
+    !compHtml.includes('baris gagal divalidasi'), compHtml.slice(0, 400))
+  ok('the failure is reported as a cancelled compensation, not silence',
+    compHtml.includes('telah dibatalkan'), compHtml.slice(0, 400))
+  ok('the member count is BACK TO WHERE IT STARTED -- the two earlier rows were undone, not left behind',
+    await memberCount(importOrgId) === beforeCompCount,
+    `before ${beforeCompCount}, after ${await memberCount(importOrgId)}`)
+  ok('none of the three rows -- including the two that briefly committed -- exist',
+    !(await userExists(compEmail1)) && !(await userExists(compEmail2)) && !(await userExists(compEmail3)))
+
   // 10c. A file needing more seats than remain returns one error naming the
   // shortfall, and creates nothing (spec §7.16). Fresh org on the (capped)
   // default plan, owner alone, so the owner's own seat sets a known
