@@ -28,6 +28,25 @@ export type PerformerRow = {
   branchName: string | null
 }
 
+export type CategoryRow = {
+  id: string
+  name: string
+}
+
+/** Categories of one salon, for grouping the list and populating the
+ *  create form's select -- {id, name} only, nothing a client component
+ *  doesn't render. */
+export async function listCategories(organizationId: string): Promise<CategoryRow[]> {
+  const { rows } = await db.execute(sql`
+    select id, name from service_categories
+     where organization_id = ${organizationId}
+     order by name`)
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+  }))
+}
+
 /** Services of one salon, newest last. Pass serviceId to narrow to one. */
 export async function listServices(
   organizationId: string, serviceId?: string,

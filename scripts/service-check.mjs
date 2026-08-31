@@ -13,6 +13,35 @@ const pool = new Pool({ connectionString: process.env.DIRECT_URL })
 const ORG = 'svccheck_org'
 const ORG2 = 'svccheck_org2'
 const DOMAIN = 'svccheck.local'
+const ORIGIN = process.env.BETTER_AUTH_URL
+const BASE = `${ORIGIN}/api/auth`
+const APP = `${ORIGIN}/api`
+const PW = 'demo12345'
+
+// Cookie-jar client, copied from scripts/staff-check.mjs: email verification
+// is on, so a freshly signed-up user has no session until verified.
+class Client {
+  constructor() { this.jar = new Map() }
+  async req(path, body, method = 'POST', base = BASE) {
+    const headers = { 'content-type': 'application/json', origin: ORIGIN }
+    if (this.jar.size) headers.cookie = [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ')
+    const res = await fetch(base + path, {
+      method,
+      headers,
+      body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
+    })
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      const kv = c.split(';')[0], i = kv.indexOf('=')
+      const name = kv.slice(0, i), val = kv.slice(i + 1)
+      if (val === '') this.jar.delete(name)
+      else this.jar.set(name, val)
+    }
+    const txt = await res.text()
+    let data; try { data = JSON.parse(txt) } catch { data = txt }
+    return { status: res.status, data }
+  }
+  get(p) { return this.req(p, undefined, 'GET') }
+}
 
 try {
   head('0. reset test fixtures')
@@ -226,6 +255,145 @@ try {
      where service_id = 'svc_s1' and team_id = 'svc_t1'`)
   ok('while an inheriting branch DOES follow it',
      Number((await priceAt('svc_s1', 'svc_t1')).price) === 200000)
+
+  head('7. /services and /services/new')
+  // Nothing under lib/ is importable here (lib/service.ts imports './db'
+  // without an extension, which plain Node ESM resolution refuses -- proven
+  // by trying `await import('../lib/service.ts')` first, same failure shape
+  // as lib/branch.ts and lib/staff.ts in the other suites). Driven over HTTP
+  // instead, against the real dev server.
+  const cookieOf = (j) => [...j].map(([k, v]) => `${k}=${v}`).join('; ')
+  const decodeHtml = (t) => t.replace(/&quot;/g, '"').replace(/&#x27;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+  const getPage = async (j, path) => {
+    const r = await fetch(ORIGIN + path, { headers: { cookie: cookieOf(j) }, redirect: 'manual' })
+    return { status: r.status, html: await r.text() }
+  }
+  const submitForm = async (j, path, marker, fields = {}) => {
+    const page = await getPage(j, path)
+    const form = page.html.split('<form').find((f) => f.includes(marker))
+    if (!form) throw new Error(`no form matching ${marker} on ${path} (status ${page.status})`)
+    const body = new FormData()
+    for (const m of form.slice(0, form.indexOf('</form>')).matchAll(
+      /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)) {
+      body.set(decodeHtml(m[1]), decodeHtml(m[2] ?? ''))
+    }
+    for (const [k, v] of Object.entries(fields)) body.set(k, v)
+    const r = await fetch(ORIGIN + path, {
+      method: 'POST', headers: { cookie: cookieOf(j) }, body, redirect: 'manual',
+    })
+    return { status: r.status, location: r.headers.get('location'), html: await r.text() }
+  }
+
+  const listOwnerEmail = `list-owner@${DOMAIN}`
+  const listOwner = new Client()
+  await listOwner.req('/sign-up/email',
+    { name: 'Svc List Owner', email: listOwnerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [listOwnerEmail])
+  await listOwner.req('/sign-in/email', { email: listOwnerEmail, password: PW })
+  const listOrg = await listOwner.req('/organization/create',
+    { name: 'Svc Check List', slug: 'svccheck-list' })
+  const listOrgId = listOrg.data?.id
+  ok('list salon created', !!listOrgId, JSON.stringify(listOrg.data))
+  await listOwner.req('/organization/set-active', { organizationId: listOrgId })
+  // Business plan, so the branch cap never interferes with the front-desk
+  // and stylist fixtures the redirect checks need below.
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [listOrgId])
+  const listBranch = await listOwner.req('/organization/create-team',
+    { name: 'Cabang List', organizationId: listOrgId })
+  const listBranchId = listBranch.data?.id
+  ok('branch created for the redirect fixtures', !!listBranchId, JSON.stringify(listBranch.data))
+
+  // 1. A duplicate name in one salon is refused, case-insensitively (§7.3).
+  const created = await submitForm(listOwner.jar, '/services/new', 'name="price"', {
+    name: 'Potong Rambut', durationMinutes: '60', price: '150000',
+  })
+  ok('creating a service redirects to /services',
+     created.status === 303 && (created.location ?? '').includes('/services'),
+     `got ${created.status} ${created.location}`)
+
+  const dup = await submitForm(listOwner.jar, '/services/new', 'name="price"', {
+    name: 'potong rambut', durationMinutes: '45', price: '99000',
+  })
+  ok('a duplicate name is refused case-insensitively, not redirected',
+     dup.status === 200 && dup.html.includes('Layanan dengan nama ini sudah ada.'),
+     `got ${dup.status}`)
+  const { rows: dupRows } = await pool.query(`
+    select count(*)::int n from services
+     where organization_id = $1 and lower(name) = 'potong rambut'`, [listOrgId])
+  ok('and no second row was created', dupRows[0].n === 1, `got ${dupRows[0].n}`)
+
+  // 2. A front-desk user is redirected away from /services (§5.1/§7.15).
+  const listDeskEmail = `list-desk@${DOMAIN}`
+  const madeDesk = await listOwner.req('/staff',
+    { name: 'Svc List Desk', email: listDeskEmail, password: PW,
+      role: 'frontdesk', branchId: listBranchId },
+    'POST', APP)
+  ok('front desk provisioned for the redirect check',
+    madeDesk.status === 201, `got ${madeDesk.status} ${JSON.stringify(madeDesk.data)}`)
+
+  const deskClient = new Client()
+  await deskClient.req('/sign-in/email', { email: listDeskEmail, password: PW })
+  const deskServicesPage = await fetch(`${ORIGIN}/services`, {
+    headers: { cookie: cookieOf(deskClient.jar) }, redirect: 'manual',
+  })
+  ok('front desk is redirected away from /services',
+    deskServicesPage.status === 307
+      && (deskServicesPage.headers.get('location') ?? '').includes('/dashboard'),
+    `got ${deskServicesPage.status} ${deskServicesPage.headers.get('location')}`)
+
+  // 3. A stylist likewise (§7.15).
+  const listStylistEmail = `list-stylist@${DOMAIN}`
+  const madeStylist = await listOwner.req('/staff',
+    { name: 'Svc List Stylist', email: listStylistEmail, password: PW,
+      role: 'stylist', branchId: listBranchId },
+    'POST', APP)
+  ok('stylist provisioned for the redirect check',
+    madeStylist.status === 201, `got ${madeStylist.status} ${JSON.stringify(madeStylist.data)}`)
+
+  const stylistClient = new Client()
+  await stylistClient.req('/sign-in/email', { email: listStylistEmail, password: PW })
+  const stylistServicesPage = await fetch(`${ORIGIN}/services`, {
+    headers: { cookie: cookieOf(stylistClient.jar) }, redirect: 'manual',
+  })
+  ok('a stylist is likewise redirected away from /services',
+    stylistServicesPage.status === 307
+      && (stylistServicesPage.headers.get('location') ?? '').includes('/dashboard'),
+    `got ${stylistServicesPage.status} ${stylistServicesPage.headers.get('location')}`)
+
+  // 4. Another salon's service id reads as not-found and leaks no name
+  // (§7.16). A COMPLETE fixture -- a real category AND a real service in
+  // ORG2 (section 3's fixture salon) -- not a bare row missing something the
+  // list query joins on. An incomplete fixture is exactly how three earlier
+  // assertions in this project passed for the wrong reason.
+  await pool.query(`
+    insert into service_categories (id, organization_id, name)
+    values ('svc_cat2', $1, 'Perawatan Rambut')`, [ORG2])
+  await pool.query(`
+    insert into services (id, organization_id, category_id, name, duration_minutes, price)
+    values ('svc_cross', $1, 'svc_cat2', 'Rebonding Salon Lain', 120, 500000)`, [ORG2])
+
+  const crossPage = await fetch(`${ORIGIN}/services/svc_cross`, {
+    headers: { cookie: cookieOf(listOwner.jar) }, redirect: 'manual',
+  })
+  const crossHtml = await crossPage.text()
+  ok('another salon\'s service id is not a 200 with data',
+    crossPage.status !== 200, `got ${crossPage.status}`)
+  ok('and its name never appears in that response', !crossHtml.includes('Rebonding Salon Lain'))
+
+  // The same claim, proven where it actually has teeth: listServices() is
+  // what the /services LIST renders for listOwner's own salon, so if its
+  // organization_id filter were ever dropped, ORG2's service and category
+  // would leak straight into listOwner's own catalogue -- not merely fail to
+  // resolve at a URL nothing points at yet.
+  const ownListPage = await fetch(`${ORIGIN}/services`, {
+    headers: { cookie: cookieOf(listOwner.jar) }, redirect: 'manual',
+  })
+  const ownListHtml = await ownListPage.text()
+  ok('the other salon\'s service never leaks into this salon\'s own list',
+    !ownListHtml.includes('Rebonding Salon Lain') && !ownListHtml.includes('Perawatan Rambut'))
 } finally {
   await pool.end()
 }
