@@ -16,7 +16,6 @@
     "staff:check": "node --env-file=.env.local scripts/staff-check.mjs",
     "service:check": "node --env-file=.env.local scripts/service-check.mjs",
     "plan:seed": "node --env-file=.env.local scripts/seed-plans.mjs",
-    "customer:check": "node --env-file=.env.local scripts/customer-check.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:db": "docker compose -f docker-compose.test.yml up -d --wait",
