@@ -45,3 +45,4 @@ next-env.d.ts
 
 # Playwright MCP scratch (browser console/network logs)
 .playwright-mcp/
+.next-e2e
