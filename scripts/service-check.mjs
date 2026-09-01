@@ -486,6 +486,204 @@ try {
   const ownListHtml = await ownListPage.text()
   ok('the other salon\'s service never leaks into this salon\'s own list',
     !ownListHtml.includes('Rebonding Salon Lain') && !ownListHtml.includes('Perawatan Rambut'))
+
+  head('8. the detail screen and per-branch overrides')
+  // A fresh salon, business plan so the branch cap (1 on free) never
+  // interferes with the two-branch fixture this section needs.
+  const ovrOwnerEmail = `ovr-owner@${DOMAIN}`
+  const ovrOwner = new Client()
+  await ovrOwner.req('/sign-up/email',
+    { name: 'Svc Ovr Owner', email: ovrOwnerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [ovrOwnerEmail])
+  await ovrOwner.req('/sign-in/email', { email: ovrOwnerEmail, password: PW })
+  const ovrOrg = await ovrOwner.req('/organization/create',
+    { name: 'Svc Check Overrides', slug: 'svccheck-overrides' })
+  const ovrOrgId = ovrOrg.data?.id
+  ok('overrides salon created', !!ovrOrgId, JSON.stringify(ovrOrg.data))
+  await ovrOwner.req('/organization/set-active', { organizationId: ovrOrgId })
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [ovrOrgId])
+
+  const branchA = await ovrOwner.req('/organization/create-team',
+    { name: 'Cabang Utama Ovr', organizationId: ovrOrgId })
+  const branchB = await ovrOwner.req('/organization/create-team',
+    { name: 'Cabang Kedua Ovr', organizationId: ovrOrgId })
+  const teamA = branchA.data?.id
+  const teamB = branchB.data?.id
+  ok('two branches created for the overrides fixture', !!teamA && !!teamB,
+     JSON.stringify([branchA.data, branchB.data]))
+
+  const created8 = await submitForm(ovrOwner.jar, '/services/new', 'name="price"',
+    { name: 'Creambath Premium', durationMinutes: '40', price: '100000' })
+  ok('service created for the overrides fixture',
+     created8.status === 303 && (created8.location ?? '').includes('/services'),
+     `got ${created8.status} ${created8.location}`)
+  const { rows: [ovrService] } = await pool.query(`
+    select id from services where organization_id = $1 and name = 'Creambath Premium'`, [ovrOrgId])
+  const ovrServiceId = ovrService?.id
+  ok('overrides fixture service id resolved', !!ovrServiceId)
+  const ovrPath = `/services/${ovrServiceId}`
+
+  // 1. Set branch A's price to the SAME number as the current salon price
+  // (100000). Still an override -- so changing the salon price afterwards
+  // must NOT move branch A. Both branches start offered (checkboxes default
+  // checked, so 'on' is what a real submit of the unedited row would send).
+  const step1 = await submitForm(ovrOwner.jar, ovrPath, 'name="serviceId"', {
+    [`price-${teamA}`]: '100000', [`offered-${teamA}`]: 'on',
+    [`price-${teamB}`]: '', [`offered-${teamB}`]: 'on',
+  })
+  ok('setting branch A to the salon price is accepted',
+     step1.status === 200 && step1.html.includes('Harga per cabang diperbarui.'),
+     `got ${step1.status}`)
+
+  const updatePrice = (price) => submitForm(ovrOwner.jar, ovrPath, 'name="price"',
+    { name: 'Creambath Premium', durationMinutes: '40', price: String(price) })
+
+  const afterRaise = await updatePrice(130000)
+  ok('the salon price change itself is accepted',
+     afterRaise.status === 200 && afterRaise.html.includes('Layanan diperbarui.'),
+     `got ${afterRaise.status}`)
+  ok('branch A stays on its own number after the salon price changes (spec 2.1, via the UI)',
+     Number((await priceAt(ovrServiceId, teamA)).price) === 100000,
+     String((await priceAt(ovrServiceId, teamA)).price))
+  ok('branch B, still inheriting, follows the new salon price',
+     Number((await priceAt(ovrServiceId, teamB)).price) === 130000,
+     String((await priceAt(ovrServiceId, teamB)).price))
+
+  // 2. Clear branch A's field -- it returns to inheriting, and the NEXT
+  // salon change (not just the current price) must reach it too.
+  const step2 = await submitForm(ovrOwner.jar, ovrPath, 'name="serviceId"', {
+    [`price-${teamA}`]: '', [`offered-${teamA}`]: 'on',
+    [`price-${teamB}`]: '', [`offered-${teamB}`]: 'on',
+  })
+  ok('clearing branch A\'s override is accepted',
+     step2.status === 200 && step2.html.includes('Harga per cabang diperbarui.'),
+     `got ${step2.status}`)
+  ok('clearing the field returns branch A to inheriting the current salon price',
+     Number((await priceAt(ovrServiceId, teamA)).price) === 130000,
+     String((await priceAt(ovrServiceId, teamA)).price))
+
+  const afterSecondRaise = await updatePrice(150000)
+  ok('a second salon price change is accepted',
+     afterSecondRaise.status === 200 && afterSecondRaise.html.includes('Layanan diperbarui.'),
+     `got ${afterSecondRaise.status}`)
+  ok('an inheriting branch A follows the NEXT salon change too',
+     Number((await priceAt(ovrServiceId, teamA)).price) === 150000,
+     String((await priceAt(ovrServiceId, teamA)).price))
+
+  // 3. Toggle "offered" off at branch B only -- branch A's price and offered
+  // state must be untouched by the same submit.
+  const step3 = await submitForm(ovrOwner.jar, ovrPath, 'name="serviceId"', {
+    [`price-${teamA}`]: '', [`offered-${teamA}`]: 'on',
+    [`price-${teamB}`]: '', // offered-teamB omitted -- an unchecked checkbox submits nothing
+  })
+  ok('toggling branch B\'s offered flag is accepted',
+     step3.status === 200 && step3.html.includes('Harga per cabang diperbarui.'),
+     `got ${step3.status}`)
+  ok('branch B is hidden after the toggle',
+     (await priceAt(ovrServiceId, teamB)).offered === false)
+  ok('branch A is still offered, untouched by the same submit',
+     (await priceAt(ovrServiceId, teamA)).offered === true)
+  ok('and branch A\'s price is likewise untouched',
+     Number((await priceAt(ovrServiceId, teamA)).price) === 150000,
+     String((await priceAt(ovrServiceId, teamA)).price))
+
+  // 4. An override naming another salon's branch (ORG2's svc_t2, fixture
+  // from section 3) is refused and writes nothing -- the action only ever
+  // iterates this org's OWN branches (listBranches(organizationId)), so a
+  // price-<foreignTeamId> field is never even read, let alone written.
+  const step4 = await submitForm(ovrOwner.jar, ovrPath, 'name="serviceId"', {
+    [`price-${teamA}`]: '', [`offered-${teamA}`]: 'on',
+    [`price-${teamB}`]: '',
+    'price-svc_t2': '999000', 'offered-svc_t2': 'on',
+  })
+  ok('a submit naming a foreign branch does not error out',
+     step4.status === 200 && step4.html.includes('Harga per cabang diperbarui.'),
+     `got ${step4.status}`)
+  const { rows: [foreignRow] } = await pool.query(`
+    select count(*)::int n from service_branch_overrides
+     where service_id = $1 and team_id = 'svc_t2'`, [ovrServiceId])
+  ok('and it writes no row for the foreign branch', foreignRow.n === 0, `got ${foreignRow.n}`)
+
+  // 5. Reactivating a service AT the cap returns 402 (spec 7.9, moved here
+  // from the cap task because reactivateServiceAction did not exist yet).
+  // Proven the real way: fill the cap, deactivate, confirm the refusal, and
+  // confirm the service is STILL inactive afterwards.
+  const reactOwnerEmail = `react-owner@${DOMAIN}`
+  const reactOwner = new Client()
+  await reactOwner.req('/sign-up/email',
+    { name: 'Svc React Owner', email: reactOwnerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [reactOwnerEmail])
+  await reactOwner.req('/sign-in/email', { email: reactOwnerEmail, password: PW })
+  const reactOrg = await reactOwner.req('/organization/create',
+    { name: 'Svc Check Reactivate', slug: 'svccheck-reactivate' })
+  const reactOrgId = reactOrg.data?.id
+  ok('reactivate salon created', !!reactOrgId, JSON.stringify(reactOrg.data))
+  await reactOwner.req('/organization/set-active', { organizationId: reactOrgId })
+
+  const reactCreated = await submitForm(reactOwner.jar, '/services/new', 'name="price"',
+    { name: 'Layanan Reaktivasi', durationMinutes: '30', price: '50000' })
+  ok('reactivate fixture service created',
+     reactCreated.status === 303 && (reactCreated.location ?? '').includes('/services'),
+     `got ${reactCreated.status} ${reactCreated.location}`)
+  const { rows: [reactService] } = await pool.query(`
+    select id from services where organization_id = $1 and name = 'Layanan Reaktivasi'`, [reactOrgId])
+  const reactServiceId = reactService?.id
+  ok('reactivate fixture service id resolved', !!reactServiceId)
+
+  try {
+    // A second, active filler service inserted directly -- fixture setup,
+    // not the path under test (creation is already covered in section 6).
+    // Once the cap is pinned to 1, this filler alone fills it, so the target
+    // service being deactivated/reactivated is what decides the outcome.
+    await pool.query(`
+      insert into services (id, organization_id, name, duration_minutes, price)
+      values ('svc_react_filler', $1, 'Layanan Pengisi', 30, 40000)`, [reactOrgId])
+    await pool.query(`
+      update plan_limits set cap = 1
+       where plan_id = (select id from plans where key = 'free') and resource = 'services'`)
+
+    // Asserted by the button label flipping, not a "done" alert: the status
+    // form's action ref is `active ? deactivate... : reactivate...`, and a
+    // successful flip re-renders with a DIFFERENT action bound to the same
+    // useActionState call, so React's progressive-enhancement replay cannot
+    // reattach the old submission's result to it. branch-check.mjs's own
+    // BranchStatusForm assertions hit the identical shape and use the same
+    // button-flip check for exactly this reason -- see 'Aktifkan cabang'
+    // there.
+    const deactivated = await submitForm(reactOwner.jar, `/services/${reactServiceId}`,
+      'Nonaktifkan layanan</button>')
+    ok('deactivating the target service through the real action succeeds',
+       deactivated.status === 200
+         && deactivated.html.includes('Aktifkan layanan</button>')
+         && !deactivated.html.includes('Nonaktifkan layanan</button>'),
+       `got ${deactivated.status}`)
+    const { rows: [afterDeactivate] } = await pool.query(`
+      select active from services where id = $1`, [reactServiceId])
+    ok('and it is inactive', afterDeactivate.active === false)
+
+    // The filler alone (still active) now equals the cap, so reactivating
+    // the target must be refused. This one fails WITHOUT flipping `active`,
+    // so the ternary's action ref does not change and the error DOES replay
+    // -- unlike the success case above.
+    const reactivated = await submitForm(reactOwner.jar, `/services/${reactServiceId}`,
+      'Aktifkan layanan</button>')
+    ok('reactivating at the cap is refused with the 402 copy',
+       reactivated.status === 200
+         && reactivated.html.includes('Kuota layanan paket Anda sudah tercapai. Upgrade untuk menambah layanan.'),
+       `got ${reactivated.status}`)
+    const { rows: [afterRefusal] } = await pool.query(`
+      select active from services where id = $1`, [reactServiceId])
+    ok('and it is still inactive after the refusal', afterRefusal.active === false)
+  } finally {
+    // Restored from the seed (FREE.caps.services), not the live row -- same
+    // rule as section 6's finally, for the same laundering reason.
+    await pool.query(`
+      update plan_limits set cap = $1
+       where plan_id = (select id from plans where key = 'free') and resource = 'services'`,
+      [FREE.caps.services])
+  }
 } finally {
   await pool.end()
 }
