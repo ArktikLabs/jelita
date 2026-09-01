@@ -48,6 +48,15 @@ server outright.
 session with no active org, and every guarded page redirects regardless of
 permissions — which looks exactly like a permissions bug.
 
+**Do not call `/sign-up/email` unless it is the thing under test.**
+`lib/auth.ts` rate-limits sign-up to 5/hour and sign-in to 10/min,
+process-wide. That budget is shared by every e2e spec file, and the limiter is
+in-memory — tearing the database down does not reset it. The existing specs
+already sum to the whole allowance, so a file that signs up naively does not
+fail on its own: it makes some *other* file fail with a 429 that looks like a
+real bug. Use `createLogin` / `createSalon` from `tests/e2e/fixtures.ts`, which
+insert the credential row directly using better-auth's own hasher.
+
 **Poll, do not sleep.** `waitForMail` in `tests/e2e/mail.ts` polls `.mail.log`.
 A fixed sleep is a guess at how long a round trip takes: too short and it fails
 for no reason, too long and every run pays the worst case.
