@@ -10,6 +10,36 @@ const ok = (n, c, d) => (c ? (pass++, console.log(`  \x1b[32m✓\x1b[0m ${n}`))
 const head = (s) => console.log(`\n\x1b[1m${s}\x1b[0m`)
 
 const pool = new Pool({ connectionString: process.env.DIRECT_URL })
+const ORIGIN = process.env.BETTER_AUTH_URL
+const BASE = `${ORIGIN}/api/auth`
+const PW = 'demo12345'
+
+// Cookie-jar client, copied from scripts/service-check.mjs: email verification
+// is on, so a freshly signed-up user has no session until verified.
+class Client {
+  constructor() { this.jar = new Map() }
+  async req(path, body, method = 'POST', base = BASE) {
+    const headers = { 'content-type': 'application/json', origin: ORIGIN }
+    if (this.jar.size) headers.cookie = [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ')
+    const res = await fetch(base + path, {
+      method, headers, body: method === 'GET' ? undefined : JSON.stringify(body ?? {}),
+    })
+    for (const c of res.headers.getSetCookie?.() ?? []) {
+      const kv = c.split(';')[0], i = kv.indexOf('=')
+      const name = kv.slice(0, i), val = kv.slice(i + 1)
+      if (val === '') this.jar.delete(name) 
+      else this.jar.set(name, val)
+    }
+    const txt = await res.text()
+    let data; try { data = JSON.parse(txt) } catch { data = txt }
+    return { status: res.status, data }
+  }
+  cookie() { return [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ') }
+}
+
+const page = (path, cookie) => fetch(ORIGIN + path, {
+  headers: cookie ? { cookie } : {}, redirect: 'manual',
+}).then(async (r) => ({ status: r.status, location: r.headers.get('location'), html: await r.text() }))
 const ORG = 'custcheck_org'
 const ORG2 = 'custcheck_org2'
 const DOMAIN = 'custcheck.local'
@@ -72,6 +102,65 @@ try {
   try { await add('cc_5', ORG2, 'Dewi Salon Lain', '0812345678', '62812345678') }
   catch { otherSalonOk = false }
   ok('another salon may hold the same number', otherSalonOk)
+  head('4. screens')
+  const ownerEmail = `owner@${DOMAIN}`
+  const owner = new Client()
+  await owner.req('/sign-up/email', { name: 'Cust Owner', email: ownerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [ownerEmail])
+  await owner.req('/sign-in/email', { email: ownerEmail, password: PW })
+  const org = await owner.req('/organization/create',
+    { name: 'Cust Screens', slug: 'custcheck-screens' })
+  const orgId = org.data?.id
+  await owner.req('/organization/set-active', { organizationId: orgId })
+
+  await pool.query(`
+    insert into customers (id, organization_id, name, phone, phone_key)
+    values ('cc_s1', $1, 'Sari Wijaya', '+62812999888', '62812999888'),
+           ('cc_s2', $1, 'Budi Santoso', null, null)`, [orgId])
+
+  // Search matches the NORMALISED key, so a domestic spelling finds a customer
+  // stored in international form. Matching the raw phone column would miss
+  // exactly the spellings normalisation exists to unify.
+  const found = await page('/customers?q=0812999888', owner.cookie())
+  ok('searching a domestic number finds an international-format customer',
+     found.html.includes('Sari Wijaya'), `status ${found.status}`)
+  ok('and does not return everyone', !found.html.includes('Budi Santoso'))
+
+  const byName = await page('/customers?q=Budi', owner.cookie())
+  ok('searching by name works too', byName.html.includes('Budi Santoso'))
+
+  // Another salon's id must read as not-found, never as a leak.
+  await pool.query(`
+    insert into customers (id, organization_id, name) values ('cc_other', $1, 'Rahasia Salon Lain')`,
+    [ORG2])
+  const foreign = await page('/customers/cc_other', owner.cookie())
+  ok('another salon customer id is not a 200 with data', foreign.status !== 200,
+     `got ${foreign.status}`)
+  ok('and their name never appears', !foreign.html.includes('Rahasia Salon Lain'))
+
+  head('5. permissions')
+  const stylistEmail = `stylist@${DOMAIN}`
+  const stylist = new Client()
+  await stylist.req('/sign-up/email', { name: 'Cust Stylist', email: stylistEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [stylistEmail])
+  const { rows: [su] } = await pool.query(`select id from users where email = $1`, [stylistEmail])
+  await pool.query(`
+    insert into members (id, user_id, organization_id, role, created_at)
+    values ('cc_m_sty', $1, $2, 'stylist', now())`, [su.id, orgId])
+  // Sign in AFTER the membership row exists: lib/auth.ts's session hook
+  // resolves activeOrganizationId when the session is CREATED, so a sign-in
+  // before this insert produces a session with no active org and every guarded
+  // page redirects regardless of permissions.
+  await stylist.req('/sign-in/email', { email: stylistEmail, password: PW })
+
+  const styList = await page('/customers', stylist.cookie())
+  ok('a stylist may read the list', styList.status === 200, `got ${styList.status}`)
+  const styNew = await page('/customers/new', stylist.cookie())
+  ok('but is redirected from create', styNew.status >= 300 && styNew.status < 400,
+     `got ${styNew.status}`)
+  const styEdit = await page('/customers/cc_s1', stylist.cookie())
+  ok('and from the detail screen', styEdit.status >= 300 && styEdit.status < 400,
+     `got ${styEdit.status}`)
 } finally {
   await pool.end()
 }
