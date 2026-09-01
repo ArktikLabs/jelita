@@ -144,7 +144,14 @@ export async function createServiceAction(
  * Same guard shape as createServiceAction -- a category is only ever created
  * alongside adding services, so front desk and stylists (service:['read']
  * only) have no path here either. Name-only; deleting a category is out of
- * scope (the on-delete-set-null FK already leaves its services intact).
+ * scope, and it is not a one-line addition when it is picked up: the FK
+ * (db/migrations/0010_services.sql:83-85) is a COMPOSITE
+ * on delete set null (category_id, organization_id), and Postgres nulls
+ * ALL referencing columns, not just category_id -- services.organization_id
+ * is NOT NULL, so deleting a category would raise a not-null violation, not
+ * leave its services intact. Nothing deletes a category today, so this path
+ * is unreached; whoever adds "hapus kategori" needs PG 15+'s
+ * on delete set null (category_id) form, naming only that column.
  */
 export async function createCategoryAction(
   _prev: FormState, formData: FormData,
@@ -242,6 +249,14 @@ export async function setBranchOverrideAction(
   // "fix" this into an explicit rejection; that would leak the same fact.
   const rows: { teamId: string; price: number | null; offered: boolean }[] = []
   for (const b of branches) {
+    // A branch the form never rendered -- created after the page loaded --
+    // submits no row-<teamId> marker at all, and that is NOT the same thing
+    // as an unchecked "ditawarkan" checkbox (which submits no offered-<id>
+    // but still carries its own row-<teamId>, since the row itself was
+    // rendered). Skip it entirely: writing (price null, offered false) here
+    // would silently hide a service at a branch the operator never saw a
+    // toggle for.
+    if (formData.get(`row-${b.teamId}`) === null) continue
     const raw = String(formData.get(`price-${b.teamId}`) ?? '').trim()
     // Empty means INHERITS. A value equal to the salon price is still an
     // override -- collapsing the two would silently stop a salon-wide price
@@ -252,12 +267,16 @@ export async function setBranchOverrideAction(
     rows.push({ teamId: b.teamId, price, offered })
   }
 
-  for (const { teamId, price, offered } of rows) {
-    await db.execute(sql`
-      insert into service_branch_overrides (service_id, team_id, organization_id, price, offered)
-      values (${serviceId}, ${teamId}, ${organizationId}, ${price}, ${offered})
-      on conflict (service_id, team_id) do update
-        set price = excluded.price, offered = excluded.offered, updated_at = now()`)
+  try {
+    for (const { teamId, price, offered } of rows) {
+      await db.execute(sql`
+        insert into service_branch_overrides (service_id, team_id, organization_id, price, offered)
+        values (${serviceId}, ${teamId}, ${organizationId}, ${price}, ${offered})
+        on conflict (service_id, team_id) do update
+          set price = excluded.price, offered = excluded.offered, updated_at = now()`)
+    }
+  } catch (e) {
+    return { error: formError(e, 'Gagal memperbarui harga cabang.') }
   }
   revalidateService(serviceId)
   return { done: true }
@@ -283,31 +302,34 @@ export async function setPerformersAction(
   if (!serviceId || !(await ownedService(serviceId, organizationId))) return NOT_FOUND
 
   const candidates = await listPerformers(serviceId, organizationId)
+  const candidateIds = candidates.map((c) => c.userId)
   const checkedIds = candidates
     .filter((c) => formData.get(`performer-${c.userId}`) === 'on')
     .map((c) => c.userId)
 
-  // drizzle's sql tag spreads a bare array into one placeholder per element
-  // (right for an IN-list, wrong for any($1)), so `not in (...)` built via
-  // sql.join is the list form, not a bound array parameter. An empty
-  // checkedIds makes an empty "not in ()", which Postgres rejects -- so that
-  // case skips the id filter entirely and just clears every row.
-  if (checkedIds.length === 0) {
-    await db.execute(sql`
-      delete from service_staff
-       where service_id = ${serviceId} and organization_id = ${organizationId}`)
-  } else {
-    const idList = sql.join(checkedIds.map((id) => sql`${id}`), sql`, `)
-    await db.execute(sql`
-      delete from service_staff
-       where service_id = ${serviceId} and organization_id = ${organizationId}
-         and user_id not in (${idList})`)
-  }
-  for (const userId of checkedIds) {
-    await db.execute(sql`
-      insert into service_staff (service_id, user_id, organization_id)
-      values (${serviceId}, ${userId}, ${organizationId})
-      on conflict (service_id, user_id) do nothing`)
+  // Scoped to CANDIDATE ids, not "everyone but checkedIds" -- a staff member
+  // who fell out of listPerformers since the link was made (deactivated, or
+  // reassigned off a branch) is not a candidate and must not be deleted just
+  // because an unrelated edit touched this service. Their row survives until
+  // they are a candidate again and someone explicitly unchecks them.
+  const toUnlink = candidateIds.filter((id) => !checkedIds.includes(id))
+
+  try {
+    if (toUnlink.length > 0) {
+      const idList = sql.join(toUnlink.map((id) => sql`${id}`), sql`, `)
+      await db.execute(sql`
+        delete from service_staff
+         where service_id = ${serviceId} and organization_id = ${organizationId}
+           and user_id in (${idList})`)
+    }
+    for (const userId of checkedIds) {
+      await db.execute(sql`
+        insert into service_staff (service_id, user_id, organization_id)
+        values (${serviceId}, ${userId}, ${organizationId})
+        on conflict (service_id, user_id) do nothing`)
+    }
+  } catch (e) {
+    return { error: formError(e, 'Gagal memperbarui staf layanan.') }
   }
   revalidateService(serviceId)
   return { done: true }
@@ -321,9 +343,13 @@ export async function deactivateServiceAction(
   const id = String(formData.get('id') ?? '')
   if (!id || !(await ownedService(id, organizationId))) return NOT_FOUND
 
-  await db.execute(sql`
-    update services set active = false, updated_at = now()
-     where id = ${id} and organization_id = ${organizationId}`)
+  try {
+    await db.execute(sql`
+      update services set active = false, updated_at = now()
+       where id = ${id} and organization_id = ${organizationId}`)
+  } catch (e) {
+    return { error: formError(e, 'Gagal menonaktifkan layanan.') }
+  }
   revalidateService(id)
   return { done: true }
 }

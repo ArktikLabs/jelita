@@ -137,6 +137,10 @@ export function OverridesForm({
       <div className="space-y-4">
         {rows.map((r) => (
           <div key={r.teamId} className="space-y-2 rounded-md border p-3">
+            {/* Proves this branch was actually rendered -- a branch created
+                after the page loaded submits no row-<teamId> at all, so the
+                action can tell that apart from a checkbox left unchecked. */}
+            <input type="hidden" name={`row-${r.teamId}`} value="1" />
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium">{r.branchName}</span>
               <div className="flex items-center gap-2">

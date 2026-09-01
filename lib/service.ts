@@ -81,13 +81,6 @@ export async function salonCurrency(organizationId: string): Promise<CurrencyCod
 }
 
 /**
- * One service plus, for the detail/edit screen: every branch of the salon
- * with its override (or the absence of one), and everyone who can perform
- * it. A branch with no override row still gets an entry -- price: null,
- * offered: true -- so the form can render every branch and null reaches the
- * price field as an empty input, not a stored row's absence.
- */
-/**
  * Eligible performers for one service: staff_profiles with a branch
  * assignment (team_id is not null) who are active. This is the same list
  * setPerformersAction iterates to build the checked set from a submit, so a
@@ -124,6 +117,13 @@ export async function listPerformers(
   }))
 }
 
+/**
+ * One service plus, for the detail/edit screen: every branch of the salon
+ * with its override (or the absence of one), and everyone who can perform
+ * it. A branch with no override row still gets an entry -- price: null,
+ * offered: true -- so the form can render every branch and null reaches the
+ * price field as an empty input, not a stored row's absence.
+ */
 export async function getService(
   serviceId: string, organizationId: string,
 ): Promise<{ service: ServiceRow; overrides: OverrideRow[]; performers: PerformerCandidate[] } | null> {

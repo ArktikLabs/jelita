@@ -615,6 +615,48 @@ try {
   ok('no service_branch_overrides row exists for the foreign (service, team) pair afterwards',
      foreignRow.n === 0, `got ${foreignRow.n}`)
 
+  // 4b. A branch created AFTER the form was loaded carries no row-<teamId>
+  // marker in the submission -- exactly the failure scenario in the fix
+  // wave brief (another admin adds a branch while this page is open). The
+  // action must skip it, leaving whatever it already held untouched, rather
+  // than defaulting it to (price null, offered false).
+  const preLoadPage = await getPage(ovrOwner.jar, ovrPath)
+  const teamCResp = await ovrOwner.req('/organization/create-team',
+    { name: 'Cabang Setelah Form Dimuat', organizationId: ovrOrgId })
+  const teamC = teamCResp.data?.id
+  ok('a third branch created after the form loaded', !!teamC, JSON.stringify(teamCResp.data))
+  // A known prior state, standing in for "whatever this branch already held"
+  // -- proves it SURVIVES the submit, not merely that no new row appears.
+  await pool.query(`
+    insert into service_branch_overrides (service_id, team_id, organization_id, price, offered)
+    values ($1, $2, $3, 222000, true)`, [ovrServiceId, teamC, ovrOrgId])
+
+  const staleForm = preLoadPage.html.split('<form').find((f) => f.includes('name="serviceId"'))
+  const staleBody = new FormData()
+  for (const m of staleForm.slice(0, staleForm.indexOf('</form>')).matchAll(
+    /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)) {
+    staleBody.set(decodeHtml(m[1]), decodeHtml(m[2] ?? ''))
+  }
+  staleBody.set(`price-${teamA}`, '')
+  staleBody.set(`offered-${teamA}`, 'on')
+  staleBody.set(`price-${teamB}`, '')
+  // offered-teamB stays omitted, same as step 3 -- branch B stays not-offered.
+  const staleResp = await fetch(ORIGIN + ovrPath, {
+    method: 'POST', headers: { cookie: cookieOf(ovrOwner.jar) }, body: staleBody, redirect: 'manual',
+  })
+  const staleHtml = await staleResp.text()
+  ok('submitting a stale form (missing the new branch) is accepted',
+     staleResp.status === 200 && staleHtml.includes('Harga per cabang diperbarui.'),
+     `got ${staleResp.status}`)
+  const teamCAfter = await priceAt(ovrServiceId, teamC)
+  ok('the branch absent from the submission keeps its previous state untouched',
+     Number(teamCAfter.price) === 222000 && teamCAfter.offered === true,
+     JSON.stringify(teamCAfter))
+  // The other half of the same guard: a branch the form DID render and the
+  // operator left unchecked is genuinely set to not-offered, not skipped.
+  ok('a branch the form rendered and left unchecked is genuinely set to not-offered',
+     (await priceAt(ovrServiceId, teamB)).offered === false)
+
   // 5. Reactivating a service AT the cap returns 402 (spec 7.9, moved here
   // from the cap task because reactivateServiceAction did not exist yet).
   // Proven the real way: fill the cap, deactivate, confirm the refusal, and
@@ -797,6 +839,37 @@ try {
   } catch { crossTenantRefused = true }
   ok('a service_staff row naming another salon\'s user is refused by the database',
      crossTenantRefused)
+
+  // 5. A stylist deactivated after being linked falls out of listPerformers
+  // (spec §8's active filter), so the unrelated fix-wave bug: the delete was
+  // `not in (checkedIds)`, wide enough to sweep up rows for staff who are no
+  // longer candidates at all -- an unrelated edit to this service must not
+  // erase their link. Re-link, deactivate, then submit an all-unchecked form
+  // (the stylist isn't even offered a checkbox any more) and confirm the row
+  // survives.
+  const perfRelink = await submitForm(perfOwner.jar, perfPath, 'name="performer-',
+    { [`performer-${perfStylistId}`]: 'on' })
+  ok('re-linking the stylist for the deactivation fixture is accepted',
+     perfRelink.status === 200 && perfRelink.html.includes('Staf layanan diperbarui.'),
+     `got ${perfRelink.status}`)
+  await pool.query(`update staff_profiles set active = false where user_id = $1`, [perfStylistId])
+  const perfPageAfterLeave = await getPage(perfOwner.jar, perfPath)
+  ok('the deactivated stylist is no longer offered as a candidate',
+     !perfPageAfterLeave.html.includes(`name="performer-${perfStylistId}"`))
+  // 'Simpan staf' rather than 'name="performer-' -- with zero candidates
+  // left, PerformersForm renders no checkboxes at all, only its own button.
+  const perfUncheckedByAll = await submitForm(perfOwner.jar, perfPath, 'Simpan staf', {})
+  ok('submitting the form with the stylist gone from the candidate list is accepted',
+     perfUncheckedByAll.status === 200 && perfUncheckedByAll.html.includes('Staf layanan diperbarui.'),
+     `got ${perfUncheckedByAll.status}`)
+  const { rows: [survivedRow] } = await pool.query(`
+    select count(*)::int n from service_staff
+     where service_id = $1 and user_id = $2 and organization_id = $3`,
+    [perfServiceId, perfStylistId, perfOrgId])
+  ok('the deactivated stylist\'s link survives an unrelated performers edit',
+     survivedRow.n === 1)
+  await pool.query(`update staff_profiles set active = true where user_id = $1`, [perfStylistId])
+
   head('10. currency at onboarding, and locking it')
   // 1. A salon created through onboarding with SGD has SGD in salon_profiles.
   // The trigger already seeded this row defaulting to IDR -- createSalonAction
