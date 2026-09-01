@@ -1046,19 +1046,25 @@ try {
 
     const { rows: [profile] } = await pool.query(
       `select currency from salon_profiles where organization_id = $1`, [orgId])
-    const { rows: [svcCount] } = await pool.query(
-      `select count(*)::int n from services where organization_id = $1`, [orgId])
-    return { serviceExists: svcCount.n > 0, currency: profile.currency }
+    const { rows: [svc] } = await pool.query(
+      `select price from services where organization_id = $1`, [orgId])
+    return { serviceExists: !!svc, currency: profile.currency, price: svc?.price }
   }
 
   const RACE_TRIALS = 15
   let raceCorrupted = 0
   for (let n = 0; n < RACE_TRIALS; n++) {
-    const { serviceExists, currency } = await raceTrial(n)
-    // The corrupted state, precisely: a service exists (created) AND the
-    // currency actually changed to SGD (changed) -- both writes landing,
-    // reinterpreting the just-created service's price by 100x forever after.
-    if (serviceExists && currency === 'SGD') raceCorrupted++
+    const { serviceExists, currency, price } = await raceTrial(n)
+    // Corruption is a price/currency MISMATCH, not the mere co-existence of
+    // a service and SGD -- "change currency on an empty catalogue, then
+    // create under the new one" is a legal sequential outcome and must not
+    // count. '50000' parses to 50000 under IDR and 5000000 under SGD (2
+    // exponent digits); a price that matches neither means the guard let a
+    // create land against a currency other than the one its price was
+    // parsed under -- the actual 100x reinterpretation this test exists to
+    // catch.
+    const expected = currency === 'IDR' ? 50000 : 5000000
+    if (serviceExists && Number(price) !== expected) raceCorrupted++
   }
   ok(`a concurrent service-creation + currency-change race never lets both succeed (${RACE_TRIALS} trials)`,
      raceCorrupted === 0, `${raceCorrupted}/${RACE_TRIALS} corrupted`)
