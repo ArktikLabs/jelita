@@ -685,6 +685,110 @@ try {
        where plan_id = (select id from plans where key = 'free') and resource = 'services'`,
       [FREE.caps.services])
   }
+
+  head('9. who performs a service')
+  // Free plan is enough: 1 branch, and owner + admin + stylist is exactly 3
+  // staff (the free cap) -- no plan upgrade needed for this fixture.
+  const perfOwnerEmail = `perf-owner@${DOMAIN}`
+  const perfOwner = new Client()
+  await perfOwner.req('/sign-up/email',
+    { name: 'Svc Perf Owner', email: perfOwnerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [perfOwnerEmail])
+  await perfOwner.req('/sign-in/email', { email: perfOwnerEmail, password: PW })
+  const perfOrg = await perfOwner.req('/organization/create',
+    { name: 'Svc Check Performers', slug: 'svccheck-performers' })
+  const perfOrgId = perfOrg.data?.id
+  ok('performers salon created', !!perfOrgId, JSON.stringify(perfOrg.data))
+  await perfOwner.req('/organization/set-active', { organizationId: perfOrgId })
+
+  // The free plan's branch cap is 1, and better-auth already auto-creates a
+  // default team when the organization itself is created (lib/auth.ts's
+  // organizationHooks.beforeCreateTeam note) -- that default team IS the
+  // fixture's one branch, so a second create-team call would exceed the cap
+  // for no reason.
+  const { rows: [perfBranchRow] } = await pool.query(`
+    select id from teams where organization_id = $1 limit 1`, [perfOrgId])
+  const perfBranchId = perfBranchRow?.id
+  ok('the default branch created with the org resolved', !!perfBranchId)
+
+  const perfStylistEmail = `perf-stylist@${DOMAIN}`
+  const madePerfStylist = await perfOwner.req('/staff',
+    { name: 'Svc Perf Stylist', email: perfStylistEmail, password: PW,
+      role: 'stylist', branchId: perfBranchId },
+    'POST', APP)
+  ok('stylist with a branch provisioned', madePerfStylist.status === 201,
+     `got ${madePerfStylist.status} ${JSON.stringify(madePerfStylist.data)}`)
+  const perfStylistId = madePerfStylist.data?.user?.id
+
+  // An admin, deliberately with NO branchId -- §8's known gap. team_id stays
+  // null, so this is the "not eligible" fixture for assertion 2.
+  const perfAdminEmail = `perf-admin@${DOMAIN}`
+  const madePerfAdmin = await perfOwner.req('/staff',
+    { name: 'Svc Perf Admin', email: perfAdminEmail, password: PW, role: 'admin' },
+    'POST', APP)
+  ok('admin with no branch provisioned', madePerfAdmin.status === 201,
+     `got ${madePerfAdmin.status} ${JSON.stringify(madePerfAdmin.data)}`)
+  const perfAdminId = madePerfAdmin.data?.user?.id
+
+  const perfCreated = await submitForm(perfOwner.jar, '/services/new', 'name="price"',
+    { name: 'Creambath Performer', durationMinutes: '30', price: '80000' })
+  ok('service created for the performers fixture',
+     perfCreated.status === 303 && (perfCreated.location ?? '').includes('/services'),
+     `got ${perfCreated.status} ${perfCreated.location}`)
+  const { rows: [perfService] } = await pool.query(`
+    select id from services where organization_id = $1 and name = 'Creambath Performer'`,
+    [perfOrgId])
+  const perfServiceId = perfService?.id
+  ok('performers fixture service id resolved', !!perfServiceId)
+  const perfPath = `/services/${perfServiceId}`
+
+  // 1. The candidate list, as actually rendered: the eligible stylist is
+  // offered a checkbox; the branchless admin is not (spec §8's gap proven on
+  // the rendered page, not just the query).
+  const perfPage = await getPage(perfOwner.jar, perfPath)
+  ok('the eligible stylist is offered as a performer candidate',
+     perfPage.html.includes(`name="performer-${perfStylistId}"`))
+  ok('a staff member with no branch assignment is NOT offered as a candidate (spec §8)',
+     !perfPage.html.includes(`name="performer-${perfAdminId}"`))
+
+  // 2. Checking the stylist creates a service_staff row.
+  const perfCheck = await submitForm(perfOwner.jar, perfPath, 'name="performer-',
+    { [`performer-${perfStylistId}`]: 'on' })
+  ok('checking the stylist is accepted',
+     perfCheck.status === 200 && perfCheck.html.includes('Staf layanan diperbarui.'),
+     `got ${perfCheck.status}`)
+  const { rows: [linkedRow] } = await pool.query(`
+    select count(*)::int n from service_staff
+     where service_id = $1 and user_id = $2 and organization_id = $3`,
+    [perfServiceId, perfStylistId, perfOrgId])
+  ok('a service_staff row now exists for the checked stylist', linkedRow.n === 1)
+
+  // 3. Unchecking (submitting the set with the field simply omitted, same as
+  // an unchecked checkbox) removes the row.
+  const perfUncheck = await submitForm(perfOwner.jar, perfPath, 'name="performer-', {})
+  ok('unchecking the stylist is accepted',
+     perfUncheck.status === 200 && perfUncheck.html.includes('Staf layanan diperbarui.'),
+     `got ${perfUncheck.status}`)
+  const { rows: [unlinkedRow] } = await pool.query(`
+    select count(*)::int n from service_staff
+     where service_id = $1 and user_id = $2 and organization_id = $3`,
+    [perfServiceId, perfStylistId, perfOrgId])
+  ok('the row is gone after unchecking', unlinkedRow.n === 0)
+
+  // 4. A service_staff row naming another salon's user is refused BY THE
+  // DATABASE (spec §7.14) -- attempt the insert directly, not through the
+  // action, and require it to fail. svc_u2 (section 3) belongs to ORG2's
+  // staff_profiles, not perfOrgId's, so (svc_u2, perfOrgId) cannot satisfy
+  // service_staff_person_fk even though perfServiceId itself is a real,
+  // owned service.
+  let crossTenantRefused = false
+  try {
+    await pool.query(`
+      insert into service_staff (service_id, user_id, organization_id)
+      values ($1, 'svc_u2', $2)`, [perfServiceId, perfOrgId])
+  } catch { crossTenantRefused = true }
+  ok('a service_staff row naming another salon\'s user is refused by the database',
+     crossTenantRefused)
 } finally {
   await pool.end()
 }

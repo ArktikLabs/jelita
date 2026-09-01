@@ -6,7 +6,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { PlanError, requireQuota } from '@/lib/plan/entitlements'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
-import { salonCurrency } from '@/lib/service'
+import { salonCurrency, listPerformers } from '@/lib/service'
 import { listBranches } from '@/lib/branch'
 import { parseMoney } from '@/lib/money'
 import { formError, type FormState } from '@/lib/form-state'
@@ -195,6 +195,56 @@ export async function setBranchOverrideAction(
       values (${serviceId}, ${teamId}, ${organizationId}, ${price}, ${offered})
       on conflict (service_id, team_id) do update
         set price = excluded.price, offered = excluded.offered, updated_at = now()`)
+  }
+  revalidateService(serviceId)
+  return { done: true }
+}
+
+/**
+ * The whole set in one submit, same shape as setBranchOverrideAction:
+ * checked staff are linked, unchecked staff are unlinked. Iterating
+ * listPerformers(serviceId, organizationId) -- this org's own eligible
+ * candidates -- rather than the submitted field names is the whole guard:
+ * a performer-<foreignUserId> or performer-<ineligibleUserId> field a
+ * crafted POST tacks on is simply never looked up. The delete and each
+ * insert are both scoped by organization_id in the same statement, so a
+ * service_staff row naming another salon's user can reach this table only
+ * through the composite FK the migration refuses at the database (spec §7.14).
+ */
+export async function setPerformersAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ service: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const serviceId = String(formData.get('serviceId') ?? '')
+  if (!serviceId || !(await ownedService(serviceId, organizationId))) return NOT_FOUND
+
+  const candidates = await listPerformers(serviceId, organizationId)
+  const checkedIds = candidates
+    .filter((c) => formData.get(`performer-${c.userId}`) === 'on')
+    .map((c) => c.userId)
+
+  // drizzle's sql tag spreads a bare array into one placeholder per element
+  // (right for an IN-list, wrong for any($1)), so `not in (...)` built via
+  // sql.join is the list form, not a bound array parameter. An empty
+  // checkedIds makes an empty "not in ()", which Postgres rejects -- so that
+  // case skips the id filter entirely and just clears every row.
+  if (checkedIds.length === 0) {
+    await db.execute(sql`
+      delete from service_staff
+       where service_id = ${serviceId} and organization_id = ${organizationId}`)
+  } else {
+    const idList = sql.join(checkedIds.map((id) => sql`${id}`), sql`, `)
+    await db.execute(sql`
+      delete from service_staff
+       where service_id = ${serviceId} and organization_id = ${organizationId}
+         and user_id not in (${idList})`)
+  }
+  for (const userId of checkedIds) {
+    await db.execute(sql`
+      insert into service_staff (service_id, user_id, organization_id)
+      values (${serviceId}, ${userId}, ${organizationId})
+      on conflict (service_id, user_id) do nothing`)
   }
   revalidateService(serviceId)
   return { done: true }

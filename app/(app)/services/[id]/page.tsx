@@ -5,7 +5,7 @@ import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { ServiceDetailForm, OverridesForm, ServiceStatusForm } from './service-detail-forms'
+import { ServiceDetailForm, OverridesForm, PerformersForm, ServiceStatusForm } from './service-detail-forms'
 
 export default async function ServiceDetailPage({
   params,
@@ -22,7 +22,7 @@ export default async function ServiceDetailPage({
   // "no such service" and "not yours" -- notFound() is correct for both.
   const result = await getService(id, organizationId)
   if (!result) notFound()
-  const { service, overrides } = result
+  const { service, overrides, performers } = result
 
   const [categories, currency] = await Promise.all([
     listCategories(organizationId),
@@ -79,6 +79,24 @@ export default async function ServiceDetailPage({
             currency={currency}
             salonPrice={service.price}
             overrides={overrides}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Staf yang bisa mengerjakan</CardTitle>
+          <CardDescription>
+            Hanya staf dengan penempatan cabang yang bisa ditugaskan di sini -- pemilik
+            dan admin belum punya cabang pada model staf saat ini.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PerformersForm
+            serviceId={service.id}
+            candidates={performers.map((p) => ({
+              userId: p.userId, name: p.name, branchName: p.branchName, linked: p.linked,
+            }))}
           />
         </CardContent>
       </Card>

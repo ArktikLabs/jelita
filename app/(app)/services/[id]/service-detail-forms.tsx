@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from 'react'
 import {
-  updateServiceAction, setBranchOverrideAction,
+  updateServiceAction, setBranchOverrideAction, setPerformersAction,
   deactivateServiceAction, reactivateServiceAction,
 } from '../actions'
 import type { FormState } from '@/lib/form-state'
@@ -168,6 +168,64 @@ export function OverridesForm({
       </div>
       <Button type="submit" disabled={pending}>
         {pending ? 'Menyimpan…' : 'Simpan harga cabang'}
+      </Button>
+    </form>
+  )
+}
+
+// Narrowed to exactly what this form renders -- userId, name, branchName,
+// linked -- not the full PerformerCandidate (teamId is used server-side to
+// join branchName and is never itself rendered).
+type PerformerInput = { userId: string; name: string; branchName: string; linked: boolean }
+
+export function PerformersForm({
+  serviceId, candidates,
+}: {
+  serviceId: string
+  candidates: PerformerInput[]
+}) {
+  const [state, action, pending] = useActionState(setPerformersAction, initial)
+  // Same reason as the forms above: this instance survives its own save, so
+  // checked state is seeded once from candidates and then locally owned.
+  const [checked, setChecked] = useState<Record<string, boolean>>(() => Object.fromEntries(
+    candidates.map((c) => [c.userId, c.linked]),
+  ))
+
+  return (
+    <form action={action} className="space-y-4">
+      {state.error && (
+        <Alert variant="destructive">
+          <AlertDescription>{state.error}</AlertDescription>
+        </Alert>
+      )}
+      {state.done && (
+        <Alert>
+          <AlertDescription>Staf layanan diperbarui.</AlertDescription>
+        </Alert>
+      )}
+      <input type="hidden" name="serviceId" value={serviceId} />
+      <div className="space-y-2">
+        {candidates.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            Belum ada staf dengan penempatan cabang yang bisa ditugaskan.
+          </p>
+        )}
+        {candidates.map((c) => (
+          <div key={c.userId} className="flex items-center gap-2">
+            <Checkbox
+              id={`performer-${c.userId}`}
+              name={`performer-${c.userId}`}
+              checked={checked[c.userId] ?? false}
+              onCheckedChange={(v) => setChecked((prev) => ({ ...prev, [c.userId]: v === true }))}
+            />
+            <Label htmlFor={`performer-${c.userId}`} className="text-sm font-normal">
+              {c.name} <span className="text-muted-foreground">· {c.branchName}</span>
+            </Label>
+          </div>
+        ))}
+      </div>
+      <Button type="submit" disabled={pending}>
+        {pending ? 'Menyimpan…' : 'Simpan staf'}
       </Button>
     </form>
   )

@@ -21,11 +21,14 @@ export type OverrideRow = {
   offered: boolean
 }
 
-export type PerformerRow = {
+export type PerformerCandidate = {
   userId: string
   name: string
-  teamId: string | null
-  branchName: string | null
+  teamId: string
+  branchName: string
+  // Whether a service_staff row already exists for this (service, user) --
+  // what pre-checks the box on the performers card.
+  linked: boolean
 }
 
 export type CategoryRow = {
@@ -84,9 +87,46 @@ export async function salonCurrency(organizationId: string): Promise<CurrencyCod
  * offered: true -- so the form can render every branch and null reaches the
  * price field as an empty input, not a stored row's absence.
  */
+/**
+ * Eligible performers for one service: staff_profiles with a branch
+ * assignment (team_id is not null) who are active. This is the same list
+ * setPerformersAction iterates to build the checked set from a submit, so a
+ * performer-<id> field naming staff outside it is simply never looked up.
+ *
+ * Spec §8's known gap lives here: owners and admins have team_id null by the
+ * staff model, so a working owner who cuts hair cannot be linked to a
+ * service and will not be bookable. Fixing it needs a staff-model change
+ * (a branch assignment that does not count as "assigned staff" for branch
+ * deactivation) and is deferred deliberately -- do not work around it here.
+ */
+export async function listPerformers(
+  serviceId: string, organizationId: string,
+): Promise<PerformerCandidate[]> {
+  const { rows } = await db.execute(sql`
+    select sp.user_id, u.name, sp.team_id, t.name as branch_name,
+           exists (
+             select 1 from service_staff ss
+              where ss.service_id = ${serviceId} and ss.user_id = sp.user_id
+                and ss.organization_id = sp.organization_id
+           ) as linked
+      from staff_profiles sp
+      join users u on u.id = sp.user_id
+      join teams t on t.id = sp.team_id and t.organization_id = sp.organization_id
+     where sp.organization_id = ${organizationId}
+       and sp.team_id is not null and sp.active
+     order by u.name, u.id`)
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    userId: r.user_id as string,
+    name: r.name as string,
+    teamId: r.team_id as string,
+    branchName: r.branch_name as string,
+    linked: r.linked as boolean,
+  }))
+}
+
 export async function getService(
   serviceId: string, organizationId: string,
-): Promise<{ service: ServiceRow; overrides: OverrideRow[]; performers: PerformerRow[] } | null> {
+): Promise<{ service: ServiceRow; overrides: OverrideRow[]; performers: PerformerCandidate[] } | null> {
   const [service] = await listServices(organizationId, serviceId)
   if (!service) return null
 
@@ -106,21 +146,7 @@ export async function getService(
     offered: r.offered as boolean,
   }))
 
-  const { rows: performerRows } = await db.execute(sql`
-    select u.id as user_id, u.name, sp.team_id, t.name as branch_name
-      from service_staff ss
-      join users u on u.id = ss.user_id
-      left join staff_profiles sp
-        on sp.user_id = ss.user_id and sp.organization_id = ss.organization_id
-      left join teams t on t.id = sp.team_id
-     where ss.service_id = ${serviceId} and ss.organization_id = ${organizationId}
-     order by u.name, u.id`)
-  const performers = (performerRows as Record<string, unknown>[]).map((r) => ({
-    userId: r.user_id as string,
-    name: r.name as string,
-    teamId: (r.team_id as string) ?? null,
-    branchName: (r.branch_name as string) ?? null,
-  }))
+  const performers = await listPerformers(serviceId, organizationId)
 
   return { service, overrides, performers }
 }
