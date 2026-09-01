@@ -3,6 +3,7 @@
 import { useActionState } from 'react'
 import { createSalonAction } from './actions'
 import type { FormState } from '@/lib/form-state'
+import { SUPPORTED_CURRENCIES } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -10,6 +11,9 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select'
 
 const initial: FormState = {}
 
@@ -35,6 +39,19 @@ export function OnboardingForm() {
           <div className="space-y-2">
             <Label htmlFor="slug">Slug</Label>
             <Input id="slug" name="slug" pattern="[a-z0-9\-]+" required />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="currency">Mata uang</Label>
+            <Select name="currency" defaultValue="IDR">
+              <SelectTrigger id="currency" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.keys(SUPPORTED_CURRENCIES).map((code) => (
+                  <SelectItem key={code} value={code}>{code}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <Button type="submit" className="w-full" disabled={pending}>
             {pending ? 'Memproses…' : 'Buat salon'}
