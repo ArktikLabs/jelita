@@ -1,0 +1,27 @@
+# Disposable Postgres for the test suites.
+#
+# A fresh database per run makes an entire bug class structurally impossible:
+# the shared plan_limits corruption that a crashed run used to launder into the
+# next run has nothing to launder into. It also removes the remote pooler
+# latency that made the staff import race flaky.
+#
+# 17 to match Supabase (17.6). btree_gist is enabled up front because booking's
+# double-booking guard needs EXCLUDE USING gist over a text staff id.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: jelita
+      POSTGRES_PASSWORD: jelita
+      POSTGRES_DB: jelita_test
+    ports:
+      - '55432:5432'
+    # tmpfs: the data never needs to outlive the run, and RAM-backed storage
+    # takes a meaningful bite out of migration time.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U jelita -d jelita_test']
+      interval: 1s
+      timeout: 3s
+      retries: 30
