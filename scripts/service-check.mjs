@@ -912,6 +912,75 @@ try {
   ok('the list page renders the stored minor units back through formatMoney identically',
      decodeHtml(sgdListPage.html).includes(formatMoney(25050, 'SGD')),
      formatMoney(25050, 'SGD'))
+
+  // 5. Concurrency: a service creation and a currency change fired at the
+  // SAME instant against a fresh, empty-catalogue salon must never BOTH
+  // succeed. Assertion 3 above (sequential: create, then change) already
+  // passes without any locking at all -- it proves nothing about the race.
+  // Fired together via Promise.all, the way this was actually reproduced:
+  // 15/15 trials corrupted (service created AND currency flipped to SGD,
+  // Rp 50.000 silently reading as $500.00) before createServiceAction and
+  // setCurrencyAction both took `for update` on the same salon_profiles row.
+  const raceTrial = async (n) => {
+    const email = `race-${n}@${DOMAIN}`
+    const owner = new Client()
+    await owner.req('/sign-up/email', { name: `Race Owner ${n}`, email, password: PW })
+    await pool.query(`update users set email_verified = true where email = $1`, [email])
+    await owner.req('/sign-in/email', { email, password: PW })
+    await submitForm(owner.jar, '/onboarding', 'name="slug"',
+      { name: `Race Salon ${n}`, slug: `svccheck-race-${n}`, currency: 'IDR' })
+    const { rows: [org] } = await pool.query(
+      `select id from organizations where slug = $1`, [`svccheck-race-${n}`])
+    const orgId = org.id
+
+    // Capture both forms' hidden action fields BEFORE firing either POST --
+    // this is what the race actually looks like: two requests against the
+    // same empty-catalogue state, submitted at the same instant.
+    const captureHidden = async (path, marker) => {
+      const page = await getPage(owner.jar, path)
+      const chunk = page.html.split('<form').find((f) => f.includes(marker))
+      if (!chunk) throw new Error(`no form ${marker} on ${path}`)
+      return [...chunk.slice(0, chunk.indexOf('</form>')).matchAll(
+        /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)]
+    }
+    const svcHidden = await captureHidden('/services/new', 'name="price"')
+    const curHidden = await captureHidden('/services', 'name="currency"')
+
+    const svcBody = new FormData()
+    for (const [, k, v] of svcHidden) svcBody.set(decodeHtml(k), decodeHtml(v ?? ''))
+    svcBody.set('name', 'Layanan Race')
+    svcBody.set('durationMinutes', '30')
+    svcBody.set('price', '50000')
+
+    const curBody = new FormData()
+    for (const [, k, v] of curHidden) curBody.set(decodeHtml(k), decodeHtml(v ?? ''))
+    curBody.set('currency', 'SGD')
+
+    await Promise.all([
+      fetch(`${ORIGIN}/services/new`,
+        { method: 'POST', headers: { cookie: cookieOf(owner.jar) }, body: svcBody, redirect: 'manual' }),
+      fetch(`${ORIGIN}/services`,
+        { method: 'POST', headers: { cookie: cookieOf(owner.jar) }, body: curBody, redirect: 'manual' }),
+    ])
+
+    const { rows: [profile] } = await pool.query(
+      `select currency from salon_profiles where organization_id = $1`, [orgId])
+    const { rows: [svcCount] } = await pool.query(
+      `select count(*)::int n from services where organization_id = $1`, [orgId])
+    return { serviceExists: svcCount.n > 0, currency: profile.currency }
+  }
+
+  const RACE_TRIALS = 15
+  let raceCorrupted = 0
+  for (let n = 0; n < RACE_TRIALS; n++) {
+    const { serviceExists, currency } = await raceTrial(n)
+    // The corrupted state, precisely: a service exists (created) AND the
+    // currency actually changed to SGD (changed) -- both writes landing,
+    // reinterpreting the just-created service's price by 100x forever after.
+    if (serviceExists && currency === 'SGD') raceCorrupted++
+  }
+  ok(`a concurrent service-creation + currency-change race never lets both succeed (${RACE_TRIALS} trials)`,
+     raceCorrupted === 0, `${raceCorrupted}/${RACE_TRIALS} corrupted`)
 } finally {
   await pool.end()
 }

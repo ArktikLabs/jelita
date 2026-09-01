@@ -43,12 +43,29 @@ export async function setCurrencyAction(
   // Spec 2.6: switching currency would reinterpret every stored amount by
   // orders of magnitude -- 50000 rupiah silently reading as 50000 dollars.
   // Re-denominating an operating salon is a data migration, not a settings
-  // toggle. Checked in the same statement as the write so a service created
-  // concurrently cannot slip past a check-then-act gap.
-  const { rowCount } = await db.execute(sql`
-    update salon_profiles set currency = ${currency}, updated_at = now()
-     where organization_id = ${organizationId}
-       and not exists (select 1 from services where organization_id = ${organizationId})`)
+  // toggle.
+  //
+  // TWO statements, ONE transaction -- a single UPDATE with `not exists` in
+  // its own WHERE is NOT enough, confirmed by testing raw Postgres locking
+  // directly: when this statement blocks on createServiceAction's row lock
+  // and then unblocks, Postgres only re-checks the LOCKED ROW's own columns
+  // against the concurrent write (EvalPlanQual) -- a `not exists` subquery
+  // against a DIFFERENT table (services) still runs against the snapshot
+  // this statement started with, so it does not see a service that
+  // committed while this was blocked. The first statement below only takes
+  // the row lock (serialising against createServiceAction's own lock on the
+  // same row); the second is issued FRESH afterward, so it gets a brand new
+  // READ COMMITTED snapshot that does see anything committed in the
+  // meantime.
+  const rowCount = await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      select 1 from salon_profiles where organization_id = ${organizationId} for update`)
+    const result = await tx.execute(sql`
+      update salon_profiles set currency = ${currency}, updated_at = now()
+       where organization_id = ${organizationId}
+         and not exists (select 1 from services where organization_id = ${organizationId})`)
+    return result.rowCount
+  })
   if (!rowCount) return { error: 'Mata uang tidak dapat diubah setelah ada layanan berharga.' }
   revalidatePath('/services')
   return { done: true }
@@ -78,11 +95,30 @@ export async function createServiceAction(
     // borrowed category unstorable -- see the note in actions.ts's sibling
     // createCategoryAction. Safe only as long as that FK stands.
     const categoryId = String(formData.get('categoryId') ?? '').trim() || null
-    await db.execute(sql`
+    // Spec 2.6, the other half of setCurrencyAction's guard: `price` above
+    // was parsed against `currency`, so this insert must not land under a
+    // DIFFERENT one. `insert ... select ... for update` locks the
+    // salon_profiles row as part of the SAME statement that inserts --
+    // serialising against setCurrencyAction's own row lock on that row (same
+    // shape as deactivateStaffAction's/deactivateBranchAction's `for update`
+    // precedent, coupling two different actions instead of two calls to the
+    // same one). A bare lock-then-insert is NOT enough on its own: if the
+    // currency change wins the race and commits first, an insert that only
+    // locks and does not re-check would still go ahead with a price parsed
+    // under the OLD currency -- reproduced 15/15 under concurrent load.
+    // Re-checking `currency = ${currency}` against the row AFTER the lock is
+    // what actually closes the race: if the row's currency moved while this
+    // request was in flight, the select returns no rows and nothing is
+    // inserted.
+    const { rowCount } = await db.execute(sql`
       insert into services (id, organization_id, category_id, name,
                             duration_minutes, price)
-      values (${crypto.randomUUID()}, ${organizationId}, ${categoryId},
-              ${name}, ${duration}, ${price})`)
+      select ${crypto.randomUUID()}, ${organizationId}, ${categoryId},
+             ${name}, ${duration}, ${price}
+        from salon_profiles
+       where organization_id = ${organizationId} and currency = ${currency}
+         for update`)
+    if (!rowCount) return { error: 'Mata uang salon berubah, coba lagi. Muat ulang halaman.' }
   } catch (e) {
     if (e instanceof PlanError) {
       return { error: 'Kuota layanan paket Anda sudah tercapai. Upgrade untuk menambah layanan.' }

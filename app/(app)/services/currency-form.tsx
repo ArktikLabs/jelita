@@ -33,7 +33,7 @@ export function CurrencyCard({
   if (hasServices) {
     return (
       <p className="text-sm text-muted-foreground">
-        Mata uang salon: <span className="font-medium text-foreground">{currency}</span> --
+        Mata uang salon: <span className="font-medium text-foreground">{currency}</span> —
         sudah ada layanan berharga, jadi mata uang tidak bisa diubah lagi.
       </p>
     )
