@@ -28,12 +28,15 @@ export async function listCustomers(
   organizationId: string, opts: { search?: string } = {},
 ): Promise<CustomerRow[]> {
   const term = (opts.search ?? '').trim()
+  // Escape LIKE metacharacters: a bare '%' would otherwise match every
+  // customer in the salon rather than searching for the character.
+  const like = `%${term.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
   const key = term ? normalizePhone(term) : null
   const { rows } = await db.execute(sql`
     select id, name, phone, notes, active from customers
      where organization_id = ${organizationId}
        ${term === '' ? sql`` : sql`and (
-         name ilike ${'%' + term + '%'}
+         name ilike ${like}
          or (${key}::text is not null and phone_key like ${(key ?? '') + '%'})
        )`}
      order by name, id`)

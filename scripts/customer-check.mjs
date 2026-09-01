@@ -37,6 +37,13 @@ class Client {
   cookie() { return [...this.jar].map(([k, v]) => `${k}=${v}`).join('; ') }
 }
 
+// Server Action hidden fields arrive HTML-escaped ($ACTION_2:0 carries JSON
+// full of &quot;). Posting them raw makes Next reject the action and return a
+// 500 that looks like an application error.
+const decodeHtml = (s) => s
+  .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+
 const page = (path, cookie) => fetch(ORIGIN + path, {
   headers: cookie ? { cookie } : {}, redirect: 'manual',
 }).then(async (r) => ({ status: r.status, location: r.headers.get('location'), html: await r.text() }))
@@ -70,6 +77,21 @@ try {
      JSON.stringify(spellings.map(normalizePhone)))
   ok('a mistyped 62-plus-0 prefix folds too', normalizePhone('620812345678') === '62812345678')
   ok('input with no digits is refused', normalizePhone('abc') === null && normalizePhone('') === null)
+
+  // A placeholder entry must not become a key. '0' and '62' both reduce to
+  // '62', so without a length floor two unrelated blanks collide and the
+  // second customer is refused for a reason nobody can act on.
+  ok('a placeholder too short to be a number is refused',
+     normalizePhone('0') === null && normalizePhone('62') === null
+     && normalizePhone('+62') === null)
+
+  // Letters mean an annotation rode along. Stripping non-digits would glue the
+  // trailing digits onto the number and yield a key matching nothing, so
+  // booking would later create a SECOND record for the same person.
+  ok('a number with a trailing annotation is refused, not silently mangled',
+     normalizePhone('0812-3456-7890 ext 12') === null)
+  ok('but a clean number with separators still normalises',
+     normalizePhone('0812-3456-7890') === '6281234567890')
 
   head('3. one customer per number per salon')
   await pool.query(`
@@ -134,9 +156,41 @@ try {
     insert into customers (id, organization_id, name) values ('cc_other', $1, 'Rahasia Salon Lain')`,
     [ORG2])
   const foreign = await page('/customers/cc_other', owner.cookie())
-  ok('another salon customer id is not a 200 with data', foreign.status !== 200,
+  // Pinned to 404, not merely "not 200": a 500 would also satisfy `!== 200`
+  // and would not leak the name either, so a looser check cannot tell
+  // "correctly not-found" from "crashed before rendering".
+  ok('another salon customer id is a 404', foreign.status === 404,
      `got ${foreign.status}`)
   ok('and their name never appears', !foreign.html.includes('Rahasia Salon Lain'))
+
+  // The 409 copy through the REAL action, not just the raw constraint: the
+  // regex in isDuplicatePhone has to match what Postgres actually emits
+  // through drizzle's wrapper, and only an end-to-end create proves that.
+  const newPage = await page('/customers/new', owner.cookie())
+  // Slice to the form that actually contains the phone field. Slicing from the
+  // first </form> on the page picks up the layout's sign-out form instead, and
+  // posting ITS action id returns a 303 that looks like a successful create.
+  const anchor = newPage.html.indexOf('name="phone"')
+  const formStart = newPage.html.lastIndexOf('<form', anchor)
+  const formHtml = newPage.html.slice(formStart, newPage.html.indexOf('</form>', anchor))
+  const dupForm = new FormData()
+  for (const m of formHtml.matchAll(
+    /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)) {
+    dupForm.set(decodeHtml(m[1]), decodeHtml(m[2] ?? ''))
+  }
+  dupForm.set('name', 'Sari Kembar')
+  dupForm.set('phone', '0812999888')
+  const dup = await fetch(`${ORIGIN}/customers/new`, {
+    method: 'POST', headers: { cookie: owner.cookie() }, body: dupForm, redirect: 'manual',
+  })
+  const dupHtml = await dup.text()
+  ok('creating a duplicate number returns the 409 copy',
+     dupHtml.includes('Nomor ini sudah terdaftar untuk pelanggan lain.'),
+     `status ${dup.status}`)
+  const { rows: [dupCount] } = await pool.query(
+    `select count(*)::int n from customers where organization_id = $1 and name = 'Sari Kembar'`,
+    [orgId])
+  ok('and writes no row', dupCount.n === 0, `got ${dupCount.n}`)
 
   head('5. permissions')
   const stylistEmail = `stylist@${DOMAIN}`
