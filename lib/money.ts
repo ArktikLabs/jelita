@@ -54,6 +54,23 @@ export function parseMoney(input: string, currency: CurrencyCode): number | null
   const { exponent } = SUPPORTED_CURRENCIES[currency]
   const trimmed = input.trim()
   if (exponent === 0) {
+    // A 0-exponent currency has no minor units, so a trailing '.NN'/',NN'
+    // is one of two things, and they are NOT treated the same. A zero
+    // fraction ('150.000,00') has exactly one sensible reading -- id-ID's
+    // own formatting writes it that way for a plain 150.000 -- so it is
+    // decorative and safe to drop. A non-zero fraction ('1.50') is genuinely
+    // ambiguous: it could be 1.50 (impossible for this currency, but that's
+    // what it looks like) or 150 with '.' as a grouping separator, and
+    // nothing distinguishes them, so it is refused rather than guessed --
+    // the same call '1.500' gets below for a 2-exponent currency.
+    const fractionMatch = trimmed.match(/^(.*)[.,](\d{1,2})$/)
+    if (fractionMatch) {
+      const [, integerPart, fraction] = fractionMatch
+      if (!/^0+$/.test(fraction)) return null
+      const cleaned = integerPart.replace(/[.,\s]/g, '')
+      if (!/^\d+$/.test(cleaned)) return null
+      return Number(cleaned)
+    }
     const cleaned = trimmed.replace(/[.,\s]/g, '')
     if (!/^\d+$/.test(cleaned)) return null
     return Number(cleaned)

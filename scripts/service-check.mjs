@@ -153,6 +153,14 @@ try {
   const parseCases = [
     ['150.000', 'IDR', 150000],
     ['1.500.000', 'IDR', 1500000],
+    // id-ID writes money with a decorative ',00' -- IDR has no minor units,
+    // so that suffix must be dropped, not read as 100x more rupiah.
+    ['150.000,00', 'IDR', 150000],
+    ['150000,00', 'IDR', 150000],
+    // Ambiguous: '.' could be a thousands separator (-> 150) or the
+    // fraction could be real (-> 1.50, which IDR cannot represent). No rule
+    // distinguishes them, so this is refused rather than guessed either way.
+    ['1.50', 'IDR', null],
     ['150.5', 'USD', 15050],
     ['150.50', 'USD', 15050],
     ['1,500.50', 'USD', 150050],
