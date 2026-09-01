@@ -169,6 +169,14 @@ export async function setBranchOverrideAction(
   const currency = await salonCurrency(organizationId)
   const branches = await listBranches(organizationId)
 
+  // Iterating THIS list, not the submitted field names, is the whole guard:
+  // a price-<foreignTeamId>/offered-<foreignTeamId> pair a client tacked on
+  // is simply never looked up, so it is dropped with no error and no
+  // indication to the operator that anything was ignored. That silence is
+  // deliberate, not an oversight -- it matches this app's convention of
+  // never confirming the existence of another salon's resources (the same
+  // reason a foreign service id 404s instead of saying "not yours"). Do not
+  // "fix" this into an explicit rejection; that would leak the same fact.
   const rows: { teamId: string; price: number | null; offered: boolean }[] = []
   for (const b of branches) {
     const raw = String(formData.get(`price-${b.teamId}`) ?? '').trim()

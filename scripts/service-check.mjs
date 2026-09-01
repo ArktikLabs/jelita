@@ -604,7 +604,8 @@ try {
   const { rows: [foreignRow] } = await pool.query(`
     select count(*)::int n from service_branch_overrides
      where service_id = $1 and team_id = 'svc_t2'`, [ovrServiceId])
-  ok('and it writes no row for the foreign branch', foreignRow.n === 0, `got ${foreignRow.n}`)
+  ok('no service_branch_overrides row exists for the foreign (service, team) pair afterwards',
+     foreignRow.n === 0, `got ${foreignRow.n}`)
 
   // 5. Reactivating a service AT the cap returns 402 (spec 7.9, moved here
   // from the cap task because reactivateServiceAction did not exist yet).

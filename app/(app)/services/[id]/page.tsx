@@ -51,7 +51,17 @@ export default async function ServiceDetailPage({
           <CardDescription>Ubah nama, kategori, durasi, dan harga salon.</CardDescription>
         </CardHeader>
         <CardContent>
-          <ServiceDetailForm service={service} categories={categories} currency={currency} />
+          <ServiceDetailForm
+            service={{
+              id: service.id,
+              name: service.name,
+              categoryId: service.categoryId,
+              durationMinutes: service.durationMinutes,
+              price: service.price,
+            }}
+            categories={categories}
+            currency={currency}
+          />
         </CardContent>
       </Card>
 
@@ -83,7 +93,7 @@ export default async function ServiceDetailPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ServiceStatusForm service={service} />
+          <ServiceStatusForm service={{ id: service.id, active: service.active }} />
         </CardContent>
       </Card>
     </div>

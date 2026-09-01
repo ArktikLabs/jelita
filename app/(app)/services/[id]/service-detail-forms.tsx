@@ -6,7 +6,7 @@ import {
   deactivateServiceAction, reactivateServiceAction,
 } from '../actions'
 import type { FormState } from '@/lib/form-state'
-import type { ServiceRow, OverrideRow } from '@/lib/service'
+import type { OverrideRow } from '@/lib/service'
 import { toAmountInput, type CurrencyCode } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -19,10 +19,22 @@ import {
 
 const initial: FormState = {}
 
+// Narrowed to exactly what this form renders -- id, name, categoryId,
+// durationMinutes, price -- not the full ServiceRow. Props to a client
+// component serialize into the RSC payload whether or not they're
+// rendered (categoryName and active would otherwise ship unused).
+type ServiceDetailInput = {
+  id: string
+  name: string
+  categoryId: string | null
+  durationMinutes: number
+  price: number
+}
+
 export function ServiceDetailForm({
   service, categories, currency,
 }: {
-  service: ServiceRow
+  service: ServiceDetailInput
   categories: { id: string; name: string }[]
   currency: CurrencyCode
 }) {
@@ -161,7 +173,12 @@ export function OverridesForm({
   )
 }
 
-export function ServiceStatusForm({ service }: { service: ServiceRow }) {
+// Narrowed to exactly what this form renders -- id, active -- not the full
+// ServiceRow (name/categoryId/categoryName/durationMinutes/price would ship
+// unused).
+type ServiceStatusInput = { id: string; active: boolean }
+
+export function ServiceStatusForm({ service }: { service: ServiceStatusInput }) {
   const statusAction = service.active ? deactivateServiceAction : reactivateServiceAction
   const [state, action, pending] = useActionState(statusAction, initial)
   return (
