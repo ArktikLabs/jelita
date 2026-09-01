@@ -78,6 +78,13 @@
       "when": 1788194989955,
       "tag": "0010_services",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788248420808,
+      "tag": "0011_customers",
+      "breakpoints": true
     }
   ]
 }
