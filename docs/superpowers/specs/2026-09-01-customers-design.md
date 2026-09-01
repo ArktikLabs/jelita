@@ -51,8 +51,9 @@ customer gave it. `phone_key` is derived on write and is never displayed.
 
 ### 2.3 Phone is optional
 
-A cash walk-in who declines to give a number still gets a record. The partial
-index means any number of customers may have no phone without colliding.
+A cash walk-in who declines to give a number still gets a record. Many
+customers may have no phone without colliding, because NULLs are distinct in a
+Postgres unique index (§2.2).
 
 The cost, accepted: two people genuinely sharing one number — a mother and
 daughter on one handset — means the second is recorded without it. Allowing
