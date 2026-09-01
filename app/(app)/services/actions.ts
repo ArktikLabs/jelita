@@ -8,7 +8,7 @@ import { PlanError, requireQuota } from '@/lib/plan/entitlements'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { salonCurrency, listPerformers } from '@/lib/service'
 import { listBranches } from '@/lib/branch'
-import { parseMoney } from '@/lib/money'
+import { parseMoney, isCurrencyCode } from '@/lib/money'
 import { formError, type FormState } from '@/lib/form-state'
 
 const NOT_FOUND = { error: 'Layanan tidak ditemukan.' }
@@ -25,6 +25,33 @@ async function ownedService(id: string, organizationId: string) {
 function revalidateService(id: string) {
   revalidatePath('/services')
   revalidatePath(`/services/${id}`)
+}
+
+/**
+ * The currency card on /services. Guarded by service:['update'], same as the
+ * page itself and every other write in this file -- this is a public POST
+ * endpoint in its own right, so the check has to live here too.
+ */
+export async function setCurrencyAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ service: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const currency = String(formData.get('currency') ?? '')
+  if (!isCurrencyCode(currency)) return { error: 'Mata uang tidak dikenali.' }
+
+  // Spec 2.6: switching currency would reinterpret every stored amount by
+  // orders of magnitude -- 50000 rupiah silently reading as 50000 dollars.
+  // Re-denominating an operating salon is a data migration, not a settings
+  // toggle. Checked in the same statement as the write so a service created
+  // concurrently cannot slip past a check-then-act gap.
+  const { rowCount } = await db.execute(sql`
+    update salon_profiles set currency = ${currency}, updated_at = now()
+     where organization_id = ${organizationId}
+       and not exists (select 1 from services where organization_id = ${organizationId})`)
+  if (!rowCount) return { error: 'Mata uang tidak dapat diubah setelah ada layanan berharga.' }
+  revalidatePath('/services')
+  return { done: true }
 }
 
 export async function createServiceAction(

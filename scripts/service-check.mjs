@@ -789,6 +789,129 @@ try {
   } catch { crossTenantRefused = true }
   ok('a service_staff row naming another salon\'s user is refused by the database',
      crossTenantRefused)
+  head('10. currency at onboarding, and locking it')
+  // 1. A salon created through onboarding with SGD has SGD in salon_profiles.
+  // The trigger already seeded this row defaulting to IDR -- createSalonAction
+  // must UPDATE it, not leave the default standing.
+  const curOwnerEmail = `cur-owner@${DOMAIN}`
+  const curOwner = new Client()
+  await curOwner.req('/sign-up/email',
+    { name: 'Svc Currency Owner', email: curOwnerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [curOwnerEmail])
+  await curOwner.req('/sign-in/email', { email: curOwnerEmail, password: PW })
+
+  const onboarded = await submitForm(curOwner.jar, '/onboarding', 'name="slug"',
+    { name: 'Svc Check Currency', slug: 'svccheck-currency', currency: 'SGD' })
+  ok('onboarding with SGD redirects to /dashboard',
+     onboarded.status === 303 && (onboarded.location ?? '').includes('/dashboard'),
+     `got ${onboarded.status} ${onboarded.location}`)
+
+  const { rows: [curOrg] } = await pool.query(
+    `select id from organizations where slug = 'svccheck-currency'`)
+  const curOrgId = curOrg?.id
+  ok('currency salon created', !!curOrgId)
+  const currencyOf = async () => {
+    const { rows: [row] } = await pool.query(
+      `select currency from salon_profiles where organization_id = $1`, [curOrgId])
+    return row?.currency
+  }
+  ok('the seeded profile now holds the chosen currency, SGD, not the trigger\'s IDR default',
+     (await currencyOf()) === 'SGD', `got ${await currencyOf()}`)
+
+  // The currency card only renders a FORM while the catalogue is empty (once
+  // a service exists it collapses to a read-only line) -- captured once here
+  // so assertion 3 below can still submit it after that service exists. That
+  // is not a workaround: it is exactly the shape of the race the guard
+  // exists for -- a browser tab left open on the empty-catalogue page,
+  // submitted after a service was created in another tab. A fresh GET always
+  // encodes the same initial ({}) useActionState seed, so this is no
+  // different from re-fetching the form each time, the way submitForm does.
+  const currencyFormPage = await getPage(curOwner.jar, '/services')
+  const currencyFormChunk = currencyFormPage.html.split('<form')
+    .find((f) => f.includes('name="currency"'))
+  if (!currencyFormChunk) throw new Error('no currency form found while the catalogue is empty')
+  const currencyHidden = [...currencyFormChunk.slice(0, currencyFormChunk.indexOf('</form>')).matchAll(
+    /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)]
+  const submitCurrency = async (currency) => {
+    const body = new FormData()
+    for (const [, k, v] of currencyHidden) body.set(decodeHtml(k), decodeHtml(v ?? ''))
+    body.set('currency', currency)
+    const r = await fetch(`${ORIGIN}/services`, {
+      method: 'POST', headers: { cookie: cookieOf(curOwner.jar) }, body, redirect: 'manual',
+    })
+    return { status: r.status, location: r.headers.get('location'), html: await r.text() }
+  }
+
+  // 2. Currency is changeable while the catalogue is empty.
+  const changed = await submitCurrency('MYR')
+  ok('changing currency while the catalogue is empty is accepted',
+     changed.status === 200 && changed.html.includes('Mata uang disimpan.'),
+     `got ${changed.status}`)
+  ok('and the stored currency reflects the change',
+     (await currencyOf()) === 'MYR', `got ${await currencyOf()}`)
+
+  // An unrecognised code is a form error, never a stored value -- isCurrencyCode
+  // must refuse it before the guarded UPDATE ever runs.
+  const bogus = await submitCurrency('ZZZ')
+  ok('an unrecognised currency code is refused',
+     bogus.status === 200 && bogus.html.includes('Mata uang tidak dikenali.'),
+     `got ${bogus.status}`)
+  ok('and the stored currency is unchanged by the refused attempt',
+     (await currencyOf()) === 'MYR', `got ${await currencyOf()}`)
+
+  // 3. Once a service exists, the change is refused with the 409 copy, and
+  // the stored currency is unchanged -- spec 2.6, the whole point of this task.
+  const curService = await submitForm(curOwner.jar, '/services/new', 'name="price"',
+    { name: 'Layanan Mata Uang', durationMinutes: '30', price: '50' })
+  ok('a service is created to lock the currency',
+     curService.status === 303 && (curService.location ?? '').includes('/services'),
+     `got ${curService.status} ${curService.location}`)
+
+  const refusedLocked = await submitCurrency('IDR')
+  ok('changing currency once a service exists is refused with the 409 copy',
+     refusedLocked.status === 200
+       && refusedLocked.html.includes('Mata uang tidak dapat diubah setelah ada layanan berharga.'),
+     `got ${refusedLocked.status}`)
+  ok('and the stored currency is unchanged',
+     (await currencyOf()) === 'MYR', `got ${await currencyOf()}`)
+  ok('the /services page now renders the read-only line, not the form',
+     refusedLocked.html.includes('sudah ada layanan berharga'))
+
+  // 4. A price entered in a 2-exponent salon (SGD) stores the right minor
+  // units and renders back identically -- the 100x check. A fresh salon, so
+  // this is not entangled with curOrgId's currency changes above.
+  const sgdOwnerEmail = `sgd-owner@${DOMAIN}`
+  const sgdOwner = new Client()
+  await sgdOwner.req('/sign-up/email',
+    { name: 'Svc SGD Owner', email: sgdOwnerEmail, password: PW })
+  await pool.query(`update users set email_verified = true where email = $1`, [sgdOwnerEmail])
+  await sgdOwner.req('/sign-in/email', { email: sgdOwnerEmail, password: PW })
+
+  const sgdOnboarded = await submitForm(sgdOwner.jar, '/onboarding', 'name="slug"',
+    { name: 'Svc Check SGD', slug: 'svccheck-sgd', currency: 'SGD' })
+  ok('SGD onboarding salon created',
+     sgdOnboarded.status === 303 && (sgdOnboarded.location ?? '').includes('/dashboard'),
+     `got ${sgdOnboarded.status} ${sgdOnboarded.location}`)
+  const { rows: [sgdOrg] } = await pool.query(
+    `select id from organizations where slug = 'svccheck-sgd'`)
+  const sgdOrgId = sgdOrg?.id
+  ok('SGD salon id resolved', !!sgdOrgId)
+
+  const sgdService = await submitForm(sgdOwner.jar, '/services/new', 'name="price"',
+    { name: 'Layanan SGD', durationMinutes: '30', price: '250.50' })
+  ok('the SGD-priced service is created',
+     sgdService.status === 303 && (sgdService.location ?? '').includes('/services'),
+     `got ${sgdService.status} ${sgdService.location}`)
+
+  const { rows: [sgdRow] } = await pool.query(
+    `select price from services where organization_id = $1 and name = 'Layanan SGD'`, [sgdOrgId])
+  ok('250.50 SGD is stored as 25050 minor units -- not 250 (truncated) or 2505050 (10x)',
+     Number(sgdRow?.price) === 25050, `got ${sgdRow?.price}`)
+
+  const sgdListPage = await getPage(sgdOwner.jar, '/services')
+  ok('the list page renders the stored minor units back through formatMoney identically',
+     decodeHtml(sgdListPage.html).includes(formatMoney(25050, 'SGD')),
+     formatMoney(25050, 'SGD'))
 } finally {
   await pool.end()
 }
