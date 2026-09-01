@@ -12,7 +12,6 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "staff:check": "node --env-file=.env.local scripts/staff-check.mjs",
-    "service:check": "node --env-file=.env.local scripts/service-check.mjs",
     "plan:seed": "node --env-file=.env.local scripts/seed-plans.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
