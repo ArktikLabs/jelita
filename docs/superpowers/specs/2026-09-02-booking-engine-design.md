@@ -1,7 +1,7 @@
 # Booking Engine — Design
 
 **Date:** 2026-09-02
-**Status:** draft
+**Status:** implemented
 **Depends on:** staff scheduling (`staff_working_hours`), services catalogue
 (`service_branch_pricing`, `service_staff`), customers (`findOrCreateByPhone`)
 
@@ -285,8 +285,11 @@ builds on.
 - **409** — the slot is no longer available. Both the recheck and the
   constraint violation report this (§5), and "any available" reports it only
   after every candidate has lost.
-- **403** — a role without the permission. `stylist` holds `booking:read` only,
-  so status changes are front desk and up.
+- **A redirect, not a 403** — `requirePagePermission` bounces to `/dashboard`
+  rather than throwing (`lib/session.ts:132`), and every Server Action here
+  uses that family. `stylist` holds `booking:read` only, so status changes are
+  front desk and up. What the assertion checks is that the write never
+  happened, not the status code.
 - **Cross-tenant reads as not-found**, and the composite FKs refuse the row
   outright (§3.4).
 - **No 402.** The plan tiers cap branches and staff, not bookings.
@@ -356,6 +359,23 @@ Playwright:
 
 15. Book through the form, see it on the day, cancel it, watch the slot return.
 16. A stylist is refused the status actions; front desk is not.
+
+### What the breaks actually caught
+
+Two assertions were written only because a break passed:
+
+- **The "any available" retry.** Firing two `createBooking` calls at once does
+  not reliably collide — their queries interleave, the second reads the first's
+  booking and picks the colleague without ever retrying. Deleting the retry
+  loop entirely still passed. The assertion now holds the slot from an
+  *uncommitted* insert on another connection, which is invisible to the recheck
+  and blocks on the constraint instead. That rewrite exposed a real bug:
+  drizzle wraps driver errors, so matching `23P01` on the top-level `code`
+  never fired and the retry was dead code.
+- **The branch comes from the session.** Making `createBookingAction` trust a
+  posted `teamId` failed nothing. A front-desk user cannot switch branches, so
+  a trusted form field would hand them one they may not see. Now asserted by
+  injecting the field and requiring the booking to land on the session branch.
 
 **Every load-bearing assertion gets break-and-restore evidence.** Seven
 assertions in this project have passed for the wrong reason; each was caught by

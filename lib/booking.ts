@@ -190,6 +190,28 @@ export async function createBooking(input: {
   throw new Error('SLOT_TAKEN')
 }
 
+/**
+ * What this branch actually sells, with the terms a booking will snapshot.
+ * Reads the view, so `offered` already folds in the service's own active flag
+ * and the price is the branch's override where one exists.
+ */
+export async function bookableServices(organizationId: string, teamId: string) {
+  const { rows } = await db.execute(sql`
+    select p.service_id, s.name, p.duration_minutes, p.price, p.currency
+      from service_branch_pricing p
+      join services s on s.id = p.service_id
+     where p.organization_id = ${organizationId} and p.team_id = ${teamId}
+       and p.offered
+     order by s.name, s.id`)
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    serviceId: r.service_id as string,
+    name: r.name as string,
+    durationMinutes: r.duration_minutes as number,
+    price: Number(r.price),
+    currency: r.currency as string,
+  }))
+}
+
 /** One branch's day, in time order -- the whole of /dashboard/bookings. */
 export async function listBookings(
   organizationId: string, teamId: string, date: string,

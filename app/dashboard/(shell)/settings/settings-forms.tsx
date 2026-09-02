@@ -1,7 +1,7 @@
 'use client'
 
 import { useActionState } from 'react'
-import { setCurrencyAction } from './actions'
+import { setCurrencyAction, setSlotMinutesAction } from './actions'
 import type { FormState } from '@/lib/form-state'
 import { SUPPORTED_CURRENCIES, type CurrencyCode } from '@/lib/money'
 import { Button } from '@/components/ui/button'
@@ -18,9 +18,13 @@ const initial: FormState = {}
 
 /**
  * While the catalogue is empty this is an editable card; once any service
- * exists (spec 2.6) it collapses to a read-only line -- switching currency
- * after prices exist would reinterpret every stored minor-unit amount by
- * orders of magnitude, so there is nothing to edit here any more.
+ * exists (spec 2.6 of the services design) it collapses to a read-only line --
+ * switching currency after prices exist would reinterpret every stored
+ * minor-unit amount by orders of magnitude, so there is nothing to edit here
+ * any more.
+ *
+ * The one salon-wide setting that LOCKS. Contrast SlotGridCard below, which
+ * never does.
  */
 export function CurrencyCard({
   currency, hasServices,
@@ -76,6 +80,61 @@ export function CurrencyCard({
             </div>
             <Button type="submit" variant="outline" disabled={pending}>
               {pending ? 'Menyimpan…' : 'Simpan mata uang'}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+const SLOT_CHOICES = [15, 20, 30, 45, 60]
+
+/**
+ * The booking grid. Always editable, because a booking stores its own start
+ * and end -- changing this changes which slots are offered tomorrow and
+ * cannot touch what is already booked (spec 2.3).
+ */
+export function SlotGridCard({ slotMinutes }: { slotMinutes: number }) {
+  const [state, action, pending] = useActionState(setSlotMinutesAction, initial)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Interval jadwal</CardTitle>
+        <CardDescription>
+          Jarak antar pilihan jam pada halaman pemesanan. Bisa diubah kapan saja —
+          janji temu yang sudah ada menyimpan jamnya sendiri dan tidak ikut berubah.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form action={action} className="space-y-2">
+          {state.error && (
+            <Alert variant="destructive">
+              <AlertDescription>{state.error}</AlertDescription>
+            </Alert>
+          )}
+          {state.done && (
+            <Alert>
+              <AlertDescription>Interval jadwal disimpan.</AlertDescription>
+            </Alert>
+          )}
+          <div className="flex items-end gap-2">
+            <div className="space-y-2">
+              <Label htmlFor="slotMinutes">Interval</Label>
+              <Select name="slotMinutes" defaultValue={String(slotMinutes)}>
+                <SelectTrigger id="slotMinutes">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SLOT_CHOICES.map((m) => (
+                    <SelectItem key={m} value={String(m)}>{m} menit</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button type="submit" variant="outline" disabled={pending}>
+              {pending ? 'Menyimpan…' : 'Simpan interval'}
             </Button>
           </div>
         </form>

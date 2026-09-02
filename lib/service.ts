@@ -80,6 +80,18 @@ export async function salonCurrency(organizationId: string): Promise<CurrencyCod
   return ((rows[0] as { currency?: string })?.currency ?? 'IDR') as CurrencyCode
 }
 
+/** Both salon-wide settings, for the one page that edits them. */
+export async function salonSettings(organizationId: string) {
+  const { rows } = await db.execute(sql`
+    select currency, slot_minutes from salon_profiles
+     where organization_id = ${organizationId}`)
+  const r = rows[0] as { currency?: string; slot_minutes?: number } | undefined
+  return {
+    currency: (r?.currency ?? 'IDR') as CurrencyCode,
+    slotMinutes: r?.slot_minutes ?? 30,
+  }
+}
+
 /**
  * Eligible performers for one service: staff_profiles with a branch
  * assignment (team_id is not null) who are active. This is the same list

@@ -16,10 +16,12 @@ export type NavItem = {
  */
 export const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dasbor' },
+  { href: '/dashboard/bookings', label: 'Janji temu', require: { resource: 'booking', action: 'read' } },
   { href: '/dashboard/customers', label: 'Pelanggan', require: { resource: 'customer', action: 'read' } },
   { href: '/dashboard/services', label: 'Layanan', require: { resource: 'service', action: 'update' } },
   { href: '/dashboard/staff', label: 'Staf', require: { resource: 'staff', action: 'read' } },
   { href: '/dashboard/branches', label: 'Cabang', require: { resource: 'branch', action: 'update' } },
+  { href: '/dashboard/settings', label: 'Pengaturan', require: { resource: 'settings', action: 'update' } },
 ]
 
 /**

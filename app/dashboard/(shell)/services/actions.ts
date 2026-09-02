@@ -27,50 +27,6 @@ function revalidateService(id: string) {
   revalidatePath(`/dashboard/services/${id}`)
 }
 
-/**
- * The currency card on /services. Guarded by service:['update'], same as the
- * page itself and every other write in this file -- this is a public POST
- * endpoint in its own right, so the check has to live here too.
- */
-export async function setCurrencyAction(
-  _prev: FormState, formData: FormData,
-): Promise<FormState> {
-  await requirePagePermission({ service: ['update'] })
-  const { organizationId } = await requirePageOrg()
-  const currency = String(formData.get('currency') ?? '')
-  if (!isCurrencyCode(currency)) return { error: 'Mata uang tidak dikenali.' }
-
-  // Spec 2.6: switching currency would reinterpret every stored amount by
-  // orders of magnitude -- 50000 rupiah silently reading as 50000 dollars.
-  // Re-denominating an operating salon is a data migration, not a settings
-  // toggle.
-  //
-  // TWO statements, ONE transaction -- a single UPDATE with `not exists` in
-  // its own WHERE is NOT enough, confirmed by testing raw Postgres locking
-  // directly: when this statement blocks on createServiceAction's row lock
-  // and then unblocks, Postgres only re-checks the LOCKED ROW's own columns
-  // against the concurrent write (EvalPlanQual) -- a `not exists` subquery
-  // against a DIFFERENT table (services) still runs against the snapshot
-  // this statement started with, so it does not see a service that
-  // committed while this was blocked. The first statement below only takes
-  // the row lock (serialising against createServiceAction's own lock on the
-  // same row); the second is issued FRESH afterward, so it gets a brand new
-  // READ COMMITTED snapshot that does see anything committed in the
-  // meantime.
-  const rowCount = await db.transaction(async (tx) => {
-    await tx.execute(sql`
-      select 1 from salon_profiles where organization_id = ${organizationId} for update`)
-    const result = await tx.execute(sql`
-      update salon_profiles set currency = ${currency}, updated_at = now()
-       where organization_id = ${organizationId}
-         and not exists (select 1 from services where organization_id = ${organizationId})`)
-    return result.rowCount
-  })
-  if (!rowCount) return { error: 'Mata uang tidak dapat diubah setelah ada layanan berharga.' }
-  revalidatePath('/dashboard/services')
-  return { done: true }
-}
-
 export async function createServiceAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {

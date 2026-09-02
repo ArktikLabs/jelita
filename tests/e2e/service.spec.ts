@@ -524,13 +524,13 @@ test.describe.serial('currency at onboarding, and locking it once priced', () =>
   })
 
   test('currency is changeable while the catalogue is empty, and an unrecognised code is refused without storing anything', async () => {
-    const changed = await submitForm(owner, '/dashboard/services', 'name="currency"', { currency: 'MYR' })
+    const changed = await submitForm(owner, '/dashboard/settings', 'name="currency"', { currency: 'MYR' })
     expect(changed.status, changed.html).toBe(200)
     expect(changed.html).toContain('Mata uang disimpan.')
     expect(await currencyOf()).toBe('MYR')
 
     // isCurrencyCode must refuse this before the guarded UPDATE ever runs.
-    const bogus = await submitForm(owner, '/dashboard/services', 'name="currency"', { currency: 'ZZZ' })
+    const bogus = await submitForm(owner, '/dashboard/settings', 'name="currency"', { currency: 'ZZZ' })
     expect(bogus.status).toBe(200)
     expect(bogus.html).toContain('Mata uang tidak dikenali.')
     expect(await currencyOf()).toBe('MYR')
@@ -543,7 +543,7 @@ test.describe.serial('currency at onboarding, and locking it once priced', () =>
     // That is not a workaround: it is exactly the shape of the race the
     // guard exists for -- a browser tab left open on the empty-catalogue
     // page, submitted after a service was created in another tab.
-    const emptyPage = await getPage(owner, '/dashboard/services')
+    const emptyPage = await getPage(owner, '/dashboard/settings')
     const currencyForm = emptyPage.html.split('<form').find((f) => f.includes('name="currency"'))
     if (!currencyForm) throw new Error('no currency form found while the catalogue is empty')
     const staleHidden = hiddenFieldsOf(currencyForm)
@@ -555,7 +555,7 @@ test.describe.serial('currency at onboarding, and locking it once priced', () =>
     const multipart: Record<string, string> = {}
     for (const [, k, v] of staleHidden) multipart[decodeHtml(k)] = decodeHtml(v ?? '')
     multipart.currency = 'IDR'
-    const refused = await owner.post('/dashboard/services', { multipart, maxRedirects: 0 })
+    const refused = await owner.post('/dashboard/settings', { multipart, maxRedirects: 0 })
     expect(refused.status()).toBe(200)
     const refusedHtml = await refused.text()
     expect(refusedHtml).toContain('Mata uang tidak dapat diubah setelah ada layanan berharga.')
@@ -617,7 +617,7 @@ test.describe('a concurrent service-creation + currency-change race never lets b
       // empty-catalogue state, submitted at the same instant.
       const svcPage = await getPage(owner, '/dashboard/services/new')
       const svcForm = svcPage.html.split('<form').find((f) => f.includes('name="price"'))!
-      const curPage = await getPage(owner, '/dashboard/services')
+      const curPage = await getPage(owner, '/dashboard/settings')
       const curForm = curPage.html.split('<form').find((f) => f.includes('name="currency"'))!
 
       const svcMultipart: Record<string, string> = {}
@@ -632,7 +632,7 @@ test.describe('a concurrent service-creation + currency-change race never lets b
 
       await Promise.all([
         owner.post('/dashboard/services/new', { multipart: svcMultipart, maxRedirects: 0 }),
-        owner.post('/dashboard/services', { multipart: curMultipart, maxRedirects: 0 }),
+        owner.post('/dashboard/settings', { multipart: curMultipart, maxRedirects: 0 }),
       ])
 
       const { rows: [profile] } = await pool.query(

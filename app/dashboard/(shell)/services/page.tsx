@@ -9,7 +9,6 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { CategoryCreateForm } from './category-form'
-import { CurrencyCard } from './currency-form'
 
 const UNCATEGORISED = 'Tanpa kategori'
 
@@ -52,8 +51,6 @@ export default async function ServicesPage() {
           Tambah layanan
         </Link>
       </div>
-
-      <CurrencyCard currency={currency} hasServices={services.length > 0} />
 
       <CategoryCreateForm />
 
