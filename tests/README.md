@@ -76,3 +76,36 @@ restore, watch it pass.
 
 **The break has to compile.** An edit that fails the build fails the run
 without exercising the assertion at all, and proves nothing.
+
+## Two assertions carry no break-and-restore evidence
+
+Both were migrated from the retired `staff-check.mjs`, and the sandbox's tool
+classifier refuses edits that weaken a security or concurrency guard — so
+neither the migration nor a later attempt could run the suite against a
+deliberately broken version. Recorded here rather than left implied.
+
+**The privilege-escalation allow-list** (`ASSIGNABLE_ROLES`,
+`app/(app)/staff/actions.ts`). It stops `role=owner` from minting a second
+owner — an admin holds `staff:['create']`, so without it an admin could grant
+themselves org-deletion rights. The migrated assertion is written in the right
+shape: it checks the **member row count**, not merely that an error came back,
+because code can refuse a response after already writing the row. But nobody
+has watched it fail.
+
+**The ownerless-salon lock** (`for update of s, m` in `deactivateStaffAction`).
+Locking only `staff_profiles` leaves a demote-versus-deactivate race that
+reaches zero active owners, because owner-ness is read from `members.role`. It
+was proven with a mechanically-derived copy of the real statement plus a
+negative control, which is weaker than breaking the real one.
+
+Both guards were verified by literal break-and-restore when they were written;
+it is the *migrated* assertions that lack fresh proof. To close this, allow
+temporary edits to `app/(app)/staff/actions.ts` and run the two breaks —
+neutering the allow-list should fail the escalation assertion on the row
+count, and reducing the lock to `for update of s` should let the demote race
+reach zero owners.
+
+**Related, and separate:** demote-versus-demote is genuinely unguarded. Two
+owners demoting each other in the same instant still reach zero active owners.
+That is a known, accepted gap recorded as a `ponytail:` comment in
+`app/(app)/staff/actions.ts`, not something the tests are missing.
