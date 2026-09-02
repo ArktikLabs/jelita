@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
+import { createBooking, listBookings, listSlots, setBookingStatus } from '../lib/booking'
 
 /**
  * The double-booking guarantee, asserted against real Postgres.
@@ -77,8 +78,11 @@ const WEDNESDAY = 3
 const setGrid = (minutes: number) => pool.query(
   `update salon_profiles set slot_minutes = $2 where organization_id = $1`, [ORG, minutes])
 
-const setDuration = (minutes: number) => pool.query(
-  `update services set duration_minutes = $2 where id = $1`, [SERVICE, minutes])
+/** Duration AND price together: a test that mutates the service must not leak
+ *  its terms into the next one, and price is snapshotted onto bookings. */
+const setService = (minutes: number, price = 150000) => pool.query(
+  `update services set duration_minutes = $2, price = $3 where id = $1`,
+  [SERVICE, minutes, price])
 
 const linkStylists = async (...ids: string[]) => {
   await pool.query(`delete from service_staff where service_id = $1`, [SERVICE])
@@ -120,7 +124,7 @@ beforeEach(async () => {
                      closes_at = '21:00' where organization_id = $1`, [ORG])
   await pool.query(`update staff_profiles set active = true where organization_id = $1`, [ORG])
   await setGrid(30)
-  await setDuration(60)
+  await setService(60)
   await linkStylists(STYLIST)
 })
 
@@ -246,14 +250,14 @@ describe('available_slots', () => {
   })
 
   it('offers only starts where the whole service fits before closing', async () => {
-    await setDuration(90)
+    await setService(90)
     const s = await slots()
     expect(s.at(-1)).toBe('19:30')
     expect(s).not.toContain('20:00')
   })
 
   it('offers nothing when the service is longer than the working day', async () => {
-    await setDuration(24 * 60)
+    await setService(24 * 60)
     expect(await slots()).toEqual([])
   })
 
@@ -369,5 +373,204 @@ describe('available_slots', () => {
       await c.query('rollback')
       c.release()
     }
+  })
+})
+
+describe('createBooking', () => {
+  const args = (over: Partial<Parameters<typeof createBooking>[0]> = {}) => ({
+    organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+    date: DAY, startsAt: `${DAY}T10:00`, ...over,
+  })
+
+  it('drops starts already in the past, which the SQL function still offers', async () => {
+    // 2020-09-09 is also a Wednesday, so the working pattern applies and
+    // available_slots fills the day. The filter that empties it lives in
+    // lib/booking.ts, deliberately (spec 4) -- asserting both halves is what
+    // shows it is the filter doing the work and not an empty schedule.
+    const past = '2020-09-09'
+    const { rows } = await pool.query(
+      `select count(*)::int n from available_slots($1, $2, $3, $4::date, null)`,
+      [ORG, TEAM, SERVICE, past])
+    expect(rows[0].n, 'the SQL function itself still offers them').toBeGreaterThan(0)
+    expect(await listSlots({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, date: past,
+    })).toEqual([])
+  })
+
+  it('books the requested stylist and snapshots the terms', async () => {
+    const id = await createBooking(args({ staffUserId: STYLIST }))
+    const { rows } = await pool.query(
+      `select staff_user_id, to_char(starts_at, 'HH24:MI') s, to_char(ends_at, 'HH24:MI') e,
+              status, duration_minutes, price, currency from bookings where id = $1`, [id])
+    expect(rows[0]).toMatchObject({
+      staff_user_id: STYLIST, s: '10:00', e: '11:00', status: 'pending',
+      duration_minutes: 60, price: '150000', currency: 'IDR',
+    })
+  })
+
+  it('snapshots the terms as they were, not as they later become', async () => {
+    const id = await createBooking(args({ staffUserId: STYLIST }))
+    await pool.query(`update services set price = 999000, duration_minutes = 30
+                       where id = $1`, [SERVICE])
+    const { rows } = await pool.query(
+      `select price, duration_minutes, to_char(ends_at, 'HH24:MI') e
+         from bookings where id = $1`, [id])
+    expect(rows[0]).toMatchObject({ price: '150000', duration_minutes: 60, e: '11:00' })
+  })
+
+  it('refuses a start the slot list does not offer', async () => {
+    // 10:15 is off a 30-minute grid; the client can post it, the server will
+    // not take it.
+    await expect(createBooking(args({ staffUserId: STYLIST, startsAt: `${DAY}T10:15` })))
+      .rejects.toThrow('SLOT_TAKEN')
+  })
+
+  it('refuses a start already taken', async () => {
+    await createBooking(args({ staffUserId: STYLIST }))
+    await expect(createBooking(args({ staffUserId: STYLIST })))
+      .rejects.toThrow('SLOT_TAKEN')
+  })
+
+  it('refuses a stylist who is not free then, rather than booking someone else', async () => {
+    await linkStylists(STYLIST, OTHER_STYLIST)
+    await createBooking(args({ staffUserId: STYLIST }))
+    await expect(createBooking(args({ staffUserId: STYLIST })))
+      .rejects.toThrow('SLOT_TAKEN')
+    const { rows } = await pool.query(`select count(*)::int n from bookings
+                                        where organization_id = $1`, [ORG])
+    expect(rows[0].n, 'the failed attempt must not have booked the colleague').toBe(1)
+  })
+
+  it('refuses a service the branch does not offer', async () => {
+    await pool.query(`
+      insert into service_branch_overrides (service_id, team_id, organization_id, offered)
+      values ($1, $2, $3, false)`, [SERVICE, TEAM, ORG])
+    await expect(createBooking(args({ staffUserId: STYLIST }))).rejects.toThrow('SLOT_TAKEN')
+  })
+
+  it('assigns "any available" to the least-booked stylist', async () => {
+    await linkStylists(STYLIST, OTHER_STYLIST)
+    // Give STYLIST a booking earlier in the day, so OTHER_STYLIST is lighter.
+    await book({ at: '09:00', until: '10:00', staff: STYLIST })
+    const id = await createBooking(args({ staffUserId: null }))
+    const { rows } = await pool.query(`select staff_user_id from bookings where id = $1`, [id])
+    expect(rows[0].staff_user_id).toBe(OTHER_STYLIST)
+  })
+
+  it('lets a losing "any available" fall through to the colleague, not report a full salon', async () => {
+    // The assertion the retry loop exists for, made DETERMINISTIC rather than
+    // hoped for: firing two createBooking calls at once does NOT reliably
+    // collide -- their queries interleave so the second usually reads the
+    // first's booking and picks the colleague without ever retrying. Removing
+    // the retry entirely still passed that version, so it proved nothing.
+    //
+    // Here an UNCOMMITTED insert on another connection holds the slot. It is
+    // invisible to createBooking's recheck, so it picks the same stylist and
+    // then BLOCKS on the exclusion constraint -- exactly the window between
+    // recheck and write. Committing turns that block into 23P01, and only the
+    // retry saves the booking.
+    await linkStylists(STYLIST, OTHER_STYLIST)
+    const holder = await pool.connect()
+    let booked: string
+    try {
+      await holder.query('begin')
+      await holder.query(
+        `insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                               service_id, starts_at, ends_at, status,
+                               duration_minutes, price, currency)
+         values ('bkg_holder', $1, $2, $3, $4, $5, $6::timestamp, $7::timestamp,
+                 'pending', 60, 150000, 'IDR')`,
+        [ORG, TEAM, STYLIST, CUSTOMER, SERVICE, `${DAY} 10:00`, `${DAY} 11:00`])
+
+      const pending = createBooking(args({ staffUserId: null }))
+      // Polled, not slept: wait until a backend is genuinely blocked on a lock.
+      for (let i = 0; i < 200; i++) {
+        const { rows } = await pool.query(
+          `select count(*)::int n from pg_stat_activity
+            where wait_event_type = 'Lock' and state = 'active'`)
+        if (rows[0].n > 0) break
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      await holder.query('commit')
+      booked = await pending
+    } finally {
+      holder.release()
+    }
+    const { rows } = await pool.query(
+      `select staff_user_id from bookings where id = $1`, [booked])
+    expect(rows[0].staff_user_id,
+      'the loser must fall through to the free colleague').toBe(OTHER_STYLIST)
+  })
+
+  it('refuses a third "any available" when only two stylists are free', async () => {
+    await linkStylists(STYLIST, OTHER_STYLIST)
+    await createBooking(args({ staffUserId: null }))
+    await createBooking(args({ staffUserId: null }))
+    await expect(createBooking(args({ staffUserId: null }))).rejects.toThrow('SLOT_TAKEN')
+  })
+})
+
+describe('listBookings', () => {
+  it('returns the branch day in time order, with the names a list renders', async () => {
+    await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: DAY, startsAt: `${DAY}T14:00`, staffUserId: STYLIST,
+    })
+    await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: DAY, startsAt: `${DAY}T10:00`, staffUserId: STYLIST,
+    })
+    const day = await listBookings(ORG, TEAM, DAY)
+    expect(day.map((b) => b.startsAt)).toEqual([`${DAY}T10:00`, `${DAY}T14:00`])
+    expect(day[0]).toMatchObject({
+      staffUserId: STYLIST, customerName: 'Pelanggan', serviceName: 'Potong',
+      status: 'pending', price: 150000, currency: 'IDR',
+    })
+  })
+
+  it('does not show another salon its bookings, or another branch its day', async () => {
+    await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: DAY, startsAt: `${DAY}T10:00`, staffUserId: STYLIST,
+    })
+    expect(await listBookings(ORG2, TEAM, DAY)).toEqual([])
+    expect(await listBookings(ORG, TEAM2, DAY)).toEqual([])
+  })
+})
+
+describe('setBookingStatus', () => {
+  it('walks pending -> confirmed -> completed', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: DAY, startsAt: `${DAY}T10:00`, staffUserId: STYLIST,
+    })
+    await setBookingStatus(id, ORG, 'confirmed')
+    await setBookingStatus(id, ORG, 'completed')
+    const { rows } = await pool.query(`select status from bookings where id = $1`, [id])
+    expect(rows[0].status).toBe('completed')
+  })
+
+  it('refuses a transition the lifecycle does not allow', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: DAY, startsAt: `${DAY}T10:00`, staffUserId: STYLIST,
+    })
+    // pending -> completed skips confirmation.
+    await expect(setBookingStatus(id, ORG, 'completed')).rejects.toThrow('BAD_TRANSITION')
+    await setBookingStatus(id, ORG, 'cancelled')
+    // ...and a terminal status is terminal.
+    await expect(setBookingStatus(id, ORG, 'confirmed')).rejects.toThrow('BAD_TRANSITION')
+  })
+
+  it('refuses a status outside the lifecycle at all', async () => {
+    await expect(setBookingStatus('whatever', ORG, 'tentative')).rejects.toThrow('BAD_STATUS')
+  })
+
+  it('cannot reach a booking in another salon', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: DAY, startsAt: `${DAY}T10:00`, staffUserId: STYLIST,
+    })
+    await expect(setBookingStatus(id, ORG2, 'confirmed')).rejects.toThrow('BAD_TRANSITION')
   })
 })
