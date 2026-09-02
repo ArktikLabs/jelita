@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { formatMoney, parseMoney, toAmountInput } from '../lib/money'
 
+describe('formatMoney', () => {
+  // Display formatting itself -- distinct from the round-trip and
+  // non-parseability tests below, which cover formatMoney only as an input
+  // to parseMoney.
+  it('IDR has no minor digits', () => {
+    expect(formatMoney(150000, 'IDR')).toContain('150.000')
+  })
+
+  it('USD has two', () => {
+    expect(formatMoney(15050, 'USD')).toBe('$150.50')
+  })
+})
+
 describe('parseMoney', () => {
   // A wrong number is far worse than a refusal: it is stored, charged and
   // never questioned. Every case here was found by running the function

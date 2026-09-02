@@ -23,6 +23,13 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The e2e suite builds here so it does not fight a running dev server for
+    // .next (Next's dev lock is scoped to the output directory). Without this,
+    // lint walks the build output after every e2e run.
+    ".next-e2e/**",
+    // Playwright's failure artefacts: traces, screenshots, error context.
+    "test-results/**",
+    "playwright-report/**",
   ]),
 ]);
 

@@ -29,6 +29,20 @@ afterAll(async () => {
   await pool.end()
 })
 
+describe('schema', () => {
+  it('the partial phone index exists', async () => {
+    const { rows } = await pool.query(`
+      select indexname from pg_indexes where tablename = 'customers'`)
+    expect(rows.map((r) => r.indexname)).toContain('customers_org_phone_key')
+  })
+
+  it('RLS is enabled', async () => {
+    const { rows: [row] } = await pool.query(`
+      select relrowsecurity from pg_class where relname = 'customers'`)
+    expect(row.relrowsecurity).toBe(true)
+  })
+})
+
 describe('customers phone uniqueness', () => {
   it('refuses a second customer with the same number in one salon', async () => {
     await addCustomer('vt_c1', ORG, 'Dewi', '62812345678')
