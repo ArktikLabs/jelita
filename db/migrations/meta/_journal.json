@@ -92,6 +92,13 @@
       "when": 1788318147844,
       "tag": "0012_staff_scheduling",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1788318231416,
+      "tag": "0013_staff_working_hours",
+      "breakpoints": true
     }
   ]
 }
