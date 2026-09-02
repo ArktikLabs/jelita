@@ -2,7 +2,7 @@ import { APIError } from 'better-auth/api'
 
 export type FormState = { error?: string; done?: boolean }
 
-/** Bulk staff import (app/(app)/staff/import). One entry in `rows` per bad
+/** Bulk staff import (app/dashboard/staff/import). One entry in `rows` per bad
  *  line -- the whole point of the all-or-nothing design is that this is the
  *  only place a partial result is even representable, and it should only
  *  ever be reached by the unreachable-in-practice failure branch. */

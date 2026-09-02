@@ -16,7 +16,7 @@ export function BranchCreateForm() {
   const [state, action, pending] = useActionState(createBranchAction, initial)
 
   useEffect(() => {
-    if (state.done) router.push('/branches')
+    if (state.done) router.push('/dashboard/branches')
   }, [state.done, router])
 
   return (

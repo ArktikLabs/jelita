@@ -39,7 +39,7 @@ test.afterAll(async () => {
 test.describe.serial('routing and the auth flow', () => {
   test('anonymous visitors are bounced to /login', async () => {
     const anon = await client()
-    for (const path of ['/dashboard', '/onboarding', '/profile']) {
+    for (const path of ['/dashboard', '/onboarding', '/dashboard/profile']) {
       const res = await anon.get(path)
       expect(res.headers()['location'], `${path} should redirect`).toContain('/login')
     }

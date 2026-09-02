@@ -24,7 +24,7 @@ export default async function CustomersPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-medium">Pelanggan</h1>
-        <Link href="/customers/new" className={buttonVariants()}>
+        <Link href="/dashboard/customers/new" className={buttonVariants()}>
           Tambah pelanggan
         </Link>
       </div>
@@ -53,7 +53,7 @@ export default async function CustomersPage({
           {customers.map((c) => (
             <TableRow key={c.id}>
               <TableCell>
-                <Link href={`/customers/${c.id}`} className="underline">{c.name}</Link>
+                <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
               </TableCell>
               <TableCell>{c.phone ?? '—'}</TableCell>
               <TableCell>

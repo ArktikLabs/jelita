@@ -100,19 +100,19 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
   test('searching a domestic number finds an international-format customer', async () => {
     // Search matches the NORMALISED key, so a domestic spelling finds a
     // customer stored in international form.
-    const res = await owner.get('/customers?q=0812999888')
+    const res = await owner.get('/dashboard/customers?q=0812999888')
     const html = await res.text()
     expect(html).toContain('Sari Wijaya')
   })
 
   test('and does not return everyone', async () => {
-    const res = await owner.get('/customers?q=0812999888')
+    const res = await owner.get('/dashboard/customers?q=0812999888')
     const html = await res.text()
     expect(html).not.toContain('Budi Santoso')
   })
 
   test('searching by name works too', async () => {
-    const res = await owner.get('/customers?q=Budi')
+    const res = await owner.get('/dashboard/customers?q=Budi')
     const html = await res.text()
     expect(html).toContain('Budi Santoso')
   })
@@ -121,12 +121,12 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     // Pinned to 404, not merely "not 200": a 500 would also satisfy a looser
     // check and would not leak the name either, so it cannot tell "correctly
     // not-found" from "crashed before rendering".
-    const res = await owner.get(`/customers/${foreignId}`)
+    const res = await owner.get(`/dashboard/customers/${foreignId}`)
     expect(res.status()).toBe(404)
   })
 
   test('and their name never appears', async () => {
-    const res = await owner.get(`/customers/${foreignId}`)
+    const res = await owner.get(`/dashboard/customers/${foreignId}`)
     const html = await res.text()
     expect(html).not.toContain('Rahasia Salon Lain')
   })
@@ -141,7 +141,7 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     })
     try {
       const page = await context.newPage()
-      await page.goto('/customers/new')
+      await page.goto('/dashboard/customers/new')
       await page.getByLabel('Nama').fill('Sari Kembar')
       await page.getByLabel('Nomor WhatsApp').fill('0812999888')
       await page.getByRole('button', { name: 'Simpan' }).click()
@@ -157,18 +157,18 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
   })
 
   test('a stylist may read the list', async () => {
-    const res = await stylist.get('/customers')
+    const res = await stylist.get('/dashboard/customers')
     expect(res.status()).toBe(200)
   })
 
   test('but is redirected from create', async () => {
-    const res = await stylist.get('/customers/new')
+    const res = await stylist.get('/dashboard/customers/new')
     expect(res.status()).toBeGreaterThanOrEqual(300)
     expect(res.status()).toBeLessThan(400)
   })
 
   test('and from the detail screen', async () => {
-    const res = await stylist.get(`/customers/${sariId}`)
+    const res = await stylist.get(`/dashboard/customers/${sariId}`)
     expect(res.status()).toBeGreaterThanOrEqual(300)
     expect(res.status()).toBeLessThan(400)
   })

@@ -49,8 +49,8 @@ export async function createCustomerAction(
     if (isDuplicatePhone(e)) return { error: DUPLICATE }
     return { error: formError(e, 'Gagal menambah pelanggan.') }
   }
-  revalidatePath('/customers')
-  redirect('/customers')
+  revalidatePath('/dashboard/customers')
+  redirect('/dashboard/customers')
 }
 
 export async function updateCustomerAction(
@@ -74,8 +74,8 @@ export async function updateCustomerAction(
     if (isDuplicatePhone(e)) return { error: DUPLICATE }
     return { error: formError(e, 'Gagal menyimpan pelanggan.') }
   }
-  revalidatePath('/customers')
-  revalidatePath(`/customers/${id}`)
+  revalidatePath('/dashboard/customers')
+  revalidatePath(`/dashboard/customers/${id}`)
   return { done: true }
 }
 
@@ -95,7 +95,7 @@ export async function setCustomerActiveAction(
   } catch (e) {
     return { error: formError(e, 'Gagal memperbarui status pelanggan.') }
   }
-  revalidatePath('/customers')
-  revalidatePath(`/customers/${id}`)
+  revalidatePath('/dashboard/customers')
+  revalidatePath(`/dashboard/customers/${id}`)
   return { done: true }
 }

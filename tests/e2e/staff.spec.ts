@@ -12,7 +12,7 @@ import { createSalon } from './fixtures'
  * The branch_entitlement view's lock ranking and getBranchStatus's
  * closed-beats-over_cap precedence are already proven in
  * tests/branch.db.test.ts -- this file only proves how STAFF actions apply
- * that guard (branchWriteError in app/(app)/staff/actions.ts).
+ * that guard (branchWriteError in app/dashboard/staff/actions.ts).
  *
  * The Origin header is not optional: better-auth's CSRF check rejects a
  * state-changing call without one (MISSING_OR_NULL_ORIGIN, 403). See
@@ -285,10 +285,10 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
 
   test('a stylist with a branch, created through the real form, redirects to /staff with team_id set', async () => {
     const email = `list-stylist@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf List Stylist', email, password: PW, role: 'stylist', teamId: branchId })
     expect(res.status, res.html).toBe(303)
-    expect(res.location ?? '').toContain('/staff')
+    expect(res.location ?? '').toContain('/dashboard/staff')
     const { rows: [profile] } = await pool.query(`
       select s.user_id, s.team_id from staff_profiles s join users u on u.id = s.user_id
        where u.email = $1 and s.organization_id = $2`, [email, orgId])
@@ -298,7 +298,7 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
 
   test('an admin with no branch, created through the real form, redirects to /staff with team_id null', async () => {
     const email = `list-admin@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf List Admin', email, password: PW, role: 'admin' })
     expect(res.status, res.html).toBe(303)
     const { rows: [profile] } = await pool.query(`
@@ -310,7 +310,7 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
 
   test('a stylist with no branch is refused, not redirected, and creates no user', async () => {
     const email = `list-bad-stylist@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf Bad Stylist', email, password: PW, role: 'stylist' })
     expect(res.status).toBe(200)
     expect(res.html).toContain('Pilih cabang untuk peran ini.')
@@ -320,7 +320,7 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
 
   test('an admin with a branch is refused, not redirected, and creates no user', async () => {
     const email = `list-bad-admin@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf Bad Admin', email, password: PW, role: 'admin', teamId: branchId })
     expect(res.status).toBe(200)
     expect(res.html).toContain('Peran ini tidak ditempatkan di cabang.')
@@ -330,7 +330,7 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
 
   test('a teamId from another salon is refused with Indonesian copy, not the English addMember message', async () => {
     const email = `list-bad-team@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf Bad Team', email, password: PW, role: 'stylist', teamId: FOREIGN_TEAM })
     expect(res.status).toBe(200)
     expect(res.html).toContain(BRANCH_NOT_FOUND_MSG)
@@ -347,7 +347,7 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
   // came back".
   test('posting role=owner through the form is refused, not redirected, and creates no member row', async () => {
     const email = `list-escalate@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf Escalate', email, password: PW, role: 'owner' })
     expect(res.status).toBe(200)
     expect(res.html).toContain('Peran tidak valid.')
@@ -365,14 +365,14 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
 
     const desk = await client()
     await desk.post('/api/auth/sign-in/email', { data: { email: deskEmail, password: PW } })
-    const deskRes = await desk.get('/staff')
+    const deskRes = await desk.get('/dashboard/staff')
     expect(deskRes.status(), `got ${deskRes.status()}`).toBe(307)
     expect(deskRes.headers()['location'] ?? '').toContain('/dashboard')
     await desk.dispose()
 
     const stylist = await client()
     await stylist.post('/api/auth/sign-in/email', { data: { email: `list-stylist@${DOMAIN}`, password: PW } })
-    const stylistRes = await stylist.get('/staff')
+    const stylistRes = await stylist.get('/dashboard/staff')
     expect(stylistRes.status(), `got ${stylistRes.status()}`).toBe(307)
     expect(stylistRes.headers()['location'] ?? '').toContain('/dashboard')
     await stylist.dispose()
@@ -384,14 +384,14 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
       [FOREIGN_USER, orgId])
     expect(crossScope).toHaveLength(0)
 
-    const cross = await getPage(owner, `/staff/${FOREIGN_USER}`)
+    const cross = await getPage(owner, `/dashboard/staff/${FOREIGN_USER}`)
     expect(cross.status).not.toBe(200)
     expect(cross.html).not.toContain('Staf Salon Lain')
   })
 
   test.describe('§8: role change and branch transfer, using the stylist and admin created above', () => {
     test('promoting a stylist to admin succeeds, and clears the branch (spec §7.7)', async () => {
-      const promoted = await submitForm(owner, `/staff/${stylistUserId}`,
+      const promoted = await submitForm(owner, `/dashboard/staff/${stylistUserId}`,
         'Simpan peran</button>', { userId: stylistUserId, role: 'admin' })
       expect(promoted.status, promoted.html).toBe(200)
       const { rows: [after] } = await pool.query(`
@@ -403,7 +403,7 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
     })
 
     test('demoting an admin to stylist without a branch is refused, and the role is left unchanged', async () => {
-      const demoted = await submitForm(owner, `/staff/${adminUserId}`,
+      const demoted = await submitForm(owner, `/dashboard/staff/${adminUserId}`,
         'Simpan peran</button>', { userId: adminUserId, role: 'stylist' })
       expect(demoted.status).toBe(200)
       expect(demoted.html).toContain('Pilih cabang untuk peran ini.')
@@ -418,7 +418,7 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
         { data: { email: `list-admin@${DOMAIN}`, password: PW } })
       const { rows: [ownerRow] } = await pool.query(
         `select user_id from members where organization_id = $1 and role = 'owner'`, [orgId])
-      const res = await submitForm(adminClient, `/staff/${ownerRow.user_id}`,
+      const res = await submitForm(adminClient, `/dashboard/staff/${ownerRow.user_id}`,
         'Simpan peran</button>', { userId: ownerRow.user_id, role: 'stylist', teamId: branchId })
       expect(res.status).toBe(200)
       expect(res.html).toContain('Hanya pemilik yang dapat mengubah peran pemilik.')
@@ -513,7 +513,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
 
   test('creating into an over-cap branch is refused with the over-cap copy, and creates no user', async () => {
     const email = `guard-create-overcap@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf Guard Create Overcap', email, password: PW, role: 'stylist', teamId: overCapBranchId })
     expect(res.status).toBe(200)
     expect(res.html).toContain(OVERCAP_MSG)
@@ -523,7 +523,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
 
   test('creating into a closed branch is refused with the closed copy, and creates no user', async () => {
     const email = `guard-create-closed@${DOMAIN}`
-    const res = await submitForm(owner, '/staff/new', 'name="password"',
+    const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
       { name: 'Stf Guard Create Closed', email, password: PW, role: 'stylist', teamId: closedBranchId })
     expect(res.status).toBe(200)
     expect(res.html).toContain(CLOSED_MSG)
@@ -541,7 +541,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
     await pool.query(`update branch_profiles set active = false where team_id = $1`, [FOREIGN_TEAM])
     try {
       const email = `guard-create-foreign@${DOMAIN}`
-      const res = await submitForm(owner, '/staff/new', 'name="password"',
+      const res = await submitForm(owner, '/dashboard/staff/new', 'name="password"',
         { name: 'Stf Guard Create Foreign', email, password: PW, role: 'stylist', teamId: FOREIGN_TEAM })
       expect(res.status).toBe(200)
       expect(res.html).toContain(BRANCH_NOT_FOUND_MSG)
@@ -554,13 +554,13 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
   })
 
   test('transfer to a closed branch, then to a locked branch, both refused and unchanged (spec §7.10)', async () => {
-    const xferClosed = await submitForm(owner, `/staff/${guardStylistId}`,
+    const xferClosed = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Pindahkan</button>', { userId: guardStylistId, teamId: closedBranchId })
     expect(xferClosed.status).toBe(200)
     expect(xferClosed.html).toContain(CLOSED_MSG)
     expect(await teamIdOf(guardStylistId)).toBe(withinBranchId)
 
-    const xferOverCap = await submitForm(owner, `/staff/${guardStylistId}`,
+    const xferOverCap = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Pindahkan</button>', { userId: guardStylistId, teamId: overCapBranchId })
     expect(xferOverCap.status).toBe(200)
     expect(xferOverCap.html).toContain(OVERCAP_MSG)
@@ -568,7 +568,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
   })
 
   test('a branch that is both closed and locked yields the closed message, not the over-cap one (spec §7.10)', async () => {
-    const xferBoth = await submitForm(owner, `/staff/${guardStylistId}`,
+    const xferBoth = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Pindahkan</button>', { userId: guardStylistId, teamId: bothBranchId })
     expect(xferBoth.status).toBe(200)
     expect(xferBoth.html).toContain(CLOSED_MSG)
@@ -587,7 +587,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
     await pool.query(`update branch_profiles set active = false where team_id = $1`, [FOREIGN_TEAM])
     let xferCross: Awaited<ReturnType<typeof submitForm>>
     try {
-      xferCross = await submitForm(owner, `/staff/${guardStylistId}`,
+      xferCross = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
         'Pindahkan</button>', { userId: guardStylistId, teamId: FOREIGN_TEAM })
     } finally {
       await pool.query(`update branch_profiles set active = true where team_id = $1`, [FOREIGN_TEAM])
@@ -604,7 +604,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
   })
 
   test('the happy path: transfer to an open branch moves BOTH the assignment and the navigational row, and a fresh sign-in lands at the new branch', async () => {
-    const xferOk = await submitForm(owner, `/staff/${guardStylistId}`,
+    const xferOk = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Pindahkan</button>', { userId: guardStylistId, teamId: openBranchId })
     expect(xferOk.status, xferOk.html).toBe(200)
     expect(await teamIdOf(guardStylistId)).toBe(openBranchId)
@@ -637,24 +637,24 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
   test('a transfer targeting an owner (a management role) is refused, and the transfer card is not even offered on their page', async () => {
     const { rows: [ownerRow] } = await pool.query(
       `select user_id from members where organization_id = $1 and role = 'owner'`, [orgId])
-    const res = await submitForm(owner, `/staff/${guardStylistId}`,
+    const res = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Pindahkan</button>', { userId: ownerRow.user_id, teamId: openBranchId })
     expect(res.status).toBe(200)
     expect(res.html).toContain('Peran ini tidak ditempatkan di cabang.')
     expect(await teamIdOf(ownerRow.user_id)).toBeNull()
 
-    const ownerPage = await getPage(owner, `/staff/${ownerRow.user_id}`)
+    const ownerPage = await getPage(owner, `/dashboard/staff/${ownerRow.user_id}`)
     expect(ownerPage.html).not.toContain('Pindahkan</button>')
   })
 
   test('a role change onto a closed branch, then a locked branch, both refused and unchanged', async () => {
-    const roleClosed = await submitForm(owner, `/staff/${guardStylistId}`,
+    const roleClosed = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Simpan peran</button>', { userId: guardStylistId, role: 'stylist', teamId: closedBranchId })
     expect(roleClosed.status).toBe(200)
     expect(roleClosed.html).toContain(CLOSED_MSG)
     expect(await teamIdOf(guardStylistId)).toBe(openBranchId)
 
-    const roleOverCap = await submitForm(owner, `/staff/${guardStylistId}`,
+    const roleOverCap = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Simpan peran</button>', { userId: guardStylistId, role: 'stylist', teamId: overCapBranchId })
     expect(roleOverCap.status).toBe(200)
     expect(roleOverCap.html).toContain(OVERCAP_MSG)
@@ -667,7 +667,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
     // and left team_id untouched -- a stylist with NO branch at all (the §4
     // invariant this action exists to enforce), reported as "Peran
     // diperbarui."
-    const res = await submitForm(owner, `/staff/${guardAdminId}`,
+    const res = await submitForm(owner, `/dashboard/staff/${guardAdminId}`,
       'Simpan peran</button>', { userId: guardAdminId, role: 'stylist', teamId: FOREIGN_TEAM })
     expect(res.status).toBe(200)
     expect(res.html).toContain(BRANCH_NOT_FOUND_MSG)
@@ -677,7 +677,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
   })
 
   test('the happy path: a real demotion onto a real branch writes BOTH halves', async () => {
-    const res = await submitForm(owner, `/staff/${guardAdminId}`,
+    const res = await submitForm(owner, `/dashboard/staff/${guardAdminId}`,
       'Simpan peran</button>', { userId: guardAdminId, role: 'stylist', teamId: 'stf_guard_fill3' })
     expect(res.status).toBe(200)
     expect(res.html).toContain('Peran diperbarui.')
@@ -690,7 +690,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
     // (assignedStaff counts only active profiles, spec §5), so
     // deactivate -> close -> reactivate is the ordinary sequence, not an
     // edge case.
-    await submitForm(owner, `/staff/${guardStylistId}`,
+    await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Nonaktifkan staf</button>', { userId: guardStylistId })
     const { rows: [afterDeactivate] } = await pool.query(
       `select active from staff_profiles where user_id = $1 and organization_id = $2`,
@@ -698,7 +698,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
     expect(afterDeactivate.active).toBe(false)
     await pool.query(`update branch_profiles set active = false where team_id = $1`, [openBranchId])
 
-    const rehireClosed = await submitForm(owner, `/staff/${guardStylistId}`,
+    const rehireClosed = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Aktifkan staf</button>', { userId: guardStylistId })
     expect(rehireClosed.status).toBe(200)
     expect(rehireClosed.html).toContain(CLOSED_MSG)
@@ -708,7 +708,7 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
     expect(stillInactive.active).toBe(false)
 
     await pool.query(`update branch_profiles set active = true where team_id = $1`, [openBranchId])
-    const rehireOpen = await submitForm(owner, `/staff/${guardStylistId}`,
+    const rehireOpen = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
       'Aktifkan staf</button>', { userId: guardStylistId })
     expect(rehireOpen.status).toBe(200)
     const { rows: [nowActive] } = await pool.query(
@@ -756,20 +756,20 @@ test.describe.serial('assignment does not depend on role strings (through the re
   })
 
   test('a custom-role member with only a team_members row does not block deactivation', async () => {
-    const res = await submitForm(owner, `/branches/${branchId}`, 'Nonaktifkan cabang</button>')
+    const res = await submitForm(owner, `/dashboard/branches/${branchId}`, 'Nonaktifkan cabang</button>')
     expect(res.status).toBe(200)
     expect(res.html).not.toContain('Pindahkan staf berikut lebih dulu')
     const { rows: [branch] } = await pool.query(
       `select active from branch_profiles where team_id = $1`, [branchId])
     expect(branch.active).toBe(false)
-    await submitForm(owner, `/branches/${branchId}`, 'Aktifkan cabang</button>')
+    await submitForm(owner, `/dashboard/branches/${branchId}`, 'Aktifkan cabang</button>')
   })
 
   test('once staff_profiles.team_id is actually set, the same custom-role member blocks deactivation, named', async () => {
     await pool.query(`
       update staff_profiles set team_id = $1
        where user_id = 'stf_manajer' and organization_id = $2`, [branchId, orgId])
-    const res = await submitForm(owner, `/branches/${branchId}`, 'Nonaktifkan cabang</button>')
+    const res = await submitForm(owner, `/dashboard/branches/${branchId}`, 'Nonaktifkan cabang</button>')
     expect(res.html).toContain('Pindahkan staf berikut lebih dulu: Stf Manajer.')
     const { rows: [branch] } = await pool.query(
       `select active from branch_profiles where team_id = $1`, [branchId])
@@ -814,7 +814,7 @@ test.describe.serial('departure: deactivation, reactivation, session revocation,
     const before = await (await staffClient.get('/api/auth/get-session')).json()
     expect(before?.user?.id).toBe(staffId)
 
-    await submitForm(owner, `/staff/${staffId}`, 'Nonaktifkan staf</button>', { userId: staffId })
+    await submitForm(owner, `/dashboard/staff/${staffId}`, 'Nonaktifkan staf</button>', { userId: staffId })
     const after = await (await staffClient.get('/api/auth/get-session')).json()
     expect(after?.user).toBeFalsy()
     const { rows: sessions } = await pool.query(`select 1 from sessions where user_id = $1`, [staffId])
@@ -823,7 +823,7 @@ test.describe.serial('departure: deactivation, reactivation, session revocation,
   })
 
   test('reactivation with room in the plan succeeds', async () => {
-    await submitForm(owner, `/staff/${staffId}`, 'Aktifkan staf</button>', { userId: staffId })
+    await submitForm(owner, `/dashboard/staff/${staffId}`, 'Aktifkan staf</button>', { userId: staffId })
     expect(await activeOf(staffId)).toBe(true)
   })
 
@@ -833,7 +833,7 @@ test.describe.serial('departure: deactivation, reactivation, session revocation,
     const before = await (await pwClient.get('/api/auth/get-session')).json()
     expect(before?.user?.id).toBe(staffId)
 
-    const reset = await submitForm(owner, `/staff/${staffId}`, 'name="password"',
+    const reset = await submitForm(owner, `/dashboard/staff/${staffId}`, 'name="password"',
       { userId: staffId, password: NEWPW })
     expect(reset.status).toBe(200)
     expect(reset.html).not.toContain('Kata sandi minimal')
@@ -856,13 +856,13 @@ test.describe.serial('departure: deactivation, reactivation, session revocation,
   })
 
   test('an owner cannot deactivate themselves, forged from another staff member\'s page with the userId swapped', async () => {
-    const selfAttempt = await submitForm(owner, `/staff/${staffId}`,
+    const selfAttempt = await submitForm(owner, `/dashboard/staff/${staffId}`,
       'Nonaktifkan staf</button>', { userId: ownerUserId })
     expect(selfAttempt.status).toBe(200)
     expect(selfAttempt.html).toContain(SELF_MSG)
     expect(await activeOf(ownerUserId)).toBe(true)
 
-    const ownSelfPage = await getPage(owner, `/staff/${ownerUserId}`)
+    const ownSelfPage = await getPage(owner, `/dashboard/staff/${ownerUserId}`)
     expect(ownSelfPage.html).not.toContain('Nonaktifkan staf</button>')
   })
 
@@ -873,7 +873,7 @@ test.describe.serial('departure: deactivation, reactivation, session revocation,
     const adminClient = await client()
     await adminClient.post('/api/auth/sign-in/email', { data: { email: `exit-admin@${DOMAIN}`, password: PW } })
 
-    const res = await submitForm(adminClient, `/staff/${ownerUserId}`, 'name="password"',
+    const res = await submitForm(adminClient, `/dashboard/staff/${ownerUserId}`, 'name="password"',
       { userId: ownerUserId, password: NEWPW })
     expect(res.status).toBe(200)
     expect(res.html).toContain('Hanya pemilik yang dapat mengatur ulang kata sandi pemilik.')
@@ -980,14 +980,14 @@ test.describe.serial('departure: the last owner, and the ownerless-salon guards 
     const adminClient = await client()
     await adminClient.post('/api/auth/sign-in/email', { data: { email: `owners-admin@${DOMAIN}`, password: PW } })
 
-    const adminDrops = await submitForm(adminClient, `/staff/stf_owner2`,
+    const adminDrops = await submitForm(adminClient, `/dashboard/staff/stf_owner2`,
       'Nonaktifkan staf</button>', { userId: 'stf_owner2' })
     expect(adminDrops.status).toBe(200)
     expect(adminDrops.html).toContain('Hanya pemilik yang dapat menonaktifkan pemilik.')
     expect(await activeOf('stf_owner2')).toBe(true)
     await adminClient.dispose()
 
-    const dropSecond = await submitForm(owner, `/staff/stf_owner2`,
+    const dropSecond = await submitForm(owner, `/dashboard/staff/stf_owner2`,
       'Nonaktifkan staf</button>', { userId: 'stf_owner2' })
     expect(dropSecond.status).toBe(200)
     expect(dropSecond.html).not.toContain(LAST_OWNER_MSG)
@@ -1006,12 +1006,12 @@ test.describe.serial('departure: the last owner, and the ownerless-salon guards 
     // had no last-owner clause at all -- so deactivate co-owner B
     // (legitimate), then demote yourself: better-auth still counts B's
     // inactive members row, sees two owners, and allows it.
-    const dropCoOwner = await submitForm(owner, `/staff/stf_owner2`,
+    const dropCoOwner = await submitForm(owner, `/dashboard/staff/stf_owner2`,
       'Nonaktifkan staf</button>', { userId: 'stf_owner2' })
     expect(dropCoOwner.status).toBe(200)
     expect(await activeOf('stf_owner2')).toBe(false)
 
-    const selfDemote = await submitForm(owner, `/staff/${ownerUserId}`,
+    const selfDemote = await submitForm(owner, `/dashboard/staff/${ownerUserId}`,
       'Simpan peran</button>', { userId: ownerUserId, role: 'admin' })
     expect(selfDemote.status).toBe(200)
     expect(selfDemote.html).toContain(LAST_OWNER_MSG)
@@ -1025,13 +1025,13 @@ test.describe.serial('departure: the last owner, and the ownerless-salon guards 
     // previous test) -- not in the active-owner set, so refusing this would
     // leave a deactivated co-owner permanently un-demotable, told they are
     // the last active owner when they are not active at all.
-    const demoteInactive = await submitForm(owner, `/staff/stf_owner2`,
+    const demoteInactive = await submitForm(owner, `/dashboard/staff/stf_owner2`,
       'Simpan peran</button>', { userId: 'stf_owner2', role: 'admin' })
     expect(demoteInactive.status).toBe(200)
     expect(demoteInactive.html).not.toContain(LAST_OWNER_MSG)
     expect(await roleOf('stf_owner2')).toBe('admin')
 
-    const demoteLastAgain = await submitForm(owner, `/staff/${ownerUserId}`,
+    const demoteLastAgain = await submitForm(owner, `/dashboard/staff/${ownerUserId}`,
       'Simpan peran</button>', { userId: ownerUserId, role: 'admin' })
     expect(demoteLastAgain.status).toBe(200)
     expect(demoteLastAgain.html).toContain(LAST_OWNER_MSG)
@@ -1075,7 +1075,7 @@ test.describe.serial('the plan cap counts active staff only -- "deactivation fre
     const { rows: noHire } = await pool.query(`select 1 from users where email = $1`, [`cap-hire@${DOMAIN}`])
     expect(noHire).toHaveLength(0)
 
-    const left = await submitForm(owner, `/staff/${leaverId}`, 'Nonaktifkan staf</button>', { userId: leaverId })
+    const left = await submitForm(owner, `/dashboard/staff/${leaverId}`, 'Nonaktifkan staf</button>', { userId: leaverId })
     expect(left.status).toBe(200)
 
     // The product decision, not a count query: the SAME hire, refused a
@@ -1085,7 +1085,7 @@ test.describe.serial('the plan cap counts active staff only -- "deactivation fre
 
     // The cap is full again (owner + the new hire), so rehiring the leaver
     // is refused exactly like hiring.
-    const rehireLeaver = await submitForm(owner, `/staff/${leaverId}`,
+    const rehireLeaver = await submitForm(owner, `/dashboard/staff/${leaverId}`,
       'Aktifkan staf</button>', { userId: leaverId })
     expect(rehireLeaver.status).toBe(200)
     expect(rehireLeaver.html).toContain(QUOTA_REACTIVATE_MSG)
@@ -1095,7 +1095,7 @@ test.describe.serial('the plan cap counts active staff only -- "deactivation fre
   })
 })
 
-test.describe.serial('/staff/import -- bulk creation', () => {
+test.describe.serial('/dashboard/staff/import -- bulk creation', () => {
   let owner: Awaited<ReturnType<typeof client>>
   let orgId: string
   let branchName: string
@@ -1128,9 +1128,9 @@ test.describe.serial('/staff/import -- bulk creation', () => {
       `Stf Import Admin,${adminEmail},demo12345,admin,`,
       `Stf Import Stylist,${stylistEmail},demo12345,stylist,${branchName}`,
     ].join('\n')
-    const res = await submitForm(owner, '/staff/import', 'name="csv"', { csv })
+    const res = await submitForm(owner, '/dashboard/staff/import', 'name="csv"', { csv })
     expect(res.status, res.html).toBe(303)
-    expect(res.location ?? '').toContain('/staff')
+    expect(res.location ?? '').toContain('/dashboard/staff')
 
     const { rows: [adminRow] } = await pool.query(`
       select m.role, s.team_id from members m
@@ -1159,7 +1159,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
       `Stf Import Good2,${good2},demo12345,stylist,${branchName}`,
       `Stf Import Bad,${bad},short,admin,`,
     ].join('\n')
-    const res = await submitForm(owner, '/staff/import', 'name="csv"', { csv })
+    const res = await submitForm(owner, '/dashboard/staff/import', 'name="csv"', { csv })
     expect(res.status).toBe(200)
     expect(res.html).toContain('1 baris gagal divalidasi')
     expect(res.html).toContain('Kata sandi minimal 8 karakter')
@@ -1172,7 +1172,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
   test('a management row naming a branch is a validation error, and creates nothing (spec §5.4)', async () => {
     const email = `import-mgmt@${DOMAIN}`
     const csv = `Stf Import Mgmt,${email},demo12345,admin,${branchName}`
-    const res = await submitForm(owner, '/staff/import', 'name="csv"', { csv })
+    const res = await submitForm(owner, '/dashboard/staff/import', 'name="csv"', { csv })
     expect(res.status).toBe(200)
     expect(res.html).toContain('Peran ini tidak ditempatkan di cabang.')
     expect(await userExists(email)).toBe(false)
@@ -1194,7 +1194,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
 
     const email = `import-comma@${DOMAIN}`
     const csv = `"Dewi Lestari, S.Kom",${email},demo12345,stylist,"${commaBranchName}"`
-    const res = await submitForm(owner, '/staff/import', 'name="csv"', { csv })
+    const res = await submitForm(owner, '/dashboard/staff/import', 'name="csv"', { csv })
     expect(res.status, res.html).toBe(303)
 
     const { rows: [row] } = await pool.query(`
@@ -1221,7 +1221,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
       + `Stf Import Crlf2,${e2},demo12345,stylist,${branchName}\n`
       + `Stf Import Crlf3,${e3},demo12345,admin,`
 
-    const page = await getPage(owner, '/staff/import')
+    const page = await getPage(owner, '/dashboard/staff/import')
     const form = page.html.split('<form').find((f) => f.includes('name="csv"'))!
     const fields = hiddenFieldsOf(form).map(([, k, v]) => [decodeHtml(k), decodeHtml(v ?? '')] as [string, string])
     fields.push(['csv', csv])
@@ -1231,7 +1231,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
       + `--${boundary}--\r\n`
     const state = await owner.storageState()
     const cookieHeader = state.cookies.map((c) => `${c.name}=${c.value}`).join('; ')
-    const res = await fetch(`${BASE_URL}/staff/import`, {
+    const res = await fetch(`${BASE_URL}/dashboard/staff/import`, {
       method: 'POST',
       headers: {
         cookie: cookieHeader,
@@ -1242,7 +1242,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
       redirect: 'manual',
     })
     expect(res.status, await res.text()).toBe(303)
-    expect(res.headers.get('location') ?? '').toContain('/staff')
+    expect(res.headers.get('location') ?? '').toContain('/dashboard/staff')
     expect(await userExists(e1)).toBe(true)
     expect(await userExists(e2)).toBe(true)
     expect(await userExists(e3)).toBe(true)
@@ -1259,7 +1259,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
         // two-row file needs two and must be refused as a whole.
         await setDefaultStaffCap(2)
 
-        const importPage = await getPage(seatOwner, '/staff/import')
+        const importPage = await getPage(seatOwner, '/dashboard/staff/import')
         expect(importPage.html).toContain('Sisa kuota staf: 1 dari 2')
 
         const s1 = `import-short1@${DOMAIN}`
@@ -1269,7 +1269,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
           `Stf Import Short2,${s2},demo12345,admin,`,
         ].join('\n')
         const before = await memberCount(seatOrgId)
-        const res = await submitForm(seatOwner, '/staff/import', 'name="csv"', { csv })
+        const res = await submitForm(seatOwner, '/dashboard/staff/import', 'name="csv"', { csv })
         expect(res.status).toBe(200)
         expect(res.html).toContain('Butuh 2 kursi staf, tersisa 1.')
         expect(await memberCount(seatOrgId)).toBe(before)
@@ -1386,7 +1386,7 @@ test.describe.serial('/staff/import -- bulk creation', () => {
           `Stf Import Comp1,${email1},demo12345,admin,`,
           `Stf Import Comp2,${email2},demo12345,admin,`,
         ].join('\n')
-        const res = await submitForm(compOwner, '/staff/import', 'name="csv"', { csv })
+        const res = await submitForm(compOwner, '/dashboard/staff/import', 'name="csv"', { csv })
 
         expect(res.status, res.html).toBe(200) // not redirected -- the import failed
         expect(res.html).not.toContain('baris gagal divalidasi') // proves it passed VALIDATION

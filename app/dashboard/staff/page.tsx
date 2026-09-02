@@ -48,10 +48,10 @@ export default async function StaffPage({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/staff/import" className={buttonVariants({ variant: 'outline' })}>
+          <Link href="/dashboard/staff/import" className={buttonVariants({ variant: 'outline' })}>
             Impor staf
           </Link>
-          <Link href="/staff/new" className={buttonVariants()}>
+          <Link href="/dashboard/staff/new" className={buttonVariants()}>
             Tambah staf
           </Link>
         </div>

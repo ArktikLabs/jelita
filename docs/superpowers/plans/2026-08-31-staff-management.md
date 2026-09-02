@@ -44,7 +44,7 @@ Claude-Session: https://claude.ai/code/session_01R27c8rXsQbL9NoXfpiQUzx
 | `lib/branch.ts` | `assignedStaff` / `listBranches` read `staff_profiles`; `isStaff` deleted |
 | `app/api/staff/route.ts` | Delegates to `lib/staff.ts` |
 | `lib/session.ts` | Deactivated logins are refused |
-| `app/(app)/staff/**` | List, new, detail, import screens + actions |
+| `app/dashboard/staff/**` | List, new, detail, import screens + actions |
 | `scripts/staff-check.mjs` | The suite |
 
 ---
@@ -599,10 +599,10 @@ git commit -m "refactor(branch): read assignments from staff_profiles, retire th
 ### Task 4: `/staff` list and `/staff/new`
 
 **Files:**
-- Create: `app/(app)/staff/page.tsx`
-- Create: `app/(app)/staff/actions.ts`
-- Create: `app/(app)/staff/new/page.tsx`
-- Create: `app/(app)/staff/new/staff-form.tsx`
+- Create: `app/dashboard/staff/page.tsx`
+- Create: `app/dashboard/staff/actions.ts`
+- Create: `app/dashboard/staff/new/page.tsx`
+- Create: `app/dashboard/staff/new/staff-form.tsx`
 - Modify: `scripts/staff-check.mjs` (section 6)
 
 **Interfaces:**
@@ -611,17 +611,17 @@ git commit -m "refactor(branch): read assignments from staff_profiles, retire th
 
 Covers spec §7 assertions 6, 12, 13.
 
-Read `app/(app)/branches/page.tsx` and `app/(app)/branches/new/` first and follow those patterns exactly — `useActionState`, destructive `Alert`, `disabled={pending}`, Indonesian copy.
+Read `app/dashboard/branches/page.tsx` and `app/dashboard/branches/new/` first and follow those patterns exactly — `useActionState`, destructive `Alert`, `disabled={pending}`, Indonesian copy.
 
 - [ ] **Step 1: The list page**
 
-`app/(app)/staff/page.tsx` — guarded by `requirePagePermission({ staff: ['read'] })`, then `requirePageOrg()` for the id. Columns: name, email, role, branch (or `—`), status (`Aktif` / `Nonaktif`). A branch filter via a search param. Only owner and admin hold `staff:read`, so there is no partial-visibility case to design.
+`app/dashboard/staff/page.tsx` — guarded by `requirePagePermission({ staff: ['read'] })`, then `requirePageOrg()` for the id. Columns: name, email, role, branch (or `—`), status (`Aktif` / `Nonaktif`). A branch filter via a search param. Only owner and admin hold `staff:read`, so there is no partial-visibility case to design.
 
 Show remaining seats in the header — `countResource(organizationId, 'staff')` against the cap — so the constraint is visible before anyone clicks "Tambah staf".
 
 - [ ] **Step 2: The create action**
 
-`app/(app)/staff/actions.ts`:
+`app/dashboard/staff/actions.ts`:
 
 ```ts
 'use server'
@@ -676,7 +676,7 @@ export async function createStaffAction(
 
 - [ ] **Step 3: The form**
 
-`app/(app)/staff/new/staff-form.tsx` — a client component. The branch select is shown only when the chosen role is `stylist` or `frontdesk`, driven by local state on the role select. Branch options come from `listBranches(organizationId)` passed as a prop from the page.
+`app/dashboard/staff/new/staff-form.tsx` — a client component. The branch select is shown only when the chosen role is `stylist` or `frontdesk`, driven by local state on the role select. Branch options come from `listBranches(organizationId)` passed as a prop from the page.
 
 **Pass only what the form needs** — `{ teamId, name }` per branch, not the full `BranchRow`. Props to client components are serialized into the RSC payload whether or not they are rendered; shipping addresses and phone numbers into a form that only shows names repeats a leak this project has already fixed three times.
 
@@ -699,7 +699,7 @@ Temporarily make `requirePagePermission` return without redirecting. Run `pnpm s
 Run the suite twice, `npx tsc --noEmit && pnpm lint && pnpm build`, and the four pinned suites.
 
 ```bash
-git add "app/(app)/staff" scripts/staff-check.mjs
+git add "app/dashboard/staff" scripts/staff-check.mjs
 git commit -m "feat(staff): list and create screens"
 ```
 
@@ -708,9 +708,9 @@ git commit -m "feat(staff): list and create screens"
 ### Task 5: `/staff/[id]` — role change and branch transfer
 
 **Files:**
-- Create: `app/(app)/staff/[id]/page.tsx`
-- Create: `app/(app)/staff/[id]/staff-detail-forms.tsx`
-- Modify: `app/(app)/staff/actions.ts`
+- Create: `app/dashboard/staff/[id]/page.tsx`
+- Create: `app/dashboard/staff/[id]/staff-detail-forms.tsx`
+- Modify: `app/dashboard/staff/actions.ts`
 - Modify: `scripts/staff-check.mjs` (section 7)
 
 **Interfaces:**
@@ -721,7 +721,7 @@ Covers spec §7 assertions 7, 10.
 
 - [ ] **Step 1: The detail page**
 
-Guarded by `requirePagePermission({ staff: ['read'] })`. Loads the member via `getStaff(userId, organizationId)` — org-scoped in the query — and 404s when null. Read `app/(app)/branches/[id]/` first and mirror its layout of separate cards per operation.
+Guarded by `requirePagePermission({ staff: ['read'] })`. Loads the member via `getStaff(userId, organizationId)` — org-scoped in the query — and 404s when null. Read `app/dashboard/branches/[id]/` first and mirror its layout of separate cards per operation.
 
 - [ ] **Step 2: Role change, with its assignment consequence**
 
@@ -796,7 +796,7 @@ Swap the `closed`/`over_cap` check order. Confirm assertion 5 fails. Restore. Pa
 - [ ] **Step 7: Verify and commit**
 
 ```bash
-git add "app/(app)/staff" scripts/staff-check.mjs
+git add "app/dashboard/staff" scripts/staff-check.mjs
 git commit -m "feat(staff): role change and branch transfer"
 ```
 
@@ -805,8 +805,8 @@ git commit -m "feat(staff): role change and branch transfer"
 ### Task 6: Departure — deactivate, reactivate, password reset
 
 **Files:**
-- Modify: `app/(app)/staff/actions.ts`
-- Modify: `app/(app)/staff/[id]/staff-detail-forms.tsx`
+- Modify: `app/dashboard/staff/actions.ts`
+- Modify: `app/dashboard/staff/[id]/staff-detail-forms.tsx`
 - Modify: `lib/session.ts`
 - Modify: `scripts/staff-check.mjs` (section 8)
 
@@ -914,7 +914,7 @@ Break the last-owner clause → assertion 3 fails. Break `deleteUserSessions` �
 - [ ] **Step 9: Verify and commit**
 
 ```bash
-git add "app/(app)/staff" lib/session.ts scripts/staff-check.mjs
+git add "app/dashboard/staff" lib/session.ts scripts/staff-check.mjs
 git commit -m "feat(staff): departure, rehire and password reset"
 ```
 
@@ -923,9 +923,9 @@ git commit -m "feat(staff): departure, rehire and password reset"
 ### Task 7: `/staff/import` — bulk creation
 
 **Files:**
-- Create: `app/(app)/staff/import/page.tsx`
-- Create: `app/(app)/staff/import/import-form.tsx`
-- Modify: `app/(app)/staff/actions.ts`
+- Create: `app/dashboard/staff/import/page.tsx`
+- Create: `app/dashboard/staff/import/import-form.tsx`
+- Modify: `app/dashboard/staff/actions.ts`
 - Modify: `scripts/staff-check.mjs` (section 9)
 
 **Interfaces:**
@@ -988,6 +988,6 @@ Move the seat check to after creation. Confirm assertion 2 fails (rows were crea
 Run the suite twice, `npx tsc --noEmit && pnpm lint && pnpm build`, and all four pinned suites.
 
 ```bash
-git add "app/(app)/staff" scripts/staff-check.mjs
+git add "app/dashboard/staff" scripts/staff-check.mjs
 git commit -m "feat(staff): bulk import"
 ```

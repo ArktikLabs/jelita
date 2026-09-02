@@ -112,15 +112,15 @@ test.describe.serial('catalogue guards, duplicate names and cross-tenant lookups
   test.afterAll(() => owner.dispose())
 
   test('creating a service redirects to /services', async () => {
-    const created = await submitForm(owner, '/services/new', 'name="price"', {
+    const created = await submitForm(owner, '/dashboard/services/new', 'name="price"', {
       name: 'Potong Rambut', durationMinutes: '60', price: '150000',
     })
     expect(created.status, created.html).toBe(303)
-    expect(created.location ?? '').toContain('/services')
+    expect(created.location ?? '').toContain('/dashboard/services')
   })
 
   test('a duplicate name is refused case-insensitively, not redirected', async () => {
-    const dup = await submitForm(owner, '/services/new', 'name="price"', {
+    const dup = await submitForm(owner, '/dashboard/services/new', 'name="price"', {
       name: 'potong rambut', durationMinutes: '45', price: '99000',
     })
     expect(dup.status).toBe(200)
@@ -140,7 +140,7 @@ test.describe.serial('catalogue guards, duplicate names and cross-tenant lookups
 
     const desk = await client()
     await desk.post('/api/auth/sign-in/email', { data: { email, password: PW } })
-    const res = await desk.get('/services')
+    const res = await desk.get('/dashboard/services')
     expect(res.status(), `got ${res.status()}`).toBe(307)
     expect(res.headers()['location'] ?? '').toContain('/dashboard')
     await desk.dispose()
@@ -155,7 +155,7 @@ test.describe.serial('catalogue guards, duplicate names and cross-tenant lookups
 
     const stylist = await client()
     await stylist.post('/api/auth/sign-in/email', { data: { email, password: PW } })
-    const res = await stylist.get('/services')
+    const res = await stylist.get('/dashboard/services')
     expect(res.status(), `got ${res.status()}`).toBe(307)
     expect(res.headers()['location'] ?? '').toContain('/dashboard')
     await stylist.dispose()
@@ -176,11 +176,11 @@ test.describe.serial('catalogue guards, duplicate names and cross-tenant lookups
       insert into services (id, organization_id, category_id, name, duration_minutes, price)
       values ('svc_foreign_svc', 'svc_foreign_org', 'svc_foreign_cat', 'Rebonding Salon Lain', 120, 500000)`)
 
-    const crossPage = await getPage(owner, '/services/svc_foreign_svc')
+    const crossPage = await getPage(owner, '/dashboard/services/svc_foreign_svc')
     expect(crossPage.status).not.toBe(200)
     expect(crossPage.html).not.toContain('Rebonding Salon Lain')
 
-    const ownList = await getPage(owner, '/services')
+    const ownList = await getPage(owner, '/dashboard/services')
     expect(ownList.html).not.toContain('Rebonding Salon Lain')
     expect(ownList.html).not.toContain('Perawatan Rambut')
   })
@@ -209,12 +209,12 @@ test.describe.serial('the detail screen and per-branch overrides', () => {
     teamA = (await branchA.json()).id
     teamB = (await branchB.json()).id
 
-    const created = await submitForm(owner, '/services/new', 'name="price"',
+    const created = await submitForm(owner, '/dashboard/services/new', 'name="price"',
       { name: 'Creambath Premium', durationMinutes: '40', price: '100000' })
     expect(created.status, created.html).toBe(303)
     serviceId = (await serviceIdByName(orgId, 'Creambath Premium'))!
     expect(serviceId).toBeTruthy()
-    path = `/services/${serviceId}`
+    path = `/dashboard/services/${serviceId}`
   })
   test.afterAll(() => owner.dispose())
 
@@ -332,7 +332,7 @@ test.describe.serial('the plan cap counts active services only', () => {
   })
 
   test('creation at the cap is refused, then succeeds once a deactivation frees a slot', async () => {
-    const first = await submitForm(owner, '/services/new', 'name="price"',
+    const first = await submitForm(owner, '/dashboard/services/new', 'name="price"',
       { name: 'Layanan Cap Satu', durationMinutes: '30', price: '50000' })
     expect(first.status, first.html).toBe(303)
 
@@ -341,7 +341,7 @@ test.describe.serial('the plan cap counts active services only', () => {
       update plan_limits set cap = 1
        where plan_id = (select id from plans where key = 'free') and resource = 'services'`)
 
-    const refused = await submitForm(owner, '/services/new', 'name="price"',
+    const refused = await submitForm(owner, '/dashboard/services/new', 'name="price"',
       { name: 'Layanan Cap Dua', durationMinutes: '30', price: '60000' })
     expect(refused.status).toBe(200)
     expect(refused.html).toContain('Kuota layanan paket Anda sudah tercapai. Upgrade untuk menambah layanan.')
@@ -360,7 +360,7 @@ test.describe.serial('the plan cap counts active services only', () => {
     // "Deactivation frees a slot" is proven the real way: a creation that
     // was refused now succeeds, not by re-running a count query, which would
     // pass even if countResource never excluded inactive rows at all.
-    const afterFree = await submitForm(owner, '/services/new', 'name="price"',
+    const afterFree = await submitForm(owner, '/dashboard/services/new', 'name="price"',
       { name: 'Layanan Cap Dua', durationMinutes: '30', price: '60000' })
     expect(afterFree.status, afterFree.html).toBe(303)
 
@@ -387,7 +387,7 @@ test.describe.serial('the plan cap counts active services only', () => {
     // form's action ref is `active ? deactivate... : reactivate...`, and a
     // successful flip re-renders with a DIFFERENT action bound to the same
     // useActionState call, so a plain HTML re-render carries the new label.
-    const deactivated = await submitForm(owner, `/services/${targetId}`, 'Nonaktifkan layanan</button>')
+    const deactivated = await submitForm(owner, `/dashboard/services/${targetId}`, 'Nonaktifkan layanan</button>')
     expect(deactivated.status, deactivated.html).toBe(200)
     expect(deactivated.html).toContain('Aktifkan layanan</button>')
     expect(deactivated.html).not.toContain('Nonaktifkan layanan</button>')
@@ -397,7 +397,7 @@ test.describe.serial('the plan cap counts active services only', () => {
 
     // The filler alone (still active) now equals the cap, so reactivating
     // the target must be refused.
-    const reactivated = await submitForm(owner, `/services/${targetId}`, 'Aktifkan layanan</button>')
+    const reactivated = await submitForm(owner, `/dashboard/services/${targetId}`, 'Aktifkan layanan</button>')
     expect(reactivated.status).toBe(200)
     expect(reactivated.html).toContain('Kuota layanan paket Anda sudah tercapai. Upgrade untuk menambah layanan.')
     const { rows: [afterRefusal] } = await pool.query(
@@ -440,11 +440,11 @@ test.describe.serial('who performs a service', () => {
     expect(madeAdmin.status(), await madeAdmin.text()).toBe(201)
     adminId = (await madeAdmin.json()).user.id
 
-    const created = await submitForm(owner, '/services/new', 'name="price"',
+    const created = await submitForm(owner, '/dashboard/services/new', 'name="price"',
       { name: 'Creambath Performer', durationMinutes: '30', price: '80000' })
     expect(created.status, created.html).toBe(303)
     serviceId = (await serviceIdByName(orgId, 'Creambath Performer'))!
-    path = `/services/${serviceId}`
+    path = `/dashboard/services/${serviceId}`
   })
   test.afterAll(() => owner.dispose())
 
@@ -524,13 +524,13 @@ test.describe.serial('currency at onboarding, and locking it once priced', () =>
   })
 
   test('currency is changeable while the catalogue is empty, and an unrecognised code is refused without storing anything', async () => {
-    const changed = await submitForm(owner, '/services', 'name="currency"', { currency: 'MYR' })
+    const changed = await submitForm(owner, '/dashboard/services', 'name="currency"', { currency: 'MYR' })
     expect(changed.status, changed.html).toBe(200)
     expect(changed.html).toContain('Mata uang disimpan.')
     expect(await currencyOf()).toBe('MYR')
 
     // isCurrencyCode must refuse this before the guarded UPDATE ever runs.
-    const bogus = await submitForm(owner, '/services', 'name="currency"', { currency: 'ZZZ' })
+    const bogus = await submitForm(owner, '/dashboard/services', 'name="currency"', { currency: 'ZZZ' })
     expect(bogus.status).toBe(200)
     expect(bogus.html).toContain('Mata uang tidak dikenali.')
     expect(await currencyOf()).toBe('MYR')
@@ -543,19 +543,19 @@ test.describe.serial('currency at onboarding, and locking it once priced', () =>
     // That is not a workaround: it is exactly the shape of the race the
     // guard exists for -- a browser tab left open on the empty-catalogue
     // page, submitted after a service was created in another tab.
-    const emptyPage = await getPage(owner, '/services')
+    const emptyPage = await getPage(owner, '/dashboard/services')
     const currencyForm = emptyPage.html.split('<form').find((f) => f.includes('name="currency"'))
     if (!currencyForm) throw new Error('no currency form found while the catalogue is empty')
     const staleHidden = hiddenFieldsOf(currencyForm)
 
-    const created = await submitForm(owner, '/services/new', 'name="price"',
+    const created = await submitForm(owner, '/dashboard/services/new', 'name="price"',
       { name: 'Layanan Mata Uang', durationMinutes: '30', price: '50' })
     expect(created.status, created.html).toBe(303)
 
     const multipart: Record<string, string> = {}
     for (const [, k, v] of staleHidden) multipart[decodeHtml(k)] = decodeHtml(v ?? '')
     multipart.currency = 'IDR'
-    const refused = await owner.post('/services', { multipart, maxRedirects: 0 })
+    const refused = await owner.post('/dashboard/services', { multipart, maxRedirects: 0 })
     expect(refused.status()).toBe(200)
     const refusedHtml = await refused.text()
     expect(refusedHtml).toContain('Mata uang tidak dapat diubah setelah ada layanan berharga.')
@@ -576,7 +576,7 @@ test.describe.serial('a price entered in a 2-exponent currency stores the right 
     const { rows: [org] } = await pool.query(`select id from organizations where slug = 'svccheck-sgd'`)
     const orgId = org.id
 
-    const created = await submitForm(owner, '/services/new', 'name="price"',
+    const created = await submitForm(owner, '/dashboard/services/new', 'name="price"',
       { name: 'Layanan SGD', durationMinutes: '30', price: '250.50' })
     expect(created.status, created.html).toBe(303)
 
@@ -584,7 +584,7 @@ test.describe.serial('a price entered in a 2-exponent currency stores the right 
       `select price from services where organization_id = $1 and name = 'Layanan SGD'`, [orgId])
     expect(Number(row?.price)).toBe(25050)
 
-    const listPage = await getPage(owner, '/services')
+    const listPage = await getPage(owner, '/dashboard/services')
     expect(decodeHtml(listPage.html)).toContain(formatMoney(25050, 'SGD'))
     await owner.dispose()
   })
@@ -615,9 +615,9 @@ test.describe('a concurrent service-creation + currency-change race never lets b
       // Capture both forms' hidden fields BEFORE firing either POST -- this
       // is what the race actually looks like: two requests against the same
       // empty-catalogue state, submitted at the same instant.
-      const svcPage = await getPage(owner, '/services/new')
+      const svcPage = await getPage(owner, '/dashboard/services/new')
       const svcForm = svcPage.html.split('<form').find((f) => f.includes('name="price"'))!
-      const curPage = await getPage(owner, '/services')
+      const curPage = await getPage(owner, '/dashboard/services')
       const curForm = curPage.html.split('<form').find((f) => f.includes('name="currency"'))!
 
       const svcMultipart: Record<string, string> = {}
@@ -631,8 +631,8 @@ test.describe('a concurrent service-creation + currency-change race never lets b
       curMultipart.currency = 'SGD'
 
       await Promise.all([
-        owner.post('/services/new', { multipart: svcMultipart, maxRedirects: 0 }),
-        owner.post('/services', { multipart: curMultipart, maxRedirects: 0 }),
+        owner.post('/dashboard/services/new', { multipart: svcMultipart, maxRedirects: 0 }),
+        owner.post('/dashboard/services', { multipart: curMultipart, maxRedirects: 0 }),
       ])
 
       const { rows: [profile] } = await pool.query(

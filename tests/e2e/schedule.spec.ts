@@ -40,7 +40,7 @@ const hoursFor = async (userId: string, weekday: number) => (await pool.query(
  * hand-built version, switching the inputs to `disabled` failed nothing.
  */
 async function openSchedule(page: Page, userId: string) {
-  await page.goto(`/staff/${userId}`)
+  await page.goto(`/dashboard/staff/${userId}`)
   // Wait on the control the test is about to use, not on a title: it is the
   // thing whose presence actually matters, and titles are not unique.
   await expect(page.locator('#sched-closed-1')).toBeVisible()
@@ -139,7 +139,7 @@ test.describe.serial('the schedule card', () => {
   })
 
   test('an exception is stored and listed', async () => {
-    const page = await owner.get(`/staff/${stylistId}`)
+    const page = await owner.get(`/dashboard/staff/${stylistId}`)
     const html = await page.text()
     const anchor = html.indexOf('name="onDate"')
     const formHtml = html.slice(html.lastIndexOf('<form', anchor), html.indexOf('</form>', anchor))
@@ -152,21 +152,21 @@ test.describe.serial('the schedule card', () => {
     body.set('onDate', '2099-01-05')
     body.set('closed', 'on')
     body.set('note', 'cuti')
-    await owner.post(`/staff/${stylistId}`, { multipart: body as never })
+    await owner.post(`/dashboard/staff/${stylistId}`, { multipart: body as never })
 
     const { rows } = await pool.query(
       `select closed, note from staff_schedule_exceptions
         where user_id = $1 and on_date = '2099-01-05'::date`, [stylistId])
     expect(rows[0]?.closed).toBe(true)
     expect(rows[0]?.note).toBe('cuti')
-    expect(await (await owner.get(`/staff/${stylistId}`)).text()).toContain('2099-01-05')
+    expect(await (await owner.get(`/dashboard/staff/${stylistId}`)).text()).toContain('2099-01-05')
   })
 
   test('the cards are not offered for management, who cannot be scheduled', async () => {
     // Owners and admins carry team_id null, so staff_working_hours returns
     // nothing for them -- a schedule card there would edit a pattern that can
     // never produce a bookable hour (staff spec §8, carried forward).
-    const html = await (await owner.get(`/staff/${adminId}`)).text()
+    const html = await (await owner.get(`/dashboard/staff/${adminId}`)).text()
     expect(html).not.toContain('Jadwal mingguan')
     expect(html).toContain('Peran')
   })

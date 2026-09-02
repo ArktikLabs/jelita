@@ -163,12 +163,12 @@ export async function createStaffAction(
     // (lib/staff.ts), so every creation path gets the guard once.
     return { error: provisionErrorMessage(e) }
   }
-  revalidatePath('/staff')
-  redirect('/staff')
+  revalidatePath('/dashboard/staff')
+  redirect('/dashboard/staff')
 }
 
 /**
- * Bulk creation (app/(app)/staff/import), for onboarding a salon that
+ * Bulk creation (app/dashboard/staff/import), for onboarding a salon that
  * already has staff. The defining constraint: validate the whole file, then
  * commit every row or none -- never a partial import that a failed row
  * leaves half-written.
@@ -370,14 +370,14 @@ export async function importStaffAction(
     }
   }
 
-  revalidatePath('/staff')
-  redirect('/staff')
+  revalidatePath('/dashboard/staff')
+  redirect('/dashboard/staff')
 }
 
 /** Both detail forms on /staff/[id] live on this page. */
 function revalidateStaff(userId: string) {
-  revalidatePath('/staff')
-  revalidatePath(`/staff/${userId}`)
+  revalidatePath('/dashboard/staff')
+  revalidatePath(`/dashboard/staff/${userId}`)
 }
 
 export async function updateStaffRoleAction(
@@ -717,7 +717,7 @@ export async function updateStaffScheduleAction(
        where user_id = ${userId} and organization_id = ${organizationId}
          and weekday = ${weekday}`)
   }
-  revalidatePath(`/staff/${userId}`)
+  revalidatePath(`/dashboard/staff/${userId}`)
   return { done: true }
 }
 
@@ -753,7 +753,7 @@ export async function addScheduleExceptionAction(
   } catch (e) {
     return { error: formError(e, 'Gagal menyimpan pengecualian.') }
   }
-  revalidatePath(`/staff/${userId}`)
+  revalidatePath(`/dashboard/staff/${userId}`)
   return { done: true }
 }
 
@@ -768,7 +768,7 @@ export async function removeScheduleExceptionAction(
     delete from staff_schedule_exceptions
      where user_id = ${userId} and organization_id = ${organizationId}
        and on_date = ${onDate}::date`)
-  revalidatePath(`/staff/${userId}`)
+  revalidatePath(`/dashboard/staff/${userId}`)
   return { done: true }
 }
 
@@ -796,7 +796,7 @@ export async function addTimeOffAction(
   } catch (e) {
     return { error: formError(e, 'Gagal menyimpan waktu tidak tersedia.') }
   }
-  revalidatePath(`/staff/${userId}`)
+  revalidatePath(`/dashboard/staff/${userId}`)
   return { done: true }
 }
 
@@ -812,6 +812,6 @@ export async function removeTimeOffAction(
   await db.execute(sql`
     delete from staff_time_off
      where id = ${id} and organization_id = ${organizationId}`)
-  revalidatePath(`/staff/${userId}`)
+  revalidatePath(`/dashboard/staff/${userId}`)
   return { done: true }
 }

@@ -16,7 +16,7 @@ export default async function BranchesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-medium">Cabang</h1>
-        <Link href="/branches/new" className={buttonVariants()}>
+        <Link href="/dashboard/branches/new" className={buttonVariants()}>
           Tambah cabang
         </Link>
       </div>
@@ -41,7 +41,7 @@ export default async function BranchesPage() {
             return (
               <TableRow key={b.teamId}>
                 <TableCell>
-                  <Link href={`/branches/${b.teamId}`} className="font-medium underline">
+                  <Link href={`/dashboard/branches/${b.teamId}`} className="font-medium underline">
                     {b.name}
                   </Link>
                 </TableCell>

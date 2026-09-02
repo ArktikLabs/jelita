@@ -48,7 +48,7 @@ export default async function ServicesPage() {
             </p>
           )}
         </div>
-        <Link href="/services/new" className={buttonVariants()}>
+        <Link href="/dashboard/services/new" className={buttonVariants()}>
           Tambah layanan
         </Link>
       </div>

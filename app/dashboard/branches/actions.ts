@@ -29,8 +29,8 @@ const NOT_FOUND = { error: 'Cabang tidak ditemukan.' }
 
 /** Both detail forms and the status form live on this page. */
 function revalidateBranch(teamId: string) {
-  revalidatePath('/branches')
-  revalidatePath(`/branches/${teamId}`)
+  revalidatePath('/dashboard/branches')
+  revalidatePath(`/dashboard/branches/${teamId}`)
 }
 
 export async function createBranchAction(
@@ -85,7 +85,7 @@ export async function createBranchAction(
              updated_at = now()
        where team_id = ${teamId}`)
   }
-  revalidatePath('/branches')
+  revalidatePath('/dashboard/branches')
   return { done: true }
 }
 

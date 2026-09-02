@@ -62,8 +62,8 @@ const setActive = (teamId: string, active: boolean) => pool.query(
 const staffCountOn = async (
   owner: Awaited<ReturnType<typeof client>>, teamId: string,
 ) => {
-  const html = await (await owner.get('/branches')).text()
-  const row = html.split('<tr').find((r) => r.includes(`/branches/${teamId}"`))
+  const html = await (await owner.get('/dashboard/branches')).text()
+  const row = html.split('<tr').find((r) => r.includes(`/dashboard/branches/${teamId}"`))
   const cells = [...(row ?? '').matchAll(/<td[^>]*>(.*?)<\/td>/g)].map((m) => m[1])
   return cells.length ? Number(cells.at(-1)!.replace(/<[^>]*>/g, '')) : null
 }
@@ -222,7 +222,7 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
       on conflict (plan_id, resource) do update set cap = excluded.cap`, [FREE.caps.branches])
   })
 
-  test('/branches/new refuses at cap instead of rendering a doomed form', async ({ browser }) => {
+  test('/dashboard/branches/new refuses at cap instead of rendering a doomed form', async ({ browser }) => {
     ownerContext = await browser.newContext({
       storageState: await owner.storageState(), baseURL: BASE_URL,
     })
@@ -230,7 +230,7 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
 
     // Cap is back to 1 (FREE.caps.branches) and the salon already has three
     // teams -- requireQuota counts all of them regardless of active.
-    await ownerPage.goto('/branches/new')
+    await ownerPage.goto('/dashboard/branches/new')
     await expect(ownerPage.getByText('Batas cabang paket Anda sudah tercapai')).toBeVisible()
     await expect(ownerPage.getByLabel('Nama cabang')).toHaveCount(0)
   })
@@ -241,7 +241,7 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
       select id, 'branches', 5 from plans where key = 'free'
       on conflict (plan_id, resource) do update set cap = 5`)
 
-    await ownerPage.goto('/branches/new')
+    await ownerPage.goto('/dashboard/branches/new')
     await ownerPage.getByLabel('Nama cabang').fill('Cabang Baru')
     await ownerPage.getByLabel('Alamat').fill('Jl. Baru 1')
     await ownerPage.getByLabel('Telepon').fill('02100000')
@@ -299,7 +299,7 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
     deskClient = await client()
     await deskClient.post('/api/auth/sign-in/email', { data: { email: `desk@${DOMAIN}`, password: PW } })
 
-    const res = await deskClient.get('/branches')
+    const res = await deskClient.get('/dashboard/branches')
     expect(res.status(), `got ${res.status()}`).toBe(307)
     expect(res.headers()['location'] ?? '').toContain('/dashboard')
 
@@ -311,14 +311,14 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
   })
 
   test('deactivation is refused while staff are assigned', async () => {
-    await ownerPage.goto(`/branches/${newTeam}`)
+    await ownerPage.goto(`/dashboard/branches/${newTeam}`)
     await ownerPage.getByRole('button', { name: 'Nonaktifkan cabang' }).click()
     await expect(ownerPage.getByText('Pindahkan staf berikut lebih dulu: BC Desk.')).toBeVisible()
     expect(await isActive(newTeam)).toBe(true)
   })
 
   test('a branch whose only members are management can be deactivated', async () => {
-    await ownerPage.goto(`/branches/${secondTeam}`)
+    await ownerPage.goto(`/dashboard/branches/${secondTeam}`)
     await ownerPage.getByRole('button', { name: 'Nonaktifkan cabang' }).click()
     // The page must come back showing the NEW state, not the button that was
     // clicked -- the regression this guards is a write that lands with no
@@ -342,7 +342,7 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
     expect(open).toHaveLength(1)
     expect(open[0].team_id).toBe(liveTeam)
 
-    await ownerPage.goto(`/branches/${liveTeam}`)
+    await ownerPage.goto(`/dashboard/branches/${liveTeam}`)
     await ownerPage.getByRole('button', { name: 'Nonaktifkan cabang' }).click()
     await expect(ownerPage.getByText('Ini satu-satunya cabang aktif')).toBeVisible()
     expect(await isActive(liveTeam)).toBe(true)

@@ -23,8 +23,8 @@ async function ownedService(id: string, organizationId: string) {
 
 /** Both the detail form and the overrides/status forms live on this page. */
 function revalidateService(id: string) {
-  revalidatePath('/services')
-  revalidatePath(`/services/${id}`)
+  revalidatePath('/dashboard/services')
+  revalidatePath(`/dashboard/services/${id}`)
 }
 
 /**
@@ -67,7 +67,7 @@ export async function setCurrencyAction(
     return result.rowCount
   })
   if (!rowCount) return { error: 'Mata uang tidak dapat diubah setelah ada layanan berharga.' }
-  revalidatePath('/services')
+  revalidatePath('/dashboard/services')
   return { done: true }
 }
 
@@ -136,8 +136,8 @@ export async function createServiceAction(
     }
     return { error: formError(e, 'Gagal menambah layanan.') }
   }
-  revalidatePath('/services')
-  redirect('/services')
+  revalidatePath('/dashboard/services')
+  redirect('/dashboard/services')
 }
 
 /**
@@ -169,7 +169,7 @@ export async function createCategoryAction(
   } catch (e) {
     return { error: formError(e, 'Gagal menambah kategori.') }
   }
-  revalidatePath('/services')
+  revalidatePath('/dashboard/services')
   return { done: true }
 }
 

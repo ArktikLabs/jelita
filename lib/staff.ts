@@ -80,7 +80,7 @@ export async function provisionStaff(input: {
   // to leave an orphaned users + accounts row with no members row: invisible in
   // /staff, still able to sign in, and that email EMAIL_TAKEN forever. Undo the
   // whole hire on any failure, the way the import loop already compensates
-  // (app/(app)/staff/actions.ts). deleteUser removes the user row; accounts,
+  // (app/dashboard/staff/actions.ts). deleteUser removes the user row; accounts,
   // members and staff_profiles cascade off it.
   try {
     await auth.api.addMember({
@@ -113,7 +113,7 @@ export async function provisionStaff(input: {
  * Through provisionStaff, better-auth's addMember already validated teamId
  * against the org and wrote team_members itself, with rollback if that
  * failed -- so there this function's `exists()` guard is a safety net, not
- * something exercised. app/(app)/staff/actions.ts's transferStaffAction is
+ * something exercised. app/dashboard/staff/actions.ts's transferStaffAction is
  * the first standalone caller: it moves an EXISTING member, so there is no
  * addMember to have already validated teamId, and it is authoritative --
  * the caller no longer pre-checks teamId ownership itself, it trusts the

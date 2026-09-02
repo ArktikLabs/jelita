@@ -15,7 +15,7 @@ export async function updateProfileAction(
   try {
     await auth.api.updateUser({ body: { name }, headers: await headers() })
   } catch (e) { return { error: formError(e, 'Gagal menyimpan.') } }
-  revalidatePath('/profile')
+  revalidatePath('/dashboard/profile')
   return { done: true }
 }
 
@@ -32,7 +32,7 @@ export async function changePasswordAction(
       headers: await headers(),
     })
   } catch (e) { return { error: formError(e, 'Kata sandi saat ini salah.') } }
-  revalidatePath('/profile')
+  revalidatePath('/dashboard/profile')
   return { done: true }
 }
 
@@ -47,6 +47,6 @@ export async function revokeSessionAction(
   try {
     await auth.api.revokeSession({ body: { token }, headers: await headers() })
   } catch (e) { return { error: formError(e, 'Gagal mencabut sesi.') } }
-  revalidatePath('/profile')
+  revalidatePath('/dashboard/profile')
   return { done: true }
 }

@@ -44,11 +44,11 @@ Claude-Session: https://claude.ai/code/session_01R27c8rXsQbL9NoXfpiQUzx
 - `lib/schema/branch.ts` — Drizzle tables for `branch_profiles` and `branch_hours`.
 - `db/migrations/*_branch_tables.sql` — custom migration: constraints, trigger, view rebuild.
 - `lib/branch.ts` — branch reads and mutations: `listBranches`, `getBranch`, `setBranchActive`.
-- `app/(app)/branches/page.tsx` — the list.
-- `app/(app)/branches/actions.ts` — create, update details, update hours, deactivate, reactivate.
-- `app/(app)/branches/new/page.tsx` + `branch-create-form.tsx`
-- `app/(app)/branches/[id]/page.tsx` + `branch-detail-forms.tsx`
-- `app/(app)/branch-switcher.tsx` — the header control.
+- `app/dashboard/branches/page.tsx` — the list.
+- `app/dashboard/branches/actions.ts` — create, update details, update hours, deactivate, reactivate.
+- `app/dashboard/branches/new/page.tsx` + `branch-create-form.tsx`
+- `app/dashboard/branches/[id]/page.tsx` + `branch-detail-forms.tsx`
+- `app/dashboard/branch-switcher.tsx` — the header control.
 - `scripts/branch-check.mjs` — the new suite.
 
 **Modify:**
@@ -56,8 +56,8 @@ Claude-Session: https://claude.ai/code/session_01R27c8rXsQbL9NoXfpiQUzx
 - `lib/plan/branch.ts` — `isBranchActive` → `getBranchStatus`.
 - `lib/session.ts` — `requireBranch` error split; add `requirePagePermission`.
 - `lib/auth.ts` — session hook prefers the oldest active branch.
-- `app/(app)/layout.tsx` — mount the switcher.
-- `app/(app)/actions.ts` — add `switchBranchAction`.
+- `app/dashboard/layout.tsx` — mount the switcher.
+- `app/dashboard/actions.ts` — add `switchBranchAction`.
 - `scripts/plan-check.mjs` — rewrites for the renamed column and replaced function.
 - `package.json` — `branch:check` script.
 
@@ -556,7 +556,7 @@ git commit -m "$(printf 'feat(branch): a fresh login prefers an active branch\n\
 
 **Files:**
 - Create: `lib/branch.ts`
-- Create: `app/(app)/branches/actions.ts`
+- Create: `app/dashboard/branches/actions.ts`
 
 **Interfaces:**
 - Consumes: `branchProfiles`, `branchHours` (Task 1); `requirePagePermission` (Task 2); `FormState` and `formError` from `lib/form-state.ts`.
@@ -645,7 +645,7 @@ async function listBranchesById(teamId: string): Promise<BranchRow[]> {
 }
 ```
 
-- [ ] **Step 2: Write `app/(app)/branches/actions.ts`**
+- [ ] **Step 2: Write `app/dashboard/branches/actions.ts`**
 
 Every action re-guards. The two deactivation rules are enforced here, each with its own message naming the reason:
 
@@ -822,7 +822,7 @@ git commit -m "$(printf 'feat(branch): branch reads and mutations\n\nEvery mutat
 ### Task 5: The three screens
 
 **Files:**
-- Create: `app/(app)/branches/page.tsx`, `app/(app)/branches/new/page.tsx`, `app/(app)/branches/new/branch-create-form.tsx`, `app/(app)/branches/[id]/page.tsx`, `app/(app)/branches/[id]/branch-detail-forms.tsx`
+- Create: `app/dashboard/branches/page.tsx`, `app/dashboard/branches/new/page.tsx`, `app/dashboard/branches/new/branch-create-form.tsx`, `app/dashboard/branches/[id]/page.tsx`, `app/dashboard/branches/[id]/branch-detail-forms.tsx`
 
 **Interfaces:**
 - Consumes: `listBranches`, `getBranch` (Task 4); all five actions (Task 4); `requirePagePermission` (Task 2).
@@ -832,7 +832,7 @@ git commit -m "$(printf 'feat(branch): branch reads and mutations\n\nEvery mutat
 
 Run: `pnpm dlx shadcn@latest add table badge checkbox select -y`
 
-- [ ] **Step 2: Write `app/(app)/branches/page.tsx`**
+- [ ] **Step 2: Write `app/dashboard/branches/page.tsx`**
 
 Server component. Guard `requirePagePermission({ branch: ['update'] })` — everyone holds `branch: ['read']`, which is what lets a stylist see their branch name, but a screen with edit and deactivate controls should not render for front desk. Render `listBranches(organizationId)` as a `Table` with columns: Nama, Alamat, Telepon, Status, Staf, and a link to `/branches/{teamId}`.
 
@@ -881,14 +881,14 @@ git commit -m "$(printf 'feat(branch): list, create and detail screens\n\nThe de
 ### Task 6: The header switcher
 
 **Files:**
-- Create: `app/(app)/branch-switcher.tsx`
-- Modify: `app/(app)/layout.tsx`, `app/(app)/actions.ts`, `scripts/branch-check.mjs`
+- Create: `app/dashboard/branch-switcher.tsx`
+- Modify: `app/dashboard/layout.tsx`, `app/dashboard/actions.ts`, `scripts/branch-check.mjs`
 
 **Interfaces:**
 - Consumes: `listBranches` (Task 4).
 - Produces: `switchBranchAction(prev: FormState, formData: FormData): Promise<FormState>`.
 
-- [ ] **Step 1: Add `switchBranchAction` to `app/(app)/actions.ts`**
+- [ ] **Step 1: Add `switchBranchAction` to `app/dashboard/actions.ts`**
 
 ```ts
 export async function switchBranchAction(
@@ -918,7 +918,7 @@ export async function switchBranchAction(
 
 **Verify at implementation:** the real name of `auth.api.setActiveTeam` and its body shape — tsc will tell you. The organization check above stays regardless of what better-auth does; the cross-tenant defect found in the auth work came from exactly this kind of unverified assumption.
 
-- [ ] **Step 2: Write `app/(app)/branch-switcher.tsx`**
+- [ ] **Step 2: Write `app/dashboard/branch-switcher.tsx`**
 
 A client component taking `branches: BranchRow[]`, `activeTeamId: string | null` and `canSwitch: boolean`. When `canSwitch` is false, render the active branch's name as plain text. When true, render a `Select` of every branch — active and deactivated alike — posting to `switchBranchAction` on change.
 
@@ -930,7 +930,7 @@ Cabang BSD — Terkunci
 Cabang Lama — Nonaktif
 ```
 
-- [ ] **Step 3: Mount it in `app/(app)/layout.tsx`**
+- [ ] **Step 3: Mount it in `app/dashboard/layout.tsx`**
 
 Between the `Jelita` link and the user links. The layout already calls `requirePageOrg()`; add a `listBranches(organizationId)` call and pass `session.session.activeTeamId`. Determine `canSwitch` with `auth.api.hasPermission({ headers, body: { permissions: { branch: ['switch'] } } })`.
 

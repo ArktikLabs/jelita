@@ -64,7 +64,7 @@ export default async function AppLayout({
               {branches[0] ? branchLabel(branches[0]) : '—'}
             </span>
           )}
-          <Link href="/profile" className="underline">{session.user.name}</Link>
+          <Link href="/dashboard/profile" className="underline">{session.user.name}</Link>
           {/* The (auth) layout bounces a signed-in user away from /login, so
               this is the only reachable way out of the app. */}
           <form action={signOutAction}>
