@@ -99,6 +99,13 @@
       "when": 1788318231416,
       "tag": "0013_staff_working_hours",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1788339408255,
+      "tag": "0014_bookings",
+      "breakpoints": true
     }
   ]
 }

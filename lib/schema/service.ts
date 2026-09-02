@@ -7,6 +7,12 @@ export const salonProfiles = pgTable('salon_profiles', {
   organizationId: text('organization_id').primaryKey()
     .references(() => organizations.id, { onDelete: 'cascade' }),
   currency: char('currency', { length: 3 }).notNull().default('IDR'),
+  // The booking grid. Editable at any time because a booking stores its own
+  // start and end -- changing this changes which slots are OFFERED tomorrow,
+  // it cannot invalidate what is already booked (spec 2.3). Constrained to
+  // {15, 20, 30, 45, 60} in the migration: 7-minute grids are a bug, not a
+  // business model, and the check is what makes generate_series safe.
+  slotMinutes: smallint('slot_minutes').notNull().default(30),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
