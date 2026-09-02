@@ -71,6 +71,40 @@ beforeAll(async () => {
     values ($1, $2, 'Potong', 60, 150000)`, [SERVICE, ORG])
 })
 
+/** Wednesday, matching DAY -- the weekday both hours tables are keyed by. */
+const WEDNESDAY = 3
+
+const setGrid = (minutes: number) => pool.query(
+  `update salon_profiles set slot_minutes = $2 where organization_id = $1`, [ORG, minutes])
+
+const setDuration = (minutes: number) => pool.query(
+  `update services set duration_minutes = $2 where id = $1`, [SERVICE, minutes])
+
+const linkStylists = async (...ids: string[]) => {
+  await pool.query(`delete from service_staff where service_id = $1`, [SERVICE])
+  for (const id of ids) {
+    await pool.query(
+      `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)`,
+      [SERVICE, id, ORG])
+  }
+}
+
+/** Slot start times, as HH:MM. */
+const slots = async (staff: string | null = null) => {
+  const { rows } = await pool.query(
+    `select to_char(starts_at, 'HH24:MI') t from available_slots($1, $2, $3, $4::date, $5)`,
+    [ORG, TEAM, SERVICE, DAY, staff])
+  return rows.map((r) => r.t as string)
+}
+
+/** Slot start times paired with who can take them -- the "any available" fan-out. */
+const slotsByStylist = async () => {
+  const { rows } = await pool.query(
+    `select to_char(starts_at, 'HH24:MI') t, staff_user_id from available_slots($1, $2, $3, $4::date, null)`,
+    [ORG, TEAM, SERVICE, DAY])
+  return rows.map((r) => `${r.t} ${r.staff_user_id}`)
+}
+
 afterAll(async () => {
   await pool.query(`delete from organizations where id = any($1)`, [[ORG, ORG2]])
   await pool.end()
@@ -78,6 +112,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await pool.query(`delete from bookings where organization_id = any($1)`, [[ORG, ORG2]])
+  await pool.query(`delete from staff_time_off where organization_id = $1`, [ORG])
+  await pool.query(`delete from service_branch_overrides where service_id = $1`, [SERVICE])
+  await pool.query(`update branch_hours set closed = false, opens_at = '09:00',
+                     closes_at = '21:00' where team_id = $1`, [TEAM])
+  await pool.query(`update staff_hours set closed = false, opens_at = '09:00',
+                     closes_at = '21:00' where organization_id = $1`, [ORG])
+  await pool.query(`update staff_profiles set active = true where organization_id = $1`, [ORG])
+  await setGrid(30)
+  await setDuration(60)
+  await linkStylists(STYLIST)
 })
 
 describe('the double-booking constraint', () => {
@@ -182,5 +226,148 @@ describe('what the database refuses outright', () => {
     const { rows } = await pool.query(
       `select slot_minutes from salon_profiles where organization_id = $1`, [ORG])
     expect(rows[0].slot_minutes).toBe(30)
+  })
+})
+
+describe('available_slots', () => {
+  it('steps the salon grid across the working day', async () => {
+    const s = await slots()
+    expect(s[0]).toBe('09:00')
+    expect(s[1]).toBe('09:30')
+    // 09:00-21:00 with a 60-minute service: the last start that still fits is
+    // 20:00, and 09:00..20:00 on a 30-minute grid is 23 starts.
+    expect(s.at(-1)).toBe('20:00')
+    expect(s).toHaveLength(23)
+  })
+
+  it('aligns a 45-minute grid to the OPENING TIME, not to midnight', async () => {
+    await setGrid(45)
+    expect((await slots()).slice(0, 3)).toEqual(['09:00', '09:45', '10:30'])
+  })
+
+  it('offers only starts where the whole service fits before closing', async () => {
+    await setDuration(90)
+    const s = await slots()
+    expect(s.at(-1)).toBe('19:30')
+    expect(s).not.toContain('20:00')
+  })
+
+  it('offers nothing when the service is longer than the working day', async () => {
+    await setDuration(24 * 60)
+    expect(await slots()).toEqual([])
+  })
+
+  it('drops exactly the starts an existing booking covers, and no more', async () => {
+    await book({ at: '10:00', until: '11:00' })
+    const s = await slots()
+    // 09:30-10:30 overlaps, so it goes. 09:00-10:00 ends exactly when the
+    // booking starts -- '[)' bounds, so it survives.
+    expect(s).toContain('09:00')
+    expect(s).not.toContain('09:30')
+    expect(s).not.toContain('10:00')
+    expect(s).not.toContain('10:30')
+    expect(s).toContain('11:00')
+  })
+
+  it('ignores a cancelled booking, exactly as the constraint does', async () => {
+    const { rows } = await book({ at: '10:00', until: '11:00' })
+    await pool.query(`update bookings set status = 'cancelled' where id = $1`, [rows[0].id])
+    expect(await slots()).toContain('10:00')
+  })
+
+  it('drops the starts a time-off block covers, leaving the windows either side', async () => {
+    await pool.query(`
+      insert into staff_time_off (id, user_id, organization_id, on_date, starts_at, ends_at)
+      values ('bkg_off', $1, $2, $3::date, '13:00', '15:00')`, [STYLIST, ORG, DAY])
+    const s = await slots()
+    expect(s).toContain('12:00')      // 12:00-13:00 ends when the block starts
+    expect(s).not.toContain('12:30')
+    expect(s).not.toContain('14:00')
+    expect(s).not.toContain('14:30')  // 14:30-15:30 still overlaps the block
+    expect(s).toContain('15:00')
+  })
+
+  it('offers nothing when the branch is closed, or the stylist is', async () => {
+    await pool.query(`update branch_hours set closed = true
+                       where team_id = $1 and weekday = $2`, [TEAM, WEDNESDAY])
+    expect(await slots()).toEqual([])
+    await pool.query(`update branch_hours set closed = false
+                       where team_id = $1 and weekday = $2`, [TEAM, WEDNESDAY])
+    await pool.query(`update staff_hours set closed = true
+                       where user_id = $1 and organization_id = $2 and weekday = $3`,
+      [STYLIST, ORG, WEDNESDAY])
+    expect(await slots()).toEqual([])
+  })
+
+  it('offers nothing for a service the branch does not offer', async () => {
+    await pool.query(`
+      insert into service_branch_overrides (service_id, team_id, organization_id, offered)
+      values ($1, $2, $3, false)`, [SERVICE, TEAM, ORG])
+    expect(await slots()).toEqual([])
+  })
+
+  it('offers nothing for a stylist not linked to the service', async () => {
+    await linkStylists(OTHER_STYLIST)
+    expect(await slots(STYLIST)).toEqual([])
+    expect(await slots(OTHER_STYLIST)).not.toEqual([])
+  })
+
+  it('offers nothing for a deactivated stylist', async () => {
+    await pool.query(`update staff_profiles set active = false
+                       where user_id = $1 and organization_id = $2`, [STYLIST, ORG])
+    expect(await slots()).toEqual([])
+  })
+
+  it('fans out across every qualified stylist when none is named', async () => {
+    await linkStylists(STYLIST, OTHER_STYLIST)
+    const pairs = await slotsByStylist()
+    expect(pairs).toContain(`10:00 ${STYLIST}`)
+    expect(pairs).toContain(`10:00 ${OTHER_STYLIST}`)
+    // Booking one leaves the OTHER still offering that time -- the reason
+    // "any available" is a fan-out and not a single stylist (spec 2.4).
+    await book({ at: '10:00', until: '11:00' })
+    const after = await slotsByStylist()
+    expect(after).not.toContain(`10:00 ${STYLIST}`)
+    expect(after).toContain(`10:00 ${OTHER_STYLIST}`)
+  })
+
+  it('changes which starts are OFFERED when the grid changes, and nothing already booked', async () => {
+    // Booked late in the day so it cannot itself remove the early starts
+    // this asserts on.
+    const { rows } = await book({ at: '16:00', until: '17:00' })
+    await setGrid(20)
+    expect((await slots()).slice(0, 3)).toEqual(['09:00', '09:20', '09:40'])
+    const { rows: after } = await pool.query(
+      `select to_char(starts_at, 'HH24:MI') s, to_char(ends_at, 'HH24:MI') e
+         from bookings where id = $1`, [rows[0].id])
+    expect(after[0]).toEqual({ s: '16:00', e: '17:00' })
+  })
+
+  it('iterates EVERY interval staff_working_hours returns, not just the first', async () => {
+    // The constraint scheduling spec 2.4 exists for. The function can only
+    // yield one row today, so the only honest way to assert the caller
+    // iterates is to make it yield two -- replaced inside a transaction and
+    // rolled back, since DDL in Postgres is transactional.
+    const c = await pool.connect()
+    try {
+      await c.query('begin')
+      await c.query(`
+        create or replace function staff_working_hours(
+          p_user_id text, p_organization_id text, p_date date)
+        returns table (opens_at time, closes_at time)
+        language sql stable as $fn$
+          select * from (values ('09:00'::time, '11:00'::time),
+                                ('15:00'::time, '17:00'::time)) v;
+        $fn$`)
+      const { rows } = await c.query(
+        `select to_char(starts_at, 'HH24:MI') t from available_slots($1, $2, $3, $4::date, null)`,
+        [ORG, TEAM, SERVICE, DAY])
+      const t = rows.map((r) => r.t as string)
+      // Both windows, each stopping where a 60-minute service stops fitting.
+      expect(t).toEqual(['09:00', '09:30', '10:00', '15:00', '15:30', '16:00'])
+    } finally {
+      await c.query('rollback')
+      c.release()
+    }
   })
 })
