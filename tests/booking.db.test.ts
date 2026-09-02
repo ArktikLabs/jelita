@@ -574,6 +574,51 @@ describe('createBooking', () => {
   })
 })
 
+describe('the walk-in bypass', () => {
+  // A date that has definitively passed, so "in the past" needs no clock
+  // arithmetic. 2020-09-09 is a Wednesday, so the weekly pattern applies and
+  // available_slots fills the day.
+  const PAST = '2020-09-09'
+  const q = { organizationId: ORG, teamId: TEAM, serviceId: SERVICE, date: PAST }
+
+  it('keeps starts the normal path drops', async () => {
+    expect(await listSlots(q), 'the default refuses the past').toEqual([])
+    expect(await listSlots({ ...q, includePast: true }),
+      'the walk-in path does not').not.toEqual([])
+  })
+
+  it('books confirmed, not pending -- there is nobody left to confirm it to', async () => {
+    const slots = await listSlots({ ...q, includePast: true })
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: PAST, startsAt: slots[0].startsAt, staffUserId: STYLIST,
+      includePast: true, status: 'confirmed',
+    })
+    const { rows } = await pool.query(`select status from bookings where id = $1`, [id])
+    expect(rows[0].status).toBe('confirmed')
+  })
+
+  it('still refuses a past start WITHOUT the bypass, so the default is not merely unused', async () => {
+    await expect(createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: PAST, startsAt: `${PAST}T10:00`, staffUserId: STYLIST,
+    })).rejects.toThrow('SLOT_TAKEN')
+  })
+
+  it('still obeys the double-booking constraint -- the bypass is about time, not overlap', async () => {
+    await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: PAST, startsAt: `${PAST}T10:00`, staffUserId: STYLIST,
+      includePast: true, status: 'confirmed',
+    })
+    await expect(createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: PAST, startsAt: `${PAST}T10:00`, staffUserId: STYLIST,
+      includePast: true, status: 'confirmed',
+    })).rejects.toThrow('SLOT_TAKEN')
+  })
+})
+
 describe('listBookings', () => {
   it('returns the branch day in time order, with the names a list renders', async () => {
     await createBooking({

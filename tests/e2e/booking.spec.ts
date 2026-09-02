@@ -215,6 +215,72 @@ test.describe.serial('booking through the app', () => {
   })
 })
 
+test.describe.serial('walk-ins', () => {
+  /** Today, wall-clock -- the walk-in bypass only applies to today, so this
+   *  cannot be a fixed date the way the rest of this file uses DAY. */
+  const today = () => {
+    const d = new Date()
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  }
+
+  test.beforeEach(async () => {
+    await pool.query(`delete from bookings where organization_id = $1`, [orgId])
+    // The stylist has to be working right now for today to have any slots at
+    // all -- open every weekday wide rather than guessing which one today is.
+    await pool.query(`update staff_hours set closed = false, opens_at = '00:00',
+                       closes_at = '23:59' where organization_id = $1`, [orgId])
+    await pool.query(`update branch_hours set closed = false, opens_at = '00:00',
+                       closes_at = '23:59' where team_id = $1`, [teamId])
+  })
+
+  test('the walk-in page offers times the ordinary one has already dropped', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    const d = today()
+    await page.goto(`/dashboard/bookings/new?serviceId=${serviceId}&date=${d}&staffUserId=${stylistId}`)
+    const ordinary = await page.locator('input[name="startsAt"]').count()
+
+    await page.goto(`/dashboard/bookings/new?walkIn=1&serviceId=${serviceId}&date=${d}&staffUserId=${stylistId}`)
+    const walkIn = await page.locator('input[name="startsAt"]').count()
+    expect(walkIn, 'the bypass must widen the day, not merely relabel the page')
+      .toBeGreaterThan(ordinary)
+  })
+
+  test('a walk-in is recorded CONFIRMED -- the customer is already here', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    const d = today()
+    await page.goto(`/dashboard/bookings/new?walkIn=1&serviceId=${serviceId}&date=${d}&staffUserId=${stylistId}`)
+    // The first offered time on a walk-in page is the earliest of the day,
+    // which is in the past for any run after midnight -- that is the point.
+    await page.locator('input[name="startsAt"]').first().check()
+    await page.locator('#name').fill('Bapak Mampir')
+    await page.locator('#phone').fill('081299990001')
+    await page.getByRole('button', { name: 'Catat kedatangan' }).click()
+    await page.waitForURL(`**/dashboard/bookings?date=${d}`)
+
+    const { rows } = await pool.query(
+      `select status from bookings where organization_id = $1`, [orgId])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status, 'nobody is left to confirm it to').toBe('confirmed')
+  })
+
+  test('an ordinary booking made the same way is still pending', async ({ page }) => {
+    // The control: without it, "confirmed" could be the default for every
+    // booking rather than something the walk-in flag does.
+    await page.context().addCookies(await ownerCookies())
+    await openNewBooking(page, { staffUserId: stylistId })
+    await page.locator('input[name="startsAt"][value$="T10:00"]').check()
+    await page.locator('#name').fill('Ibu Biasa')
+    await page.locator('#phone').fill('081299990002')
+    await page.getByRole('button', { name: 'Buat janji temu' }).click()
+    await page.waitForURL(`**/dashboard/bookings?date=${DAY}`)
+
+    const { rows } = await pool.query(
+      `select status from bookings where organization_id = $1`, [orgId])
+    expect(rows[0].status).toBe('pending')
+  })
+})
+
 test.describe.serial('the working owner', () => {
   let ownerId: string
 

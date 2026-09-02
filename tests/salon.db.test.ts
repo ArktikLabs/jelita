@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { bookableBranches, resolveBranch, resolveSalon } from '../lib/salon'
+import { bookableBranches, bookingsTodayFor, resolveBranch, resolveSalon } from '../lib/salon'
 
 /**
  * Resolving a salon and a branch from the outside world.
@@ -144,5 +144,71 @@ describe('resolveBranch', () => {
     expect(await resolveBranch(ORG, TEAMS[1])).toBeNull()
     await setPlan(ORG, 'free')
     expect(await resolveBranch(ORG, TEAMS[2])).toBeNull()
+  })
+})
+
+describe('bookingsTodayFor -- the public daily cap\'s counter', () => {
+  const DAY = '2027-04-14'
+  const PHONE_KEY = '628123456789'
+  let customerId: string
+  let serviceId: string
+
+  beforeAll(async () => {
+    customerId = crypto.randomUUID()
+    serviceId = crypto.randomUUID()
+    await pool.query(
+      `insert into customers (id, organization_id, name, phone, phone_key)
+       values ($1, $2, 'Pelanggan', '0812-3456-789', $3)`, [customerId, ORG, PHONE_KEY])
+    await pool.query(
+      `insert into services (id, organization_id, name, duration_minutes, price)
+       values ($1, $2, 'Potong', 60, 150000)`, [serviceId, ORG])
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ('sal_stylist', 'Sal Stylist', 'sal-stylist@sal.local', true, now(), now())`)
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ('sal_m', 'sal_stylist', $1, 'stylist', now())`, [ORG])
+    await pool.query(`update staff_profiles set team_id = $1
+                       where user_id = 'sal_stylist' and organization_id = $2`, [TEAMS[0], ORG])
+  })
+
+  const put = (at: string, status = 'pending') => pool.query(
+    `insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                           service_id, starts_at, ends_at, status,
+                           duration_minutes, price, currency)
+     values ($1, $2, $3, 'sal_stylist', $4, $5, $6::timestamp, $7::timestamp, $8,
+             60, 150000, 'IDR')`,
+    [crypto.randomUUID(), ORG, TEAMS[0], customerId, serviceId,
+     `${DAY} ${at}`, `${DAY} ${at.replace(/^(\d\d)/, (h) => String(Number(h) + 1).padStart(2, '0'))}`,
+     status])
+
+  beforeEach(async () => {
+    await pool.query(`delete from bookings where organization_id = $1`, [ORG])
+  })
+
+  it('counts this number\'s live bookings on that day', async () => {
+    expect(await bookingsTodayFor(ORG, PHONE_KEY, DAY)).toBe(0)
+    await put('10:00')
+    await put('12:00')
+    expect(await bookingsTodayFor(ORG, PHONE_KEY, DAY)).toBe(2)
+  })
+
+  it('does not count cancelled or no-show -- rebooking is not abuse', async () => {
+    await put('10:00', 'cancelled')
+    await put('12:00', 'no_show')
+    expect(await bookingsTodayFor(ORG, PHONE_KEY, DAY)).toBe(0)
+  })
+
+  it('counts by the NORMALISED key, so respelling the number buys no allowance', async () => {
+    await put('10:00')
+    // 0812…, +62812… and 62812… all normalise to the same key (lib/phone.ts),
+    // which is the whole reason the cap counts phone_key and not `phone`.
+    expect(await bookingsTodayFor(ORG, PHONE_KEY, DAY)).toBe(1)
+  })
+
+  it('does not count another day, or another salon', async () => {
+    await put('10:00')
+    expect(await bookingsTodayFor(ORG, PHONE_KEY, '2027-04-15')).toBe(0)
+    expect(await bookingsTodayFor(ORG2, PHONE_KEY, DAY)).toBe(0)
   })
 })

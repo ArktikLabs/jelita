@@ -99,3 +99,29 @@ export async function resolveBranch(
   if (!teamId) return branches.length === 1 ? branches[0] : null
   return branches.find((b) => b.teamId === teamId) ?? null
 }
+
+/**
+ * How many live bookings this number already holds at this salon today.
+ *
+ * The cap that uses it lives in the PUBLIC action alone, never in
+ * createBooking: the front desk routes through the same function and must
+ * never be capped -- a busy Saturday is not abuse.
+ *
+ * Counted by phone_key, the normalised form (lib/phone.ts), so re-spelling the
+ * same number as +62 / 62 / 0 does not buy a fresh allowance. Cancelled and
+ * no-show rows are excluded: a customer who cancelled and rebooked twice is a
+ * customer, not a script.
+ */
+export async function bookingsTodayFor(
+  organizationId: string, phoneKey: string, date: string,
+): Promise<number> {
+  const { rows } = await db.execute(sql`
+    select count(*)::int as n
+      from bookings b
+      join customers c on c.id = b.customer_id
+     where b.organization_id = ${organizationId}
+       and c.phone_key = ${phoneKey}
+       and b.starts_at >= ${date}::date and b.starts_at < ${date}::date + 1
+       and b.status in ('pending', 'confirmed')`)
+  return Number((rows[0] as { n: number }).n)
+}

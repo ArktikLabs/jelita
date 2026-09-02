@@ -1,7 +1,7 @@
 # Public Booking Page — Design
 
 **Date:** 2026-09-02
-**Status:** draft
+**Status:** implemented
 **Depends on:** the booking engine (`available_slots`, `lib/booking.ts`,
 `bookings_no_overlap`), which this slice drives from the outside
 
@@ -32,7 +32,8 @@ write to the open internet without handing it anything the app trusts.
   phone stays the durable identity, and this page is the reason it must not
   require an account.
 - **Per-branch vanity URLs** (`/book/kemang`). See §4.3.
-- **The admin calendar and walk-ins.** Still the slice after this.
+- **The admin calendar.** Still the slice after this. Walk-ins landed here
+  instead — see §7.
 
 ## 2. Decisions
 
@@ -193,6 +194,24 @@ before.
 ### 4.3 Serious abuse control
 §2.8's ceiling.
 
+## 4b. Two things the framework did not say
+
+Both cost a failing test to find, and both are silent when wrong.
+
+**`type: 'host'` strips the port.** Next matches against
+`host.split(':', 1)[0]`
+(`next/dist/shared/lib/router/utils/prepare-destination.js`), so an apex
+carrying `:3100` can never match. The rewrite simply never fires — and because
+the page still answers on `/book/<slug>`, the symptom is a subdomain that 404s
+while everything else looks fine. `NEXT_PUBLIC_APEX_HOST` is therefore stripped
+of its port before the regex is built.
+
+**A returned array is `afterFiles`.** That runs *after* filesystem routes, so
+`/` on a tenant subdomain matched `app/page.tsx` — the marketing page — and
+never reached the rewrite. `/book` worked, because no page owns that path, which
+made it look like the rule was fine. Both rules now live in `beforeFiles`; the
+host condition scopes them to tenant subdomains, so the apex is untouched.
+
 ## 5. Testing
 
 Vitest against real Postgres, for the resolution rules:
@@ -220,3 +239,29 @@ Playwright, through a real browser on a real subdomain host:
 assertions in this project have now passed for the wrong reason; every one was
 caught by breaking the code and watching, never by review. **The break must
 compile.**
+
+
+## 7. Walk-ins
+
+Built alongside this page rather than after it, because they are the same
+engine seen from the opposite side: the public page is a stranger booking
+ahead, a walk-in is the front desk recording someone already in the chair.
+
+Two rules bend, and only for the front desk:
+
+- **`includePast`** — a start that has just passed is still the truth about
+  when the appointment began. Refusing it would make the desk either wait for
+  the next grid step or record a time that never happened. Scoped to *today*:
+  "walk-in" plus a date last week is a typo, not an intention.
+- **`status: 'confirmed'`** — there is nobody left to confirm it to.
+
+Neither is reachable from the public page, which posts to its own action and
+passes neither. `createBooking` keeps both defaults, so the bypass is something
+a caller must ask for by name.
+
+The bypass is about *time*, not overlap: a walk-in still cannot double-book a
+stylist, asserted directly against the exclusion constraint.
+
+`/dashboard/bookings/new?walkIn=1`, reached from a second button on the day
+list. The same form, relabelled — the slot list widens and the submit says
+"catat kedatangan" rather than "buat janji temu".

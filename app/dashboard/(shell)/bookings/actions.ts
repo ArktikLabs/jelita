@@ -27,6 +27,11 @@ export async function createBookingAction(
   // The empty option is "any available" -- absence of a choice, not a value.
   const staffUserId = String(formData.get('staffUserId') ?? '') || null
   const note = String(formData.get('note') ?? '').trim() || null
+  // A walk-in is someone already standing at the counter, so two rules bend:
+  // a start that has just passed is still the truth about when the
+  // appointment began, and there is nobody to confirm it to -- they are here.
+  // Never settable from the public page, which posts to its own action.
+  const walkIn = formData.get('walkIn') === '1'
 
   if (!serviceId) return { error: 'Pilih layanan dulu.' }
   if (!startsAt) return { error: 'Pilih jam dulu.' }
@@ -46,6 +51,8 @@ export async function createBookingAction(
     await createBooking({
       organizationId, teamId: branchId, serviceId, customerId,
       date, startsAt, staffUserId, note,
+      includePast: walkIn,
+      status: walkIn ? 'confirmed' : 'pending',
     })
   } catch (e) {
     const code = e instanceof Error ? e.message : ''

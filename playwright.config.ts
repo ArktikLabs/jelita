@@ -53,6 +53,12 @@ export default defineConfig({
       DIRECT_URL: TEST_DATABASE_URL,
       BETTER_AUTH_URL: BASE_URL,
       NEXT_DIST_DIR: '.next-e2e',
+      // The apex a salon's subdomain hangs off, so the host rewrite in
+      // next.config.ts matches `<slug>.localhost:3100`. Subdomains of
+      // localhost resolve without a hosts-file entry in Chrome and Firefox,
+      // so the public page is exercised on a REAL tenant hostname rather
+      // than through the /book/<slug> path it also answers on.
+      NEXT_PUBLIC_APEX_HOST: `localhost:${PORT}`,
     },
   },
 })

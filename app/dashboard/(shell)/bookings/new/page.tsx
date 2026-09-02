@@ -27,12 +27,18 @@ const inputClass =
 export default async function NewBookingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ serviceId?: string; staffUserId?: string; date?: string }>
+  searchParams: Promise<{
+    serviceId?: string; staffUserId?: string; date?: string; walkIn?: string
+  }>
 }) {
   await requirePagePermission({ booking: ['create'] })
   const { organizationId } = await requirePageOrg()
   const { branchId } = await requireBranch()
   const params = await searchParams
+  // A walk-in is booked for a time that may have just passed, so the slot list
+  // has to offer those too -- otherwise the front desk either waits for the
+  // next grid step or backdates nothing at all (spec 9).
+  const walkIn = params.walkIn === '1'
 
   const services = await bookableServices(organizationId, branchId)
   const serviceId = services.some((s) => s.serviceId === params.serviceId)
@@ -56,19 +62,35 @@ export default async function NewBookingPage({
     ? slotTimes(await listSlots({
       organizationId, teamId: branchId, serviceId, date,
       staffUserId: staffUserId || null,
+      // Only for today: "walk-in" plus a date last week is a typo, not an
+      // intention, and past days are nobody's use case.
+      includePast: walkIn && date === todayLocal(),
     }))
     : []
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-medium">Buat janji temu</h1>
-        <Link href="/dashboard/bookings" className={buttonVariants({ variant: 'outline' })}>
-          Kembali
-        </Link>
+        <h1 className="text-xl font-medium">
+          {walkIn ? 'Pelanggan datang langsung' : 'Buat janji temu'}
+        </h1>
+        <div className="flex items-center gap-2">
+          <Link
+            href={walkIn ? '/dashboard/bookings/new' : '/dashboard/bookings/new?walkIn=1'}
+            className={buttonVariants({ variant: 'outline' })}
+          >
+            {walkIn ? 'Janji temu biasa' : 'Datang langsung'}
+          </Link>
+          <Link href="/dashboard/bookings" className={buttonVariants({ variant: 'outline' })}>
+            Kembali
+          </Link>
+        </div>
       </div>
 
       <form className="flex flex-wrap items-end gap-2">
+        {/* Carried through phase one so choosing a service does not silently
+            drop back to a normal booking. */}
+        {walkIn && <input type="hidden" name="walkIn" value="1" />}
         <div className="space-y-2">
           <Label htmlFor="serviceId">Layanan</Label>
           <select id="serviceId" name="serviceId" defaultValue={serviceId} className={inputClass}>
@@ -109,7 +131,12 @@ export default async function NewBookingPage({
           Tidak ada jam tersedia untuk pilihan itu.
         </p>
       ) : (
-        <BookingForm serviceId={serviceId} staffUserId={staffUserId} slots={slots} />
+        <BookingForm
+          serviceId={serviceId}
+          staffUserId={staffUserId}
+          slots={slots}
+          walkIn={walkIn}
+        />
       )}
     </div>
   )

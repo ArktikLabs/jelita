@@ -64,6 +64,8 @@ type SlotQuery = {
   date: string
   /** null asks for "any available" -- every qualified stylist. */
   staffUserId?: string | null
+  /** Walk-ins only: keep starts that have already passed today (spec 9). */
+  includePast?: boolean
 }
 
 /**
@@ -74,8 +76,10 @@ type SlotQuery = {
  * putting it here means the slot list and the create path cannot disagree
  * about it (spec 4).
  *
- * ponytail: refuses a walk-in starting a minute ago. The walk-in slice adds a
- * bypass parameter -- recorded in spec 9 so it is a decision, not a discovery.
+ * `includePast` is the walk-in bypass: someone standing at the counter at
+ * 10:05 is booked for 10:00, and refusing that would make the front desk lie
+ * about when the appointment started. Never set from a public request -- a
+ * stranger booking yesterday is not a use case, it is a bug.
  */
 export async function listSlots(q: SlotQuery): Promise<Slot[]> {
   const { rows } = await db.execute(sql`
@@ -85,7 +89,7 @@ export async function listSlots(q: SlotQuery): Promise<Slot[]> {
   const now = nowLocal()
   return (rows as Record<string, unknown>[])
     .map((r) => ({ startsAt: r.starts_at as string, staffUserId: r.staff_user_id as string }))
-    .filter((s) => s.startsAt > now)
+    .filter((s) => q.includePast || s.startsAt > now)
 }
 
 /** Distinct start times, for a picker that has not chosen a stylist yet. */
@@ -117,6 +121,7 @@ async function loadPerStylist(organizationId: string, teamId: string, date: stri
 async function insertBooking(input: {
   organizationId: string; teamId: string; serviceId: string; customerId: string
   staffUserId: string; startsAt: SlotTime; note?: string | null
+  status?: 'pending' | 'confirmed'
 }) {
   const id = crypto.randomUUID()
   const { rows } = await db.execute(sql`
@@ -127,7 +132,8 @@ async function insertBooking(input: {
            ${input.customerId}, ${input.serviceId},
            ${input.startsAt}::timestamp,
            ${input.startsAt}::timestamp + make_interval(mins => p.duration_minutes),
-           'pending', p.duration_minutes, p.price, p.currency, ${input.note ?? null}
+           ${input.status ?? 'pending'}, p.duration_minutes, p.price, p.currency,
+           ${input.note ?? null}
       from service_branch_pricing p
      where p.service_id = ${input.serviceId} and p.team_id = ${input.teamId}
        and p.organization_id = ${input.organizationId} and p.offered
@@ -155,6 +161,11 @@ export async function createBooking(input: {
   /** null means "any available" -- assigned here, never stored as a choice. */
   staffUserId?: string | null
   note?: string | null
+  /** Walk-ins only. See listSlots. */
+  includePast?: boolean
+  /** Public bookings land `pending`; the salon confirms (spec 2.7). A walk-in
+   *  is already standing there, so the front desk books it confirmed. */
+  status?: 'pending' | 'confirmed'
 }): Promise<string> {
   const slots = await listSlots(input)
   const free = slots.filter((s) => s.startsAt === input.startsAt)

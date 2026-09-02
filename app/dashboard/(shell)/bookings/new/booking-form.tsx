@@ -19,11 +19,14 @@ const initial: FormState = {}
  * anyway, so a hand-crafted post is refused rather than trusted.
  */
 export function BookingForm({
-  serviceId, staffUserId, slots,
+  serviceId, staffUserId, slots, walkIn,
 }: {
   serviceId: string
   staffUserId: string
   slots: string[]
+  /** Books `confirmed` and allows a start that has just passed -- the person
+   *  is at the counter, so there is nobody left to confirm it to. */
+  walkIn: boolean
 }) {
   const [state, action, pending] = useActionState(createBookingAction, initial)
 
@@ -31,6 +34,7 @@ export function BookingForm({
     <form action={action} className="space-y-4">
       <input type="hidden" name="serviceId" value={serviceId} />
       <input type="hidden" name="staffUserId" value={staffUserId} />
+      {walkIn && <input type="hidden" name="walkIn" value="1" />}
       {state.error && (
         <Alert variant="destructive">
           <AlertDescription>{state.error}</AlertDescription>
@@ -69,7 +73,7 @@ export function BookingForm({
       </div>
 
       <Button type="submit" disabled={pending}>
-        {pending ? 'Menyimpan…' : 'Buat janji temu'}
+        {pending ? 'Menyimpan…' : walkIn ? 'Catat kedatangan' : 'Buat janji temu'}
       </Button>
     </form>
   )

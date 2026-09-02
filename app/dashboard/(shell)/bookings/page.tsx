@@ -44,9 +44,17 @@ export default async function BookingsPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-medium">Janji temu</h1>
-        <Link href="/dashboard/bookings/new" className={buttonVariants()}>
-          Buat janji temu
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/dashboard/bookings/new?walkIn=1"
+            className={buttonVariants({ variant: 'outline' })}
+          >
+            Datang langsung
+          </Link>
+          <Link href="/dashboard/bookings/new" className={buttonVariants()}>
+            Buat janji temu
+          </Link>
+        </div>
       </div>
 
       <form className="flex items-end gap-2">
