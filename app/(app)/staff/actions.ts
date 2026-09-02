@@ -687,3 +687,131 @@ export async function resetStaffPasswordAction(
   revalidateStaff(userId)
   return { done: true }
 }
+
+/** Sunday-first, matching extract(dow) and staff_hours.weekday. */
+const WEEKDAYS = [0, 1, 2, 3, 4, 5, 6]
+
+export async function updateStaffScheduleAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ staff: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  if (!(await getStaff(userId, organizationId))) return { error: 'Staf tidak ditemukan.' }
+
+  for (const weekday of WEEKDAYS) {
+    const closed = formData.get(`closed-${weekday}`) !== null
+    const opens = String(formData.get(`opens-${weekday}`) ?? '').trim()
+    const closes = String(formData.get(`closes-${weekday}`) ?? '').trim()
+    // Time inputs are readOnly rather than disabled when a day is closed, so
+    // their values still arrive and a close-and-reopen is lossless -- the same
+    // bug the branch hours form already fixed once.
+    if (!opens || !closes) return { error: 'Jam buka dan tutup wajib diisi.' }
+    if (!closed && closes <= opens) {
+      return { error: 'Jam tutup harus setelah jam buka.' }
+    }
+    await db.execute(sql`
+      update staff_hours
+         set closed = ${closed}, opens_at = ${opens}, closes_at = ${closes},
+             updated_at = now()
+       where user_id = ${userId} and organization_id = ${organizationId}
+         and weekday = ${weekday}`)
+  }
+  revalidatePath(`/staff/${userId}`)
+  return { done: true }
+}
+
+export async function addScheduleExceptionAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ staff: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  const onDate = String(formData.get('onDate') ?? '').trim()
+  const closed = formData.get('closed') !== null
+  const opens = String(formData.get('opensAt') ?? '').trim()
+  const closes = String(formData.get('closesAt') ?? '').trim()
+  const note = String(formData.get('note') ?? '').trim() || null
+
+  if (!(await getStaff(userId, organizationId))) return { error: 'Staf tidak ditemukan.' }
+  if (!onDate) return { error: 'Tanggal wajib diisi.' }
+  if (!closed && (!opens || !closes)) {
+    return { error: 'Isi jam kerja, atau tandai sebagai libur.' }
+  }
+  if (!closed && closes <= opens) return { error: 'Jam selesai harus setelah jam mulai.' }
+
+  try {
+    await db.execute(sql`
+      insert into staff_schedule_exceptions
+        (user_id, organization_id, on_date, closed, opens_at, closes_at, note)
+      values (${userId}, ${organizationId}, ${onDate}::date, ${closed},
+              ${closed ? null : opens}, ${closed ? null : closes}, ${note})
+      on conflict (user_id, organization_id, on_date) do update
+        set closed = excluded.closed, opens_at = excluded.opens_at,
+            closes_at = excluded.closes_at, note = excluded.note,
+            updated_at = now()`)
+  } catch (e) {
+    return { error: formError(e, 'Gagal menyimpan pengecualian.') }
+  }
+  revalidatePath(`/staff/${userId}`)
+  return { done: true }
+}
+
+export async function removeScheduleExceptionAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ staff: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  const onDate = String(formData.get('onDate') ?? '')
+  await db.execute(sql`
+    delete from staff_schedule_exceptions
+     where user_id = ${userId} and organization_id = ${organizationId}
+       and on_date = ${onDate}::date`)
+  revalidatePath(`/staff/${userId}`)
+  return { done: true }
+}
+
+export async function addTimeOffAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ staff: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  const onDate = String(formData.get('onDate') ?? '').trim()
+  const startsAt = String(formData.get('startsAt') ?? '').trim()
+  const endsAt = String(formData.get('endsAt') ?? '').trim()
+  const note = String(formData.get('note') ?? '').trim() || null
+
+  if (!(await getStaff(userId, organizationId))) return { error: 'Staf tidak ditemukan.' }
+  if (!onDate || !startsAt || !endsAt) return { error: 'Tanggal dan jam wajib diisi.' }
+  if (endsAt <= startsAt) return { error: 'Jam selesai harus setelah jam mulai.' }
+
+  try {
+    await db.execute(sql`
+      insert into staff_time_off
+        (id, user_id, organization_id, on_date, starts_at, ends_at, note)
+      values (${crypto.randomUUID()}, ${userId}, ${organizationId}, ${onDate}::date,
+              ${startsAt}, ${endsAt}, ${note})`)
+  } catch (e) {
+    return { error: formError(e, 'Gagal menyimpan waktu tidak tersedia.') }
+  }
+  revalidatePath(`/staff/${userId}`)
+  return { done: true }
+}
+
+export async function removeTimeOffAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ staff: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const userId = String(formData.get('userId') ?? '')
+  const id = String(formData.get('blockId') ?? '')
+  // Scoped by organization in the statement, so a crafted id cannot reach
+  // another salon's row.
+  await db.execute(sql`
+    delete from staff_time_off
+     where id = ${id} and organization_id = ${organizationId}`)
+  revalidatePath(`/staff/${userId}`)
+  return { done: true }
+}
