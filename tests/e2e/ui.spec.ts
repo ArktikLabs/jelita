@@ -75,6 +75,42 @@ test.describe.serial('routing and the auth flow', () => {
     await user.dispose()
   })
 
+  test('the onboarding form refuses a slug that cannot be a subdomain', async () => {
+    // The slug becomes a hostname (ovarya.atjelita.com/book), so these are DNS
+    // rules. Driven through the FORM, not the API: the API path is
+    // better-auth's own createOrganization and never sees lib/slug.ts, so an
+    // assertion there would pass with the validation deleted.
+    const user = await client()
+    await user.post('/api/auth/sign-in/email', { data: { email: EMAIL, password: PW } })
+
+    const page = await user.get('/dashboard/onboarding')
+    const form = (await page.text()).split('<form').find((f) => f.includes('name="slug"'))
+    if (!form) throw new Error('no onboarding form for a user with no salon')
+    const hidden = [...form.slice(0, form.indexOf('</form>')).matchAll(
+      /<input type="hidden" name="([^"]+)"(?: value="([^"]*)")?\s*\/>/g)]
+    const base: Record<string, string> = {}
+    for (const [, k, v] of hidden) base[k] = (v ?? '').replace(/&quot;/g, '"')
+
+    const cases: [string, string][] = [
+      ['www', 'Slug ini sudah dipakai sistem. Coba nama lain.'],
+      ['-uicheck', 'Slug tidak boleh diawali atau diakhiri tanda hubung.'],
+      ['a'.repeat(64), 'Slug maksimal 63 karakter.'],
+      ['UI Check', 'Slug hanya boleh huruf kecil, angka, dan tanda hubung.'],
+    ]
+    for (const [slug, message] of cases) {
+      const res = await user.post('/dashboard/onboarding', {
+        multipart: { ...base, name: 'UI Check Salon', slug, currency: 'IDR' },
+        maxRedirects: 0,
+      })
+      expect(await res.text(), slug).toContain(message)
+    }
+    // Nothing was created by any of them.
+    const { rows } = await pool.query(
+      `select count(*)::int n from organizations where slug like 'uicheck%' or slug = 'www'`)
+    expect(rows[0].n).toBe(0)
+    await user.dispose()
+  })
+
   test('onboarding creates the salon and opens the app', async () => {
     const user = await client()
     await user.post('/api/auth/sign-in/email', { data: { email: EMAIL, password: PW } })

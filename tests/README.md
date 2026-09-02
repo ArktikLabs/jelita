@@ -83,10 +83,12 @@ for no reason, too long and every run pays the worst case.
 
 **An assertion nobody has watched fail is not yet evidence.**
 
-Seven assertions in this project have passed for the wrong reason — a fixture
+Nine assertions in this project have passed for the wrong reason — a fixture
 whose subject was missing a row the query joined on, a test whose own
 `FormData` normalised the input under test, a currency check where every
-fixture used the default. None were caught by review; all were caught by
+fixture used the default, a concurrency test whose two calls never actually
+collided, a "does not block deactivation" test that re-typed the query it was
+supposed to be checking. None were caught by review; all were caught by
 breaking the production code and watching.
 
 So for anything load-bearing: break it, watch that specific assertion fail,
@@ -127,3 +129,27 @@ reach zero owners.
 owners demoting each other in the same instant still reach zero active owners.
 That is a known, accepted gap recorded as a `ponytail:` comment in
 `app/dashboard/(shell)/staff/actions.ts`, not something the tests are missing.
+
+
+## One guard is redundant, and its test asserts the coupling instead
+
+`bookableBranches` (`lib/salon.ts`) filters on `active && withinCap`. The
+`active` half is redundant: `branch_entitlement` ranks only active branches
+(`db/migrations/0008_branch_tables.sql`), so a closed branch has no row and
+`listBranches` coalesces its `within_cap` to `false`. Deleting `b.active` fails
+nothing, and no test can make it fail — **"closed but within cap" is
+unrepresentable**, so an assertion aimed at it could only ever pass.
+
+This is not the same as the two above. There is nothing missing here; the
+guard simply cannot be exercised while the view holds.
+
+So the *view's* guarantee is asserted directly instead, in
+`tests/salon.db.test.ts` — a closed branch has no `branch_entitlement` row at
+all. That one **does** fail (verified: removing `where p.active` from the view
+fails it and nothing else), and it is the assertion that would fire if the
+coupling ever changed — at which point `b.active` stops being redundant and
+starts being the thing keeping strangers out of a closed branch.
+
+The general shape, worth reusing: when a guard is unfalsifiable because
+something upstream subsumes it, assert the upstream guarantee rather than
+deleting the guard or claiming coverage for it.
