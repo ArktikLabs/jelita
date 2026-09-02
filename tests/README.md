@@ -16,6 +16,24 @@ pnpm test:e2e       # Playwright
 pnpm test:db:down   # tear the database down
 ```
 
+## The database is disposable — and now actually is
+
+Global setup drops and rebuilds the schema before migrating, and Playwright
+never reuses a server across runs. Both were added after a pre-merge check
+caught what looked like a flaky spec file:
+
+- The container stays up between runs, so fixtures **accumulated**. Each spec's
+  own cleanup then cascade-deleted through a dozen tables, and once enough runs
+  had piled up a `delete from organizations` blew a 30s `beforeAll` timeout and
+  skipped a whole file. Runs had crept from under a minute to sixteen.
+- A server left running from a previous run holds **warm pooled connections to
+  a schema that global setup just dropped**. Same symptom: no clean error, just
+  a run that limps and eventually times out somewhere unrelated.
+
+Neither presents as its own cause, which is why they are written down here.
+A full run should take about a minute. If it takes materially longer,
+suspect stale state before suspecting the test that failed.
+
 ## The database is disposable
 
 `docker-compose.test.yml` runs Postgres 17 on 55432, RAM-backed. Both runners'

@@ -40,7 +40,13 @@ export default defineConfig({
     // regression -- but a production-mode run belongs in CI eventually.
     command: `NEXT_DIST_DIR=.next-e2e pnpm dev --port ${PORT}`,
     url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
+    // Never reuse a server across runs. Global setup drops and rebuilds the
+    // schema, and a server left over from a previous run still holds warm
+    // pooled connections to the schema that just disappeared. The symptom is
+    // not a clean error: the run limps along for sixteen minutes and one spec
+    // file's beforeAll finally times out, which reads like a flaky test rather
+    // than a stale process. A fresh dev server costs about a second.
+    reuseExistingServer: false,
     timeout: 180_000,
     env: {
       DATABASE_URL: TEST_DATABASE_URL,
