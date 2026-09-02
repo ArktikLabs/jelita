@@ -37,10 +37,16 @@ chair, and no amount of application-level checking gets there on its own.
 
 ### 2.1 Internal routes move under `/dashboard`
 
-`app/dashboard/` becomes `app/dashboard/`. The group adds no URL segment today, so
-`/staff` and `/services` sit at the root; after the rename they are
+`app/(app)/` becomes `app/dashboard/(shell)/`. The old group added no URL
+segment, so `/staff` and `/services` sat at the root; they are now
 `/dashboard/staff` and `/dashboard/services`, and the overview page — already
-named `dashboard` — keeps the URL it has.
+named `dashboard` — keeps the URL it had.
+
+`/onboarding` moves too, to `/dashboard/onboarding`, and this is why the
+`(shell)` group exists rather than a plain `app/dashboard/layout.tsx`: that
+layout calls `requirePageOrg`, which redirects a user with no organization to
+onboarding. Nested under it, onboarding would redirect to itself forever, so it
+sits as a **sibling** of `(shell)` — inside the prefix, outside the guard.
 
 This is namespace hygiene, not a security boundary: the guard is
 `requirePageOrg` in the layout either way. What it buys is a **free root

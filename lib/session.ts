@@ -137,6 +137,6 @@ export async function requirePagePermission(permissions: Permissions) {
 export async function requirePageOrg() {
   const session = await requirePageSession()
   const organizationId = session.session.activeOrganizationId
-  if (!organizationId) redirect('/onboarding')
+  if (!organizationId) redirect('/dashboard/onboarding')
   return { ...session, organizationId }
 }

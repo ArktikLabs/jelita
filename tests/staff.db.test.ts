@@ -271,7 +271,7 @@ describe('countResource(\'staff\') SQL facts', () => {
 describe('the ownerless-salon guards (deactivateStaffAction, read out of actions.ts)', () => {
   // The statement is READ OUT OF actions.ts, not copied here -- a copy only
   // proves the copy. Hoisted above the tests that use it.
-  const actionsSrc = readFileSync('app/dashboard/staff/actions.ts', 'utf8')
+  const actionsSrc = readFileSync('app/dashboard/(shell)/staff/actions.ts', 'utf8')
   const sqlStart = actionsSrc.indexOf('with owners as materialized')
   const sqlEnd = actionsSrc.indexOf('returning user_id', sqlStart)
   const deactivateSql = actionsSrc.slice(sqlStart, sqlEnd + 'returning user_id'.length)
@@ -435,7 +435,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
   })
 
   // Demote-versus-DEMOTE is a documented, ACCEPTED gap (the `ponytail:`
-  // comment in app/dashboard/staff/actions.ts, updateStaffRoleAction): two owners
+  // comment in app/dashboard/(shell)/staff/actions.ts, updateStaffRoleAction): two owners
   // demoting EACH OTHER touch no shared lock at all -- better-auth's own
   // updateMemberRole writes its own members row on its own connection with a
   // guard that only fires on self-demotion, and updateStaffRoleAction's own

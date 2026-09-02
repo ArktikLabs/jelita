@@ -103,7 +103,7 @@ neither the migration nor a later attempt could run the suite against a
 deliberately broken version. Recorded here rather than left implied.
 
 **The privilege-escalation allow-list** (`ASSIGNABLE_ROLES`,
-`app/dashboard/staff/actions.ts`). It stops `role=owner` from minting a second
+`app/dashboard/(shell)/staff/actions.ts`). It stops `role=owner` from minting a second
 owner — an admin holds `staff:['create']`, so without it an admin could grant
 themselves org-deletion rights. The migrated assertion is written in the right
 shape: it checks the **member row count**, not merely that an error came back,
@@ -118,7 +118,7 @@ negative control, which is weaker than breaking the real one.
 
 Both guards were verified by literal break-and-restore when they were written;
 it is the *migrated* assertions that lack fresh proof. To close this, allow
-temporary edits to `app/dashboard/staff/actions.ts` and run the two breaks —
+temporary edits to `app/dashboard/(shell)/staff/actions.ts` and run the two breaks —
 neutering the allow-list should fail the escalation assertion on the row
 count, and reducing the lock to `for update of s` should let the demote race
 reach zero owners.
@@ -126,4 +126,4 @@ reach zero owners.
 **Related, and separate:** demote-versus-demote is genuinely unguarded. Two
 owners demoting each other in the same instant still reach zero active owners.
 That is a known, accepted gap recorded as a `ponytail:` comment in
-`app/dashboard/staff/actions.ts`, not something the tests are missing.
+`app/dashboard/(shell)/staff/actions.ts`, not something the tests are missing.

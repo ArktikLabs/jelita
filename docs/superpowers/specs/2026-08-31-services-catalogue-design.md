@@ -368,4 +368,4 @@ Deferred deliberately, to be decided when booking makes the cost concrete.
   bookings exist (§6).
 - **Ownerless-salon race**, carried from staff management: two owners demoting
   each other concurrently still reach zero active owners. Recorded as a
-  `ponytail:` comment in `app/dashboard/staff/actions.ts`.
+  `ponytail:` comment in `app/dashboard/(shell)/staff/actions.ts`.

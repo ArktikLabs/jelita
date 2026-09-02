@@ -39,7 +39,7 @@ test.afterAll(async () => {
 test.describe.serial('routing and the auth flow', () => {
   test('anonymous visitors are bounced to /login', async () => {
     const anon = await client()
-    for (const path of ['/dashboard', '/onboarding', '/dashboard/profile']) {
+    for (const path of ['/dashboard', '/dashboard/onboarding', '/dashboard/profile']) {
       const res = await anon.get(path)
       expect(res.headers()['location'], `${path} should redirect`).toContain('/login')
     }
@@ -62,7 +62,16 @@ test.describe.serial('routing and the auth flow', () => {
 
     const afterVerify = await user.get('/dashboard')
     expect(afterVerify.headers()['location'],
-      'a verified user with no salon belongs on onboarding').toContain('/onboarding')
+      'a verified user with no salon belongs on onboarding').toContain('/dashboard/onboarding')
+
+    // ...and the destination has to RENDER, not redirect again. Onboarding is
+    // a sibling of app/dashboard/(shell), not a child: the shell layout sends
+    // a user with no organization here, so nesting it there would bounce this
+    // page to itself forever. Asserting the location header above does not
+    // catch that -- only loading the page does.
+    const page = await user.get('/dashboard/onboarding')
+    expect(page.status(), await page.text()).toBe(200)
+    expect(await page.text()).toContain('name="slug"')
     await user.dispose()
   })
 
@@ -77,7 +86,7 @@ test.describe.serial('routing and the auth flow', () => {
       { data: { organizationId: rows[0].id } })
 
     expect((await user.get('/dashboard')).status()).toBe(200)
-    expect((await user.get('/onboarding')).headers()['location'],
+    expect((await user.get('/dashboard/onboarding')).headers()['location'],
       'an onboarded user should not see onboarding again').toContain('/dashboard')
     expect((await user.get('/login')).headers()['location'],
       'a signed-in user should not see the login page').toContain('/dashboard')

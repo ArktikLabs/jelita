@@ -12,7 +12,7 @@ import { createSalon } from './fixtures'
  * The branch_entitlement view's lock ranking and getBranchStatus's
  * closed-beats-over_cap precedence are already proven in
  * tests/branch.db.test.ts -- this file only proves how STAFF actions apply
- * that guard (branchWriteError in app/dashboard/staff/actions.ts).
+ * that guard (branchWriteError in app/dashboard/(shell)/staff/actions.ts).
  *
  * The Origin header is not optional: better-auth's CSRF check rejects a
  * state-changing call without one (MISSING_OR_NULL_ORIGIN, 403). See

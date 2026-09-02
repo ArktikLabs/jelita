@@ -513,7 +513,7 @@ test.describe.serial('currency at onboarding, and locking it once priced', () =>
   test.afterAll(() => owner.dispose())
 
   test('onboarding with SGD redirects to /dashboard and overwrites the trigger-seeded IDR default', async () => {
-    const onboarded = await submitForm(owner, '/onboarding', 'name="slug"',
+    const onboarded = await submitForm(owner, '/dashboard/onboarding', 'name="slug"',
       { name: 'Svc Check Currency', slug: 'svccheck-currency', currency: 'SGD' })
     expect(onboarded.status, onboarded.html).toBe(303)
     expect(onboarded.location ?? '').toContain('/dashboard')
@@ -570,7 +570,7 @@ test.describe.serial('a price entered in a 2-exponent currency stores the right 
     await createLogin(pool, { name: 'Svc SGD Owner', email, password: PW })
     const owner = await signIn(email, PW)
 
-    const onboarded = await submitForm(owner, '/onboarding', 'name="slug"',
+    const onboarded = await submitForm(owner, '/dashboard/onboarding', 'name="slug"',
       { name: 'Svc Check SGD', slug: 'svccheck-sgd', currency: 'SGD' })
     expect(onboarded.status, onboarded.html).toBe(303)
     const { rows: [org] } = await pool.query(`select id from organizations where slug = 'svccheck-sgd'`)
@@ -606,7 +606,7 @@ test.describe('a concurrent service-creation + currency-change race never lets b
       const email = `race-${n}@${DOMAIN}`
       await createLogin(pool, { name: `Race Owner ${n}`, email, password: PW })
       const owner = await signIn(email, PW)
-      await submitForm(owner, '/onboarding', 'name="slug"',
+      await submitForm(owner, '/dashboard/onboarding', 'name="slug"',
         { name: `Race Salon ${n}`, slug: `svccheck-race-${n}`, currency: 'IDR' })
       const { rows: [org] } = await pool.query(
         `select id from organizations where slug = $1`, [`svccheck-race-${n}`])

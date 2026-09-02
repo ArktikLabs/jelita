@@ -41,8 +41,8 @@ Claude-Session: https://claude.ai/code/session_01R27c8rXsQbL9NoXfpiQUzx
 | `db/migrations/0010_services.sql` | Tables, the additive `teams` unique, the `salon_profiles` trigger + backfill, the resolution view |
 | `lib/service.ts` | `listServices`, `getService`, `resolveService`, `listPerformers` |
 | `lib/plan/entitlements.ts` | The `services` branch of `countResource` |
-| `app/dashboard/services/**` | List, new, detail screens + actions |
-| `app/onboarding/**` | Currency choice at salon creation |
+| `app/dashboard/(shell)/services/**` | List, new, detail screens + actions |
+| `app/dashboard/onboarding/**` | Currency choice at salon creation |
 | `scripts/service-check.mjs` | The suite |
 
 ---
@@ -685,10 +685,10 @@ git commit -m "feat(service): count services against the tier cap"
 ### Task 4: The list and create screens
 
 **Files:**
-- Create: `app/dashboard/services/page.tsx`
-- Create: `app/dashboard/services/actions.ts`
-- Create: `app/dashboard/services/new/page.tsx`
-- Create: `app/dashboard/services/new/service-form.tsx`
+- Create: `app/dashboard/(shell)/services/page.tsx`
+- Create: `app/dashboard/(shell)/services/actions.ts`
+- Create: `app/dashboard/(shell)/services/new/page.tsx`
+- Create: `app/dashboard/(shell)/services/new/service-form.tsx`
 - Modify: `scripts/service-check.mjs` (section 7)
 
 **Interfaces:**
@@ -697,7 +697,7 @@ git commit -m "feat(service): count services against the tier cap"
 
 Covers spec §7 assertions 3, 15, 16.
 
-Read `app/dashboard/staff/page.tsx` and `app/dashboard/staff/new/` first and follow those patterns exactly.
+Read `app/dashboard/(shell)/staff/page.tsx` and `app/dashboard/(shell)/staff/new/` first and follow those patterns exactly.
 
 - [ ] **Step 1: The list**
 
@@ -783,7 +783,7 @@ Make `requirePagePermission` return without redirecting, confirm assertions 2 an
 - [ ] **Step 6: Verify and commit**
 
 ```bash
-git add "app/dashboard/services" scripts/service-check.mjs
+git add "app/dashboard/(shell)/services" scripts/service-check.mjs
 git commit -m "feat(service): list and create screens"
 ```
 
@@ -792,9 +792,9 @@ git commit -m "feat(service): list and create screens"
 ### Task 5: The detail screen and per-branch overrides
 
 **Files:**
-- Create: `app/dashboard/services/[id]/page.tsx`
-- Create: `app/dashboard/services/[id]/service-detail-forms.tsx`
-- Modify: `app/dashboard/services/actions.ts`
+- Create: `app/dashboard/(shell)/services/[id]/page.tsx`
+- Create: `app/dashboard/(shell)/services/[id]/service-detail-forms.tsx`
+- Modify: `app/dashboard/(shell)/services/actions.ts`
 - Modify: `scripts/service-check.mjs` (section 8)
 
 **Interfaces:**
@@ -805,7 +805,7 @@ Covers spec §5.3 and the UI half of §7.7.
 
 - [ ] **Step 1: The detail page**
 
-Guarded by `service: ['update']`, loading via `getService(serviceId, organizationId)` — org-scoped in the query — and 404ing when null. Mirror `app/dashboard/staff/[id]/` in layout: separate cards per operation.
+Guarded by `service: ['update']`, loading via `getService(serviceId, organizationId)` — org-scoped in the query — and 404ing when null. Mirror `app/dashboard/(shell)/staff/[id]/` in layout: separate cards per operation.
 
 - [ ] **Step 2: The overrides card**
 
@@ -852,7 +852,7 @@ Make the action treat empty string and a value identically (always write the par
 - [ ] **Step 6: Verify and commit**
 
 ```bash
-git add "app/dashboard/services" scripts/service-check.mjs
+git add "app/dashboard/(shell)/services" scripts/service-check.mjs
 git commit -m "feat(service): detail screen and per-branch overrides"
 ```
 
@@ -861,7 +861,7 @@ git commit -m "feat(service): detail screen and per-branch overrides"
 ### Task 6: Who performs a service
 
 **Files:**
-- Modify: `app/dashboard/services/[id]/page.tsx`, `service-detail-forms.tsx`, `app/dashboard/services/actions.ts`
+- Modify: `app/dashboard/(shell)/services/[id]/page.tsx`, `service-detail-forms.tsx`, `app/dashboard/(shell)/services/actions.ts`
 - Modify: `lib/service.ts` (`listPerformers`)
 - Modify: `scripts/service-check.mjs` (section 9)
 
@@ -890,7 +890,7 @@ Append section 9:
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-git add "app/dashboard/services" lib/service.ts scripts/service-check.mjs
+git add "app/dashboard/(shell)/services" lib/service.ts scripts/service-check.mjs
 git commit -m "feat(service): who can perform a service"
 ```
 
@@ -899,8 +899,8 @@ git commit -m "feat(service): who can perform a service"
 ### Task 7: Currency at onboarding, and locking it
 
 **Files:**
-- Modify: `app/onboarding/actions.ts`, `app/onboarding/onboarding-form.tsx`
-- Modify: `app/dashboard/services/page.tsx`, `app/dashboard/services/actions.ts`
+- Modify: `app/dashboard/onboarding/actions.ts`, `app/dashboard/onboarding/onboarding-form.tsx`
+- Modify: `app/dashboard/(shell)/services/page.tsx`, `app/dashboard/(shell)/services/actions.ts`
 - Modify: `scripts/service-check.mjs` (section 10)
 
 **Interfaces:**
@@ -953,6 +953,6 @@ Remove the `not exists` clause from the UPDATE, confirm assertion 3 fails (the c
 Run `pnpm service:check` twice, `pnpm exec tsc --noEmit`, `pnpm lint`, `pnpm build`, and all five pinned suites.
 
 ```bash
-git add app/onboarding "app/dashboard/services" scripts/service-check.mjs
+git add app/dashboard/onboarding "app/dashboard/(shell)/services" scripts/service-check.mjs
 git commit -m "feat(service): salon currency, chosen once and then fixed"
 ```

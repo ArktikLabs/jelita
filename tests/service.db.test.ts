@@ -203,7 +203,7 @@ describe('service_branch_pricing resolves the effective price per branch', () =>
 })
 
 describe('service creation vs. currency change: never both land', () => {
-  // Mirrors the exact statements in app/dashboard/services/actions.ts
+  // Mirrors the exact statements in app/dashboard/(shell)/services/actions.ts
   // (createServiceAction, setCurrencyAction) against two independent
   // connections, so both lock orderings are forced deterministically instead
   // of hoped for via Promise.all timing. A bare `for update` is NOT

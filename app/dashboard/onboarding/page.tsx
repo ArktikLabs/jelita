@@ -2,6 +2,10 @@ import { redirect } from 'next/navigation'
 import { requirePageSession } from '@/lib/session'
 import { OnboardingForm } from './onboarding-form'
 
+// Deliberately a SIBLING of (shell), not inside it: that layout calls
+// requirePageOrg, which redirects a user with no organization to this page.
+// Nested under it, this page would redirect to itself forever. The (shell)
+// group exists for exactly that reason -- do not "tidy" this in.
 export default async function OnboardingPage() {
   const session = await requirePageSession()
   // Reverse guard: one salon per owner. A second organization would leave the

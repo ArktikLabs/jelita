@@ -69,7 +69,7 @@ export async function POST(req: Request) {
     // allowed..."), so it would never hit the STATUS lookup below and would
     // always fall through to the generic 400 default. .statusCode is the
     // numeric code better-call derives from the string .status (see
-    // app/dashboard/branches/actions.ts for the same 402 case) -- use it
+    // app/dashboard/(shell)/branches/actions.ts for the same 402 case) -- use it
     // directly so a FORBIDDEN from addTeamMember reports 403, not 400.
     if (e instanceof APIError) {
       return Response.json({ error: e.status }, { status: e.statusCode })

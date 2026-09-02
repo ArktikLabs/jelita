@@ -168,7 +168,7 @@ export async function createStaffAction(
 }
 
 /**
- * Bulk creation (app/dashboard/staff/import), for onboarding a salon that
+ * Bulk creation (app/dashboard/(shell)/staff/import), for onboarding a salon that
  * already has staff. The defining constraint: validate the whole file, then
  * commit every row or none -- never a partial import that a failed row
  * leaves half-written.
