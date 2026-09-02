@@ -307,6 +307,33 @@ Per-stylist scoping — a stylist seeing or updating only their own day — is a
 second scoping mechanism on top of the branch scoping every screen uses, and is
 deferred rather than half-built.
 
+## 8b. The working owner
+
+Owners and admins carried `team_id = null` by the staff model, so a working
+owner could not be linked to a service and never appeared in a slot list. In a
+small salon the owner cutting hair is the normal case, and PRD §5.1's flow is
+"select service → select staff" — the gap sat exactly where a buyer looks.
+
+**`team_id` now answers "works here", not "is stationed here."** Every role may
+be placed at a branch; only stylist and front desk *require* one, and only they
+can be stranded by closing it.
+
+`is_stationed(role)` (migration 0016) is what separates the two, and it is a
+**deny-list on `{owner, admin}`**, not an allow-list on `{stylist, frontdesk}`
+— the opposite of `ASSIGNABLE_ROLES`, for the same underlying reason: choose
+the conservative failure. There, an unknown role must not silently *gain*
+privileges. Here, an unknown role must not silently *lose* its branch —
+`dynamicAccessControl` lets a salon define `manajer` at runtime, and
+`tests/e2e/staff.spec.ts` already asserted that such a member blocks
+deactivation. An allow-list strands staff; a deny-list only makes a branch
+harder to close.
+
+Placement is opt-in (nothing sets an owner's `team_id`) and reversible (the
+release control, which the roles that require a branch never get).
+
+**Known limitation:** one `team_id` means one branch. An owner who cuts hair at
+two branches is not expressible, and is not in the MVP.
+
 ## 9. Deliberately deferred
 
 - **Walk-ins starting now.** The past-start filter in `lib/booking.ts` will

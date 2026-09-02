@@ -29,10 +29,15 @@ export async function listBranches(
   const { rows } = await db.execute(sql`
     select t.id as team_id, t.name, p.address, p.phone, p.active,
            coalesce(e.within_cap, false) as within_cap,
+           -- Stationed staff, matching assignedStaff below: this number is
+           -- what the deactivation block is about, so a working owner must
+           -- not inflate it into a block that never lifts.
            (select count(*) from staff_profiles s
+              join members m on m.user_id = s.user_id
+                            and m.organization_id = s.organization_id
              where s.team_id = t.id
                and s.organization_id = t.organization_id
-               and s.active)::int as staff_count
+               and s.active and is_stationed(m.role))::int as staff_count
       from teams t
       join branch_profiles p on p.team_id = t.id
       left join branch_entitlement e on e.team_id = t.id
@@ -70,12 +75,20 @@ export async function getBranch(teamId: string, organizationId: string) {
 }
 
 /**
- * Names of the STAFF assigned to a branch, for the deactivation block.
+ * Names of the STAFF STATIONED at a branch, for the deactivation block.
  *
  * Reads staff_profiles, not team_members: the latter also holds navigational
  * rows for owners and admins, and counting those made every branch
  * undeactivatable. Inactive profiles are excluded -- someone who left must not
  * block closing the branch they used to work at.
+ *
+ * Owners and admins with a branch are excluded too, and for a different
+ * reason. Since the working owner became bookable, team_id answers "works
+ * here", and for a stylist that is also "is stationed here" -- their whole
+ * position is that branch, so closing it strands them. An owner is not
+ * stranded by closing a branch they own; counting them would make a salon
+ * whose owner cuts hair unable to close that branch at all, which is the
+ * every-branch-undeactivatable bug in a smaller costume.
  */
 export async function assignedStaff(
   teamId: string, organizationId: string,
@@ -83,8 +96,9 @@ export async function assignedStaff(
   const { rows } = await db.execute(sql`
     select u.name from staff_profiles s
       join users u on u.id = s.user_id
+      join members m on m.user_id = s.user_id and m.organization_id = s.organization_id
      where s.team_id = ${teamId} and s.organization_id = ${organizationId}
-       and s.active
+       and s.active and is_stationed(m.role)
      order by u.name`)
   return (rows as { name: string }[]).map((r) => r.name)
 }

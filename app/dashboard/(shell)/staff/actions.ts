@@ -483,12 +483,31 @@ export async function transferStaffAction(
 
   const target = await getStaff(userId, organizationId)
   if (!target) return NOT_FOUND
-  // Owner and admin are salon-wide and must keep team_id null (spec §4) --
-  // the same invariant createStaffAction's pairing check protects at
-  // creation time. Without this, the page would let an admin park an owner
-  // on a branch with no error anywhere.
-  if (!target.role.split(',').some((r) => NEEDS_BRANCH.includes(r))) {
-    return { error: 'Peran ini tidak ditempatkan di cabang.' }
+  const needsBranch = target.role.split(',').some((r) => NEEDS_BRANCH.includes(r))
+
+  // Owner and admin used to be REFUSED here, on the reading that a salon-wide
+  // role is not "placed at" a branch. That made a working owner unbookable:
+  // available_slots requires staff_profiles.team_id, so an owner who cuts hair
+  // could never be linked to a service or appear in a slot list -- and in a
+  // small salon the owner working the floor is the normal case.
+  //
+  // team_id now answers "works here", not "is stationed here". Only the second
+  // meaning gates branch deactivation, which is why assignedStaff (lib/branch.ts)
+  // filters on is_stationed rather than on team_id alone.
+  //
+  // Releasing stays refused for the roles that REQUIRE one: a stylist with no
+  // branch is the §4 invariant this file exists to hold. For owner and admin
+  // it is the opt-out -- they stop being bookable.
+  //
+  // Its own field rather than an empty teamId: the branch Select posts a
+  // teamId in the same submit, so reading the release off that value would
+  // re-assign the branch it meant to clear.
+  if (formData.get('release')) {
+    if (needsBranch) return { error: 'Peran ini harus ditempatkan di cabang.' }
+    const cleared = await assignBranch(userId, organizationId, null)
+    if (!cleared) return NOT_FOUND
+    revalidateStaff(userId)
+    return { done: true }
   }
   if (!teamId) return { error: 'Pilih cabang.' }
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { createBooking, listBookings, listSlots, setBookingStatus } from '../lib/booking'
+import { assignedStaff, listBranches } from '../lib/branch'
 
 /**
  * The double-booking guarantee, asserted against real Postgres.
@@ -373,6 +374,69 @@ describe('available_slots', () => {
       await c.query('rollback')
       c.release()
     }
+  })
+})
+
+describe('the working owner (PRD 5.1: owners who cut hair)', () => {
+  const OWNER = 'bkg_owner'
+
+  beforeEach(async () => {
+    await pool.query(`delete from bookings where organization_id = $1`, [ORG])
+    await pool.query(`delete from users where id = $1`, [OWNER])
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, 'Bu Pemilik', $1 || '@bkg.local', true, now(), now())`, [OWNER])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1 || '_m', $1, $2, 'owner', now())`, [OWNER, ORG])
+  })
+
+  it('is not bookable until placed at a branch, and is after', async () => {
+    await pool.query(
+      `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)`,
+      [SERVICE, OWNER, ORG])
+    // Linked to the service but with no branch: available_slots needs
+    // staff_profiles.team_id, so this is the gap the old invariant created.
+    expect(await slots(OWNER)).toEqual([])
+
+    await pool.query(`update staff_profiles set team_id = $1
+                       where user_id = $2 and organization_id = $3`, [TEAM, OWNER, ORG])
+    expect(await slots(OWNER), 'an owner who cuts hair must be bookable').not.toEqual([])
+  })
+
+  it('does not block closing the branch they work at, and is not counted as stationed there', async () => {
+    // Through assignedStaff and listBranches themselves, not a copy of their
+    // SQL: an inlined re-write of the query passes whatever the real one does,
+    // which is exactly how an assertion ends up proving only the copy.
+    const before = await assignedStaff(TEAM, ORG)
+    await pool.query(`update staff_profiles set team_id = $1
+                       where user_id = $2 and organization_id = $3`, [TEAM, OWNER, ORG])
+
+    const after = await assignedStaff(TEAM, ORG)
+    expect(after, 'an owner is not stranded by closing a branch they own')
+      .toEqual(before)
+    expect(after).not.toContain('Bu Pemilik')
+
+    const [branch] = await listBranches(ORG, TEAM)
+    expect(branch.staffCount, 'and does not inflate the stationed headcount')
+      .toBe(before.length)
+  })
+
+  it('is_stationed denies the salon-wide pair and treats everything else as stationed', async () => {
+    const { rows } = await pool.query(`
+      select is_stationed('stylist') a, is_stationed('owner') b,
+             is_stationed('admin') c, is_stationed('owner,admin') d,
+             is_stationed('owner,stylist') e,
+             -- A runtime-defined role (dynamicAccessControl). It must still
+             -- block a branch closure: an allow-list would strand them
+             -- silently, which tests/e2e/staff.spec.ts asserts against.
+             is_stationed('manajer') f,
+             -- ...and a lookalike must not be mistaken for the real thing.
+             is_stationed('branch-admin-assistant') g,
+             is_stationed(null) h`)
+    expect(rows[0]).toEqual({
+      a: true, b: false, c: false, d: false, e: true, f: true, g: true, h: true,
+    })
   })
 })
 

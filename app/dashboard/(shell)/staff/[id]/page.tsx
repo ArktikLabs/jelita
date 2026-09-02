@@ -13,6 +13,8 @@ import {
 
 // Mirrors actions.ts's NEEDS_BRANCH -- duplicated, not imported, since that
 // file is 'use server' and only its async actions can cross into this page.
+// It no longer decides whether a branch may be set (every role may), only
+// whether one is REQUIRED -- which is what the release control keys off.
 const NEEDS_BRANCH = ['stylist', 'frontdesk']
 
 export default async function StaffDetailPage({
@@ -33,14 +35,16 @@ export default async function StaffDetailPage({
   // Narrowed to what the forms need, same as /staff/new -- a full BranchRow
   // would serialize into the RSC payload for fields these forms never show.
   const branchOptions = branches.map((b) => ({ teamId: b.teamId, name: b.name }))
-  // Owner and admin are salon-wide (team_id always null, spec §4) --
-  // transferStaffAction refuses this server-side regardless, but the card
-  // shouldn't offer an operation that can only fail.
-  const canTransfer = staff.role.split(',').some((r) => NEEDS_BRANCH.includes(r))
-  // Only branch-assigned staff have a schedule that means anything: management
-  // carries team_id null, so staff_working_hours returns nothing for them and
-  // the card would edit a pattern that can never produce a bookable hour.
-  const [schedule, exceptions, timeOff] = canTransfer
+  // Every role may now be placed at a branch. Owner and admin were refused
+  // here, which made a working owner unbookable -- available_slots requires
+  // staff_profiles.team_id, and in a small salon the owner cutting hair is the
+  // normal case, not the exception. For them the branch is optional (an empty
+  // value opts back out); for stylist and front desk it is still required.
+  const needsBranch = staff.role.split(',').some((r) => NEEDS_BRANCH.includes(r))
+  // The schedule only means something once a branch is set: staff_working_hours
+  // clamps to branch_hours and returns nothing without one, so the card would
+  // otherwise edit a pattern that can never produce a bookable hour.
+  const [schedule, exceptions, timeOff] = staff.teamId
     ? await Promise.all([
         staffSchedule(staff.userId, organizationId),
         upcomingExceptions(staff.userId, organizationId),
@@ -71,17 +75,20 @@ export default async function StaffDetailPage({
         </CardContent>
       </Card>
 
-      {canTransfer && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Cabang</CardTitle>
-            <CardDescription>Pindahkan staf ini ke cabang lain.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <TransferForm staff={staff} branches={branchOptions} />
-          </CardContent>
-        </Card>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Cabang</CardTitle>
+          <CardDescription>
+            {needsBranch
+              ? 'Pindahkan staf ini ke cabang lain.'
+              : 'Tempatkan di cabang agar bisa dipesan pelanggan. Opsional.'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <TransferForm staff={staff} branches={branchOptions} needsBranch={needsBranch} />
+        </CardContent>
+      </Card>
+
       {!isSelf && (
         <Card>
           <CardHeader>
@@ -115,7 +122,10 @@ export default async function StaffDetailPage({
         </Card>
       )}
 
-      {canTransfer && (
+      {/* Without a branch there are no branch hours to clamp to, so
+          staff_working_hours returns nothing and these cards would edit a
+          pattern that can never produce a bookable hour. */}
+      {staff.teamId && (
         <>
           <Card>
             <CardHeader>

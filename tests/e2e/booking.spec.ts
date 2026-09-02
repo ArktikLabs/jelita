@@ -215,6 +215,86 @@ test.describe.serial('booking through the app', () => {
   })
 })
 
+test.describe.serial('the working owner', () => {
+  let ownerId: string
+
+  let branchName: string
+
+  test.beforeAll(async () => {
+    const { rows } = await pool.query(
+      `select user_id from staff_profiles where organization_id = $1
+         and user_id in (select user_id from members
+                          where organization_id = $1 and role like '%owner%')`, [orgId])
+    ownerId = rows[0].user_id
+    const { rows: [team] } = await pool.query(
+      `select name from teams where id = $1`, [teamId])
+    branchName = team.name
+  })
+
+  test('the branch card is offered to an owner, and placing them makes them bookable', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/staff/${ownerId}`)
+    // The card used to be hidden for owner and admin, on the reading that a
+    // salon-wide role is not placed at a branch -- which is exactly what made
+    // a working owner unbookable.
+    await expect(page.getByRole('button', { name: 'Pindahkan' })).toBeVisible()
+
+    await page.locator('#transferTeamId').click()
+    // By id, not by a guessed label: better-auth names the default team
+    // itself during organization creation.
+    await page.getByRole('option', { name: branchName, exact: true }).click()
+    await page.getByRole('button', { name: 'Pindahkan' }).click()
+    await expect(page.getByText('Staf dipindahkan.')).toBeVisible()
+
+    const { rows } = await pool.query(
+      `select team_id from staff_profiles where user_id = $1 and organization_id = $2`,
+      [ownerId, orgId])
+    expect(rows[0].team_id).toBe(teamId)
+
+    // ...and the schedule cards, hidden while they had no branch, appear --
+    // without hours there is nothing for available_slots to clamp.
+    await page.reload()
+    // The weekly form's own control, not the heading: the card title and the
+    // exceptions card's copy both carry that phrase.
+    await expect(page.locator('#sched-closed-1')).toBeVisible()
+
+    await pool.query(
+      `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)
+       on conflict do nothing`, [serviceId, ownerId, orgId])
+    await page.goto(
+      `/dashboard/bookings/new?serviceId=${serviceId}&date=${DAY}&staffUserId=${ownerId}`)
+    await expect(page.locator('input[name="startsAt"]').first(),
+      'an owner who cuts hair must appear in the slot list').toBeVisible()
+  })
+
+  test('releasing them from the branch is offered, and takes them back out of booking', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/staff/${ownerId}`)
+    await page.getByRole('button', { name: 'Lepaskan dari cabang' }).click()
+    await expect(page.getByText('Staf dipindahkan.')).toBeVisible()
+
+    const { rows } = await pool.query(
+      `select team_id from staff_profiles where user_id = $1 and organization_id = $2`,
+      [ownerId, orgId])
+    expect(rows[0].team_id).toBeNull()
+
+    await page.goto(`/dashboard/bookings/new?serviceId=${serviceId}&date=${DAY}`)
+    // Asserted on the STAFF LIST, not on the slots: an unknown staff param
+    // falls back to "any available", so the colleague's times are still on
+    // screen and asserting their absence would fail for the wrong reason.
+    await expect(page.locator(`#staffUserId option[value="${ownerId}"]`)).toHaveCount(0)
+    await expect(page.locator(`#staffUserId option[value="${stylistId}"]`),
+      'the stylist is still offered').toHaveCount(1)
+  })
+
+  test('a stylist is never offered the release control -- they must always have a branch', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/staff/${stylistId}`)
+    await expect(page.getByRole('button', { name: 'Pindahkan' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Lepaskan dari cabang' })).toHaveCount(0)
+  })
+})
+
 test.describe('who may do what', () => {
   test('a stylist can read the day but cannot change a status', async () => {
     const { rows: [customer] } = await pool.query(

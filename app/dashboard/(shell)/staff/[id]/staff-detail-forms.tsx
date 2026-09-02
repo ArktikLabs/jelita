@@ -83,7 +83,15 @@ export function RoleForm({ staff, branches }: { staff: StaffRow; branches: Branc
   )
 }
 
-export function TransferForm({ staff, branches }: { staff: StaffRow; branches: Branch[] }) {
+export function TransferForm({
+  staff, branches, needsBranch,
+}: {
+  staff: StaffRow
+  branches: Branch[]
+  /** Stylist and front desk must always have one; owner and admin may opt
+   *  back out, which is what the release button below posts. */
+  needsBranch: boolean
+}) {
   const [state, action, pending] = useActionState(transferStaffAction, initial)
   const [teamId, setTeamId] = useState(staff.teamId ?? '')
 
@@ -113,9 +121,25 @@ export function TransferForm({ staff, branches }: { staff: StaffRow; branches: B
           </SelectContent>
         </Select>
       </div>
-      <Button type="submit" disabled={pending}>
-        {pending ? 'Memindahkan…' : 'Pindahkan'}
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button type="submit" disabled={pending}>
+          {pending ? 'Memindahkan…' : 'Pindahkan'}
+        </Button>
+        {!needsBranch && staff.teamId && (
+          // A distinct field, NOT teamId="": the Select posts its own teamId
+          // alongside this, and formData.get would return that one instead --
+          // the release would silently re-assign the branch it meant to clear.
+          <Button
+            type="submit"
+            name="release"
+            value="1"
+            variant="outline"
+            disabled={pending}
+          >
+            Lepaskan dari cabang
+          </Button>
+        )}
+      </div>
     </form>
   )
 }

@@ -634,17 +634,38 @@ test.describe.serial('branch-status guard applied to staff assignment (creation,
     await movedClient.dispose()
   })
 
-  test('a transfer targeting an owner (a management role) is refused, and the transfer card is not even offered on their page', async () => {
+  test('an owner may be placed at a branch -- the working-owner case -- but the branch guard still applies', async () => {
+    // This used to assert the opposite: owner and admin were salon-wide and
+    // refused a branch outright. That made a working owner unbookable --
+    // available_slots requires staff_profiles.team_id -- and in a small salon
+    // the owner cutting hair is the normal case (PRD §5.1). team_id now
+    // answers "works here"; only is_stationed() decides who a branch closure
+    // would strand.
     const { rows: [ownerRow] } = await pool.query(
       `select user_id from members where organization_id = $1 and role = 'owner'`, [orgId])
-    const res = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
-      'Pindahkan</button>', { userId: ownerRow.user_id, teamId: openBranchId })
-    expect(res.status).toBe(200)
-    expect(res.html).toContain('Peran ini tidak ditempatkan di cabang.')
+
+    // The relaxation does NOT relax the branch-status guard, which is what
+    // this describe block is about.
+    const closed = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
+      'Pindahkan</button>', { userId: ownerRow.user_id, teamId: closedBranchId })
+    expect(closed.status).toBe(200)
+    expect(closed.html).toContain(CLOSED_MSG)
     expect(await teamIdOf(ownerRow.user_id)).toBeNull()
 
+    const placed = await submitForm(owner, `/dashboard/staff/${guardStylistId}`,
+      'Pindahkan</button>', { userId: ownerRow.user_id, teamId: openBranchId })
+    expect(placed.status).toBe(200)
+    expect(await teamIdOf(ownerRow.user_id)).toBe(openBranchId)
+
     const ownerPage = await getPage(owner, `/dashboard/staff/${ownerRow.user_id}`)
-    expect(ownerPage.html).not.toContain('Pindahkan</button>')
+    expect(ownerPage.html).toContain('Pindahkan</button>')
+    // ...and the opt-out, which only the roles that do not require a branch get.
+    expect(ownerPage.html).toContain('Lepaskan dari cabang</button>')
+
+    const released = await submitForm(owner, `/dashboard/staff/${ownerRow.user_id}`,
+      'Lepaskan dari cabang</button>', { userId: ownerRow.user_id, release: '1' })
+    expect(released.status).toBe(200)
+    expect(await teamIdOf(ownerRow.user_id)).toBeNull()
   })
 
   test('a role change onto a closed branch, then a locked branch, both refused and unchanged', async () => {
