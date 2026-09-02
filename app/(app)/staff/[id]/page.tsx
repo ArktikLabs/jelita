@@ -1,11 +1,15 @@
 import { notFound } from 'next/navigation'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
+import { staffSchedule, upcomingExceptions, upcomingTimeOff } from '@/lib/schedule'
 import { getStaff } from '@/lib/staff'
 import { listBranches } from '@/lib/branch'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
 import { RoleForm, TransferForm, StatusForm, PasswordForm } from './staff-detail-forms'
+import {
+  ScheduleExceptionsForm, StaffScheduleForm, TimeOffForm,
+} from './schedule-forms'
 
 // Mirrors actions.ts's NEEDS_BRANCH -- duplicated, not imported, since that
 // file is 'use server' and only its async actions can cross into this page.
@@ -33,6 +37,16 @@ export default async function StaffDetailPage({
   // transferStaffAction refuses this server-side regardless, but the card
   // shouldn't offer an operation that can only fail.
   const canTransfer = staff.role.split(',').some((r) => NEEDS_BRANCH.includes(r))
+  // Only branch-assigned staff have a schedule that means anything: management
+  // carries team_id null, so staff_working_hours returns nothing for them and
+  // the card would edit a pattern that can never produce a bookable hour.
+  const [schedule, exceptions, timeOff] = canTransfer
+    ? await Promise.all([
+        staffSchedule(staff.userId, organizationId),
+        upcomingExceptions(staff.userId, organizationId),
+        upcomingTimeOff(staff.userId, organizationId),
+      ])
+    : [[], [], []]
   // Both self-only cards are hidden for the same reason the transfer card is:
   // an operation that can only ever fail, or can only hurt you, should not be
   // offered. The server refuses the deactivation regardless.
@@ -99,6 +113,46 @@ export default async function StaffDetailPage({
             <PasswordForm staff={staff} />
           </CardContent>
         </Card>
+      )}
+
+      {canTransfer && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>Jadwal mingguan</CardTitle>
+              <CardDescription>
+                Jam kerja normal. Dipotong jam buka cabang.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <StaffScheduleForm userId={staff.userId} days={schedule} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Pengecualian tanggal</CardTitle>
+              <CardDescription>
+                Menggantikan jadwal mingguan untuk satu tanggal — libur, atau jam berbeda.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ScheduleExceptionsForm userId={staff.userId} exceptions={exceptions} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Waktu tidak tersedia</CardTitle>
+              <CardDescription>
+                Memotong sebagian hari, misalnya keperluan di siang hari.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <TimeOffForm userId={staff.userId} blocks={timeOff} />
+            </CardContent>
+          </Card>
+        </>
       )}
     </div>
   )
