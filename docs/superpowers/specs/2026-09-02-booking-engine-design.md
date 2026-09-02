@@ -408,3 +408,64 @@ Two assertions were written only because a break passed:
 assertions in this project have passed for the wrong reason; each was caught by
 breaking the code and watching, never by review. **The break must compile** — an
 edit that fails the build fails the run without exercising anything.
+
+
+## 11. Reschedule and the calendar (PRD §5.1's admin side)
+
+Added after the engine, public page and walk-ins, to close P0 #1.
+
+### 11.1 A booking must not collide with itself
+
+`available_slots` drops any start overlapping a pending or confirmed booking —
+including the one being moved. Shifting a 60-minute appointment from 10:00 to
+10:30 therefore reported its own slot as taken, and every nearby time with it.
+
+Migration 0017 adds `p_exclude_booking_id`, null for every other caller.
+`create or replace` cannot add a parameter — the signature is part of a
+function's identity, so the five-argument version would have survived alongside
+the six and callers would resolve to whichever matched. Dropped explicitly.
+
+### 11.2 The terms do not move with the booking
+
+`ends_at` is recomputed from the **stored** `duration_minutes`, never the
+service's current one. A service that grew from 60 to 90 minutes last week must
+not silently lengthen an appointment agreed at 60 — the same reason the
+snapshot exists at all (§2.5).
+
+The row keeps its id, so history and anything pointing at it survive. Status is
+preserved: a confirmed booking moved by the salon is still confirmed.
+
+Terminal statuses refuse the move. Rescheduling a completed or cancelled
+booking would rewrite what happened rather than change what is going to.
+
+### 11.3 The branch is the booking's, not the session's
+
+Unlike `createBookingAction`, `rescheduleAction` does not read the branch from
+the session: the booking already carries one, and moving a booking made at
+another branch into whichever is currently active would be a silent transfer.
+`rescheduleBooking` is org-scoped, so a foreign id still reads as not-found.
+
+### 11.4 Two layouts, one query
+
+- **Day** — one column per stylist. "Who is free at 3pm?"
+- **Week** — one column per day, for **one** stylist. "When is Rina next open?"
+
+Read-only. Every write still goes through the list and the reschedule form;
+drag-and-drop is post-MVP, and a calendar that cannot write needs no client
+state — the grid is a server component, so the day's bookings are never shipped
+twice.
+
+CSS grid, no library. Each booking spans the rows its own start and end cover,
+so a 90-minute service is visibly twice a 45-minute one without anyone
+computing pixels. Vertical bounds come from `branch_hours` across the range,
+not a hardcoded 08:00–22:00: dead space is ugly, but clipping a 07:00
+appointment off the top is wrong.
+
+### 11.5 What the breaks caught
+
+- **The week view's stylist filter failed nothing** — the fixture had one
+  stylist, so filtering and not filtering drew the same picture. A second
+  stylist with their own booking was added; the filter now has something to be
+  wrong about. That also revealed the free plan's 3-seat cap silently returning
+  402 to the fixture, which an unchecked `.json()` turned into "cannot read
+  properties of undefined".

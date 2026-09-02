@@ -46,6 +46,12 @@ export default async function BookingsPage({
         <h1 className="text-xl font-medium">Janji temu</h1>
         <div className="flex items-center gap-2">
           <Link
+            href={`/dashboard/bookings/calendar?date=${date}`}
+            className={buttonVariants({ variant: 'outline' })}
+          >
+            Kalender
+          </Link>
+          <Link
             href="/dashboard/bookings/new?walkIn=1"
             className={buttonVariants({ variant: 'outline' })}
           >

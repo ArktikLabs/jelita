@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { requireBranch } from '@/lib/session'
 import { requirePagePermission } from '@/lib/session'
-import { createBooking, setBookingStatus } from '@/lib/booking'
+import { createBooking, rescheduleBooking, setBookingStatus } from '@/lib/booking'
 import { findOrCreateByPhone } from '@/lib/customer'
 import { type FormState } from '@/lib/form-state'
 
@@ -89,4 +89,41 @@ export async function setBookingStatusAction(
   }
   revalidatePath('/dashboard/bookings')
   return { done: true }
+}
+
+/**
+ * PRD 5.1's "reschedule via edit form".
+ *
+ * The BRANCH is not read from the session here, unlike createBookingAction:
+ * the booking already carries its own, and moving one made at another branch
+ * into whichever branch happens to be active would be a silent transfer.
+ * rescheduleBooking is org-scoped, so a foreign id still reads as not-found.
+ */
+export async function rescheduleAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ booking: ['reschedule'] })
+  const { organizationId } = await requireBranch({ write: true })
+  if (!organizationId) return { error: 'Tidak ada salon aktif.' }
+
+  const id = String(formData.get('id') ?? '')
+  const startsAt = String(formData.get('startsAt') ?? '')
+  const staffUserId = String(formData.get('staffUserId') ?? '') || null
+  if (!startsAt) return { error: 'Pilih jam dulu.' }
+
+  try {
+    await rescheduleBooking(id, organizationId, { startsAt, staffUserId })
+  } catch (e) {
+    const code = e instanceof Error ? e.message : ''
+    if (code === 'SLOT_TAKEN') {
+      return { error: 'Jam itu sudah tidak tersedia. Silakan pilih jam lain.' }
+    }
+    if (code === 'BAD_TRANSITION') {
+      return { error: 'Janji temu yang sudah selesai atau dibatalkan tidak bisa dipindahkan.' }
+    }
+    if (code === 'NOT_FOUND') return { error: 'Janji temu tidak ditemukan.' }
+    throw e
+  }
+  revalidatePath('/dashboard/bookings')
+  redirect(`/dashboard/bookings?date=${startsAt.slice(0, 10)}`)
 }

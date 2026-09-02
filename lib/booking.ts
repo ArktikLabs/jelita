@@ -66,6 +66,8 @@ type SlotQuery = {
   staffUserId?: string | null
   /** Walk-ins only: keep starts that have already passed today (spec 9). */
   includePast?: boolean
+  /** Rescheduling: the booking being moved must not count itself as busy. */
+  excludeBookingId?: string | null
 }
 
 /**
@@ -85,7 +87,8 @@ export async function listSlots(q: SlotQuery): Promise<Slot[]> {
   const { rows } = await db.execute(sql`
     select to_char(starts_at, 'YYYY-MM-DD"T"HH24:MI') as starts_at, staff_user_id
       from available_slots(${q.organizationId}, ${q.teamId}, ${q.serviceId},
-                           ${q.date}::date, ${q.staffUserId ?? null})`)
+                           ${q.date}::date, ${q.staffUserId ?? null},
+                           ${q.excludeBookingId ?? null})`)
   const now = nowLocal()
   return (rows as Record<string, unknown>[])
     .map((r) => ({ startsAt: r.starts_at as string, staffUserId: r.staff_user_id as string }))
@@ -223,6 +226,32 @@ export async function bookableServices(organizationId: string, teamId: string) {
   }))
 }
 
+/** One booking, scoped by organizationId in the query itself so a bare id
+ *  cannot cross tenants. */
+export async function getBooking(bookingId: string, organizationId: string) {
+  const { rows } = await db.execute(sql`
+    select b.id, b.team_id, b.service_id, b.staff_user_id, b.status,
+           to_char(b.starts_at, 'YYYY-MM-DD"T"HH24:MI') as starts_at,
+           b.duration_minutes, s.name as service_name, c.name as customer_name
+      from bookings b
+      join services s on s.id = b.service_id
+      join customers c on c.id = b.customer_id
+     where b.id = ${bookingId} and b.organization_id = ${organizationId}`)
+  const r = rows[0] as Record<string, unknown> | undefined
+  if (!r) return null
+  return {
+    id: r.id as string,
+    teamId: r.team_id as string,
+    serviceId: r.service_id as string,
+    staffUserId: r.staff_user_id as string,
+    status: r.status as string,
+    startsAt: r.starts_at as string,
+    durationMinutes: r.duration_minutes as number,
+    serviceName: r.service_name as string,
+    customerName: r.customer_name as string,
+  }
+}
+
 /** One branch's day, in time order -- the whole of /dashboard/bookings. */
 export async function listBookings(
   organizationId: string, teamId: string, date: string,
@@ -254,6 +283,70 @@ export async function listBookings(
   }))
 }
 
+/**
+ * A date RANGE of one branch's bookings, for the calendar. `to` is exclusive.
+ *
+ * Same shape as listBookings, plus the day, so a week grid can bucket by it
+ * without re-parsing every start.
+ */
+export async function listBookingsBetween(
+  organizationId: string, teamId: string, from: string, to: string,
+): Promise<(BookingRow & { day: string })[]> {
+  const { rows } = await db.execute(sql`
+    select b.id,
+           to_char(b.starts_at, 'YYYY-MM-DD"T"HH24:MI') as starts_at,
+           to_char(b.ends_at, 'YYYY-MM-DD"T"HH24:MI') as ends_at,
+           to_char(b.starts_at, 'YYYY-MM-DD') as day,
+           b.staff_user_id, u.name as staff_name, c.name as customer_name,
+           s.name as service_name, b.status, b.price, b.currency
+      from bookings b
+      join users u on u.id = b.staff_user_id
+      join customers c on c.id = b.customer_id
+      join services s on s.id = b.service_id
+     where b.organization_id = ${organizationId} and b.team_id = ${teamId}
+       and b.starts_at >= ${from}::date and b.starts_at < ${to}::date
+     order by b.starts_at, u.name`)
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    id: r.id as string,
+    startsAt: r.starts_at as string,
+    endsAt: r.ends_at as string,
+    day: r.day as string,
+    staffUserId: r.staff_user_id as string,
+    staffName: r.staff_name as string,
+    customerName: r.customer_name as string,
+    serviceName: r.service_name as string,
+    status: r.status as string,
+    price: Number(r.price),
+    currency: r.currency as string,
+  }))
+}
+
+/**
+ * The widest open window across a date range, as minutes from midnight.
+ *
+ * The calendar's vertical bounds. Derived from branch_hours rather than
+ * hardcoded: a salon open 10:00-20:00 would otherwise stare at hours of dead
+ * grid, and one opening at 07:00 would have its first appointments CLIPPED off
+ * the top -- dead space is ugly, clipping is wrong.
+ *
+ * Null when the branch is closed every day in the range.
+ */
+export async function branchOpenWindow(
+  teamId: string, from: string, to: string,
+): Promise<{ startMin: number; endMin: number } | null> {
+  const { rows } = await db.execute(sql`
+    select min(extract(epoch from h.opens_at) / 60)::int as start_min,
+           max(extract(epoch from h.closes_at) / 60)::int as end_min
+      from generate_series(${from}::date, ${to}::date - 1, interval '1 day') d
+      join branch_hours h
+        on h.team_id = ${teamId}
+       and h.weekday = extract(dow from d)::smallint
+     where not h.closed`)
+  const r = rows[0] as { start_min: number | null; end_min: number | null } | undefined
+  if (!r || r.start_min === null || r.end_min === null) return null
+  return { startMin: r.start_min, endMin: r.end_min }
+}
+
 /** pending -> confirmed | cancelled; confirmed -> completed | no_show | cancelled. */
 const NEXT: Record<string, string[]> = {
   pending: ['confirmed', 'cancelled'],
@@ -279,4 +372,69 @@ export async function setBookingStatus(
        and status in ${sql`(${sql.join(from.map((s) => sql`${s}`), sql`, `)})`}
     returning id`)
   if (rows.length === 0) throw new Error('BAD_TRANSITION')
+}
+
+/**
+ * Move a booking to a different time, or a different stylist, or both.
+ *
+ * Not a cancel-and-rebook: the row keeps its id, so the customer's reference,
+ * its history and anything that later points at it survive the move.
+ *
+ * The terms do NOT move with it. `duration_minutes` and `price` were agreed
+ * when the booking was made (engine spec 2.5), so `ends_at` is recomputed from
+ * the STORED duration rather than the service's current one -- a service that
+ * grew from 60 to 90 minutes last week must not silently lengthen an
+ * appointment made before it did.
+ *
+ * Availability is rechecked the same way createBooking does, with this booking
+ * excluded from the busy filter, and the exclusion constraint is still the
+ * arbiter: two front-desk users moving different bookings into the same slot
+ * both pass the recheck, and exactly one write survives.
+ */
+export async function rescheduleBooking(
+  bookingId: string,
+  organizationId: string,
+  next: { startsAt: SlotTime; staffUserId?: string | null },
+): Promise<void> {
+  const { rows } = await db.execute(sql`
+    select team_id, service_id, staff_user_id, status
+      from bookings where id = ${bookingId} and organization_id = ${organizationId}`)
+  const current = rows[0] as Record<string, unknown> | undefined
+  // Scoped by organizationId in the statement, so a foreign id reads as
+  // not-found rather than as a failed move.
+  if (!current) throw new Error('NOT_FOUND')
+  // A completed, cancelled or no-show booking is history. Moving one would
+  // rewrite what happened rather than change what is going to.
+  if (!['pending', 'confirmed'].includes(current.status as string)) {
+    throw new Error('BAD_TRANSITION')
+  }
+
+  const staffUserId = next.staffUserId ?? (current.staff_user_id as string)
+  const free = await listSlots({
+    organizationId,
+    teamId: current.team_id as string,
+    serviceId: current.service_id as string,
+    date: next.startsAt.slice(0, 10),
+    staffUserId,
+    excludeBookingId: bookingId,
+  })
+  if (!free.some((s) => s.startsAt === next.startsAt && s.staffUserId === staffUserId)) {
+    throw new Error('SLOT_TAKEN')
+  }
+
+  try {
+    await db.execute(sql`
+      update bookings
+         set starts_at = ${next.startsAt}::timestamp,
+             ends_at = ${next.startsAt}::timestamp
+                     + make_interval(mins => duration_minutes),
+             staff_user_id = ${staffUserId},
+             updated_at = now()
+       where id = ${bookingId} and organization_id = ${organizationId}`)
+  } catch (e) {
+    // Same reporting as createBooking: a stale page and a lost race are
+    // indistinguishable to whoever is moving it, and both mean pick another.
+    if (isSlotTaken(e)) throw new Error('SLOT_TAKEN')
+    throw e
+  }
 }

@@ -3,7 +3,8 @@
 import { useActionState } from 'react'
 import { setBookingStatusAction } from './actions'
 import type { FormState } from '@/lib/form-state'
-import { Button } from '@/components/ui/button'
+import Link from 'next/link'
+import { Button, buttonVariants } from '@/components/ui/button'
 
 const initial: FormState = {}
 
@@ -43,6 +44,12 @@ export function StatusActions({ id, status }: { id: string; status: string }) {
           {LABEL[s]}
         </Button>
       ))}
+      <Link
+        href={`/dashboard/bookings/${id}`}
+        className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+      >
+        Pindahkan
+      </Link>
       {state.error && <span className="text-sm text-destructive">{state.error}</span>}
     </form>
   )

@@ -67,6 +67,12 @@ test.beforeAll(async () => {
   })
   owner = salon.ctx
   orgId = salon.organizationId
+  // Business: the free plan caps staff at 3, and owner + stylist + front desk
+  // already fill it -- the second stylist the calendar tests need would be
+  // refused with a 402. No assertion here is about quota.
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [orgId])
 
   const { rows: [team] } = await pool.query(
     `select id from teams where organization_id = $1 order by created_at limit 1`, [orgId])
@@ -212,6 +218,167 @@ test.describe.serial('booking through the app', () => {
       .toBeVisible()
     const rows = await bookingsFor()
     expect(rows, 'the refused attempt must not have written anything').toHaveLength(1)
+  })
+})
+
+test.describe.serial('reschedule and the calendar', () => {
+  let bookingId: string
+  let secondStylistId: string
+
+  test.beforeAll(async () => {
+    // A SECOND stylist with their own booking, so the week view's "one
+    // stylist" filter can be wrong. With only one stylist, filtering and not
+    // filtering draw the same picture and deleting the filter fails nothing.
+    const made = await owner.post('/api/staff', {
+      data: {
+        name: 'Book Stylist Dua', email: `stylist2@${DOMAIN}`, password: PW,
+        role: 'stylist', branchId: teamId,
+      },
+    })
+    // 201, not 200 -- the route answers Created. Checked at all because the
+    // free plan's 3-seat cap silently returned a 402 here, and an unchecked
+    // .json() turned that into "cannot read properties of undefined".
+    if (made.status() >= 300) {
+      throw new Error(`second stylist not created: ${made.status()} ${await made.text()}`)
+    }
+    secondStylistId = (await made.json()).user.id
+    await pool.query(
+      `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)
+       on conflict do nothing`, [serviceId, secondStylistId, orgId])
+  })
+
+  test.beforeEach(async () => {
+    await pool.query(`delete from bookings where organization_id = $1`, [orgId])
+    const { rows: [customer] } = await pool.query(
+      `insert into customers (id, organization_id, name, phone_key)
+       values ($1, $2, 'Ibu Pindah', '628111000111')
+       on conflict (organization_id, phone_key) where phone_key is not null
+       do update set name = excluded.name
+       returning id`, [crypto.randomUUID(), orgId])
+    bookingId = crypto.randomUUID()
+    await pool.query(
+      `insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                             service_id, starts_at, ends_at, status,
+                             duration_minutes, price, currency)
+       values ($1, $2, $3, $4, $5, $6, $7::timestamp, $8::timestamp, 'confirmed',
+               60, 150000, 'IDR')`,
+      [bookingId, orgId, teamId, stylistId, customer.id, serviceId,
+       `${DAY} 10:00`, `${DAY} 11:00`])
+
+    const { rows: [second] } = await pool.query(
+      `insert into customers (id, organization_id, name) values ($1, $2, 'Ibu Kolega')
+       returning id`, [crypto.randomUUID(), orgId])
+    await pool.query(
+      `insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                             service_id, starts_at, ends_at, status,
+                             duration_minutes, price, currency)
+       values ($1, $2, $3, $4, $5, $6, $7::timestamp, $8::timestamp, 'confirmed',
+               60, 150000, 'IDR')`,
+      [crypto.randomUUID(), orgId, teamId, secondStylistId, second.id, serviceId,
+       `${DAY} 13:00`, `${DAY} 14:00`])
+  })
+
+  test('moves a booking half an hour later -- it must not collide with itself', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/bookings/${bookingId}`)
+    // 10:30 overlaps the booking's own 10:00-11:00 range, so this option only
+    // exists because available_slots excludes the row being moved.
+    await page.locator('input[name="startsAt"][value$="T10:30"]').check()
+    await page.getByRole('button', { name: 'Pindahkan jadwal' }).click()
+    await page.waitForURL(`**/dashboard/bookings?date=${DAY}`)
+
+    const { rows } = await pool.query(
+      `select to_char(starts_at, 'HH24:MI') s, to_char(ends_at, 'HH24:MI') e, status
+         from bookings where id = $1`, [bookingId])
+    expect(rows[0]).toEqual({ s: '10:30', e: '11:30', status: 'confirmed' })
+  })
+
+  test('refuses a time another booking holds, and leaves the original alone', async ({ page }) => {
+    const { rows: [other] } = await pool.query(
+      `insert into customers (id, organization_id, name) values ($1, $2, 'Lain')
+       returning id`, [crypto.randomUUID(), orgId])
+    await pool.query(
+      `insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                             service_id, starts_at, ends_at, status,
+                             duration_minutes, price, currency)
+       values ($1, $2, $3, $4, $5, $6, $7::timestamp, $8::timestamp, 'pending',
+               60, 150000, 'IDR')`,
+      [crypto.randomUUID(), orgId, teamId, stylistId, other.id, serviceId,
+       `${DAY} 15:00`, `${DAY} 16:00`])
+
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/bookings/${bookingId}`)
+    // 15:00 is held, so the form must not even offer it.
+    await expect(page.locator('input[name="startsAt"][value$="T15:00"]')).toHaveCount(0)
+    // ...and posting it anyway is refused by the server.
+    await page.locator('input[name="startsAt"]').first().check()
+    await page.evaluate((day) => {
+      const el = document.querySelector('input[name="startsAt"]:checked') as HTMLInputElement
+      el.value = `${day}T15:00`
+    }, DAY)
+    await page.getByRole('button', { name: 'Pindahkan jadwal' }).click()
+    await expect(page.getByText('Jam itu sudah tidak tersedia. Silakan pilih jam lain.'))
+      .toBeVisible()
+    const { rows } = await pool.query(
+      `select to_char(starts_at, 'HH24:MI') s from bookings where id = $1`, [bookingId])
+    expect(rows[0].s).toBe('10:00')
+  })
+
+  test('a cancelled booking cannot be moved, and the form is not even offered', async ({ page }) => {
+    await pool.query(`update bookings set status = 'cancelled' where id = $1`, [bookingId])
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/bookings/${bookingId}`)
+    await expect(page.getByText('Janji temu ini sudah selesai atau dibatalkan, jadi tidak bisa dipindahkan.'))
+      .toBeVisible()
+    await expect(page.getByRole('button', { name: 'Pindahkan jadwal' })).toHaveCount(0)
+  })
+
+  test('another salon\'s booking is not found, not merely unmovable', async () => {
+    const res = await desk.get(`/dashboard/bookings/${crypto.randomUUID()}`)
+    expect(res.status()).toBe(404)
+  })
+
+  test('the day calendar draws the booking in its stylist column, at its own height', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/bookings/calendar?date=${DAY}`)
+    // Both stylists get a column, and each booking sits in its own.
+    await expect(page.getByRole('link', { name: /10:00 Ibu Pindah/ })).toBeVisible()
+    await expect(page.getByRole('link', { name: /13:00 Ibu Kolega/ })).toBeVisible()
+    const block = page.getByRole('link', { name: /10:00 Ibu Pindah/ })
+
+    // A 60-minute booking must be twice the height of a 30-minute one -- the
+    // grid spans rows from the booking's OWN start and end, so a calendar that
+    // ignored duration would render both the same.
+    const hour = (await block.boundingBox())!.height
+    await pool.query(
+      `update bookings set ends_at = $2::timestamp, duration_minutes = 30
+        where id = $1`, [bookingId, `${DAY} 10:30`])
+    await page.reload()
+    const half = (await page.getByRole('link', { name: /10:00 Ibu Pindah/ }).boundingBox())!.height
+    expect(hour).toBeGreaterThan(half * 1.5)
+  })
+
+  test('the week calendar puts it in its day column', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/bookings/calendar?date=${DAY}&view=week&staffUserId=${stylistId}`)
+    await expect(page.getByRole('link', { name: /10:00 Ibu Pindah/ })).toBeVisible()
+    // DAY is a Wednesday, so the lane header for it must be present.
+    await expect(page.getByText(`Rab ${DAY.slice(8)}`)).toBeVisible()
+    // The week view is ONE stylist's week -- the colleague's booking that same
+    // day belongs to their week, not this one.
+    await expect(page.getByRole('link', { name: /13:00 Ibu Kolega/ })).toHaveCount(0)
+
+    await page.goto(`/dashboard/bookings/calendar?date=${DAY}&view=week&staffUserId=${secondStylistId}`)
+    await expect(page.getByRole('link', { name: /13:00 Ibu Kolega/ })).toBeVisible()
+    await expect(page.getByRole('link', { name: /10:00 Ibu Pindah/ })).toHaveCount(0)
+  })
+
+  test('a closed branch says so rather than drawing an empty grid', async ({ page }) => {
+    await pool.query(`update branch_hours set closed = true where team_id = $1`, [teamId])
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/bookings/calendar?date=${DAY}`)
+    await expect(page.getByText('Cabang tutup sepanjang rentang ini.')).toBeVisible()
+    await pool.query(`update branch_hours set closed = false where team_id = $1`, [teamId])
   })
 })
 

@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { createBooking, listBookings, listSlots, setBookingStatus } from '../lib/booking'
+import {
+  createBooking, listBookings, listSlots, rescheduleBooking, setBookingStatus,
+} from '../lib/booking'
 import { assignedStaff, listBranches } from '../lib/branch'
 
 /**
@@ -644,6 +646,88 @@ describe('listBookings', () => {
     })
     expect(await listBookings(ORG2, TEAM, DAY)).toEqual([])
     expect(await listBookings(ORG, TEAM2, DAY)).toEqual([])
+  })
+})
+
+describe('rescheduleBooking', () => {
+  const make = (at = '10:00', staff = STYLIST) => createBooking({
+    organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+    date: DAY, startsAt: `${DAY}T${at}`, staffUserId: staff,
+  })
+  const rowOf = async (id: string) => (await pool.query(
+    `select to_char(starts_at, 'HH24:MI') s, to_char(ends_at, 'HH24:MI') e,
+            staff_user_id, status, duration_minutes, price
+       from bookings where id = $1`, [id])).rows[0]
+
+  it('moves to a nearby time WITHOUT colliding with itself', async () => {
+    // The whole reason available_slots grew p_exclude_booking_id: a 60-minute
+    // booking at 10:00 overlaps 10:30, so without the exclusion its own row
+    // makes every nearby slot read as taken.
+    const id = await make('10:00')
+    await rescheduleBooking(id, ORG, { startsAt: `${DAY}T10:30` })
+    expect(await rowOf(id)).toMatchObject({ s: '10:30', e: '11:30' })
+  })
+
+  it('keeps the id, the status and the agreed terms', async () => {
+    const id = await make('10:00')
+    await pool.query(`update bookings set status = 'confirmed' where id = $1`, [id])
+    await pool.query(`update services set duration_minutes = 90, price = 999000
+                       where id = $1`, [SERVICE])
+
+    await rescheduleBooking(id, ORG, { startsAt: `${DAY}T14:00` })
+    const row = await rowOf(id)
+    // ends_at is recomputed from the STORED duration, not the service's
+    // current one -- a service that grew to 90 minutes must not silently
+    // lengthen an appointment agreed at 60 (engine spec 2.5).
+    expect(row).toMatchObject({
+      s: '14:00', e: '15:00', duration_minutes: 60, price: '150000',
+      status: 'confirmed',
+    })
+  })
+
+  it('moves to a different stylist', async () => {
+    await linkStylists(STYLIST, OTHER_STYLIST)
+    const id = await make('10:00')
+    await rescheduleBooking(id, ORG, { startsAt: `${DAY}T10:00`, staffUserId: OTHER_STYLIST })
+    expect((await rowOf(id)).staff_user_id).toBe(OTHER_STYLIST)
+  })
+
+  it('releases the time it left', async () => {
+    const id = await make('10:00')
+    await rescheduleBooking(id, ORG, { startsAt: `${DAY}T14:00` })
+    expect(await slots(STYLIST)).toContain('10:00')
+  })
+
+  it('refuses a time another booking already holds', async () => {
+    await make('10:00')
+    const second = await make('14:00')
+    await expect(rescheduleBooking(second, ORG, { startsAt: `${DAY}T10:00` }))
+      .rejects.toThrow('SLOT_TAKEN')
+    expect((await rowOf(second)).s, 'and leaves it where it was').toBe('14:00')
+  })
+
+  it('refuses a time off the grid, or outside working hours', async () => {
+    const id = await make('10:00')
+    await expect(rescheduleBooking(id, ORG, { startsAt: `${DAY}T10:15` }))
+      .rejects.toThrow('SLOT_TAKEN')
+    await expect(rescheduleBooking(id, ORG, { startsAt: `${DAY}T23:00` }))
+      .rejects.toThrow('SLOT_TAKEN')
+  })
+
+  it('refuses to move history -- completed, cancelled and no-show', async () => {
+    for (const status of ['completed', 'cancelled', 'no_show'] as const) {
+      await pool.query(`delete from bookings where organization_id = $1`, [ORG])
+      const id = await make('10:00')
+      await pool.query(`update bookings set status = $2 where id = $1`, [id, status])
+      await expect(rescheduleBooking(id, ORG, { startsAt: `${DAY}T14:00` }), status)
+        .rejects.toThrow('BAD_TRANSITION')
+    }
+  })
+
+  it('cannot reach a booking in another salon', async () => {
+    const id = await make('10:00')
+    await expect(rescheduleBooking(id, ORG2, { startsAt: `${DAY}T14:00` }))
+      .rejects.toThrow('NOT_FOUND')
   })
 })
 
