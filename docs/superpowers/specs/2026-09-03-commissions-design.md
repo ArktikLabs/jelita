@@ -25,7 +25,11 @@ A recap that is simply *there* is the demo beat.
 ### Out of scope
 
 - **Payroll** (§5.9, P2). This produces the number payroll consumes.
-- **Product commission.** No products yet; §5.4 lands next.
+- **Product commission — decided, not deferred.** Only services earn.
+  `commission_rule` is keyed by service, so a product line joins to nothing and
+  earns nothing even when it names a performer (asserted in
+  `tests/inventory.db.test.ts`). Salons that push retail often do pay on it;
+  this one does not, and that is the answer rather than an omission.
 - **Payout tracking.** Whether a commission has been *paid* is payroll's
   question, not this slice's.
 

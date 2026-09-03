@@ -329,6 +329,25 @@ describe('checkout', () => {
     })
   })
 
+  it('accepts a backdated completion, because a settled sale cannot be edited later', async () => {
+    // There is no second chance to set this: the immutability trigger refuses
+    // an update once the row is completed, so backdated entry has to say so up
+    // front. The demo seed writes three weeks of history through this.
+    const { id } = await sale({ completedAt: '2027-02-14 09:30' })
+    const { rows } = await pool.query(
+      `select to_char(completed_at, 'YYYY-MM-DD HH24:MI') t from transactions where id = $1`,
+      [id])
+    expect(rows[0].t).toBe('2027-02-14 09:30')
+  })
+
+  it('defaults completion to now when nothing says otherwise', async () => {
+    const { id } = await sale()
+    const { rows } = await pool.query(
+      `select (completed_at > now() - interval '1 minute') recent
+         from transactions where id = $1`, [id])
+    expect(rows[0].recent).toBe(true)
+  })
+
   it('never leaves an OPEN row behind -- the cart is not a row', async () => {
     await sale()
     const { rows } = await pool.query(

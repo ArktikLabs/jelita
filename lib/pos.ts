@@ -113,6 +113,14 @@ export async function checkout(input: {
   method: PaymentMethod
   /** Order-level discount, minor units. */
   discount?: number
+  /**
+   * When the sale completed. Defaults to now.
+   *
+   * Exists because a completed transaction is immutable (spec 2.1) -- there is
+   * no second chance to set this, so backdated entry has to say so up front.
+   * Used by the demo seed, and by a salon catching up on paper records.
+   */
+  completedAt?: string | null
 }): Promise<{ id: string; invoiceNo: number }> {
   if (input.items.length === 0) throw new Error('EMPTY_CART')
   const shiftId = await currentShift(input.organizationId, input.teamId, input.userId)
@@ -243,7 +251,10 @@ async function ring(
               ${total}, ${result.provider}, ${result.ref ?? null}, ${result.status})`)
 
     await tx.execute(sql`
-      update transactions set status = 'completed', completed_at = now(), updated_at = now()
+      update transactions
+         set status = 'completed',
+             completed_at = coalesce(${input.completedAt ?? null}::timestamptz, now()),
+             updated_at = now()
        where id = ${id}`)
 
     // The money is better proof of attendance than a front-desk click, so this
