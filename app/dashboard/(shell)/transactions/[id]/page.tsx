@@ -136,6 +136,12 @@ export default async function ReceiptPage({
           ))}
         </dl>
 
+        {sale.points !== null && (
+          <p className="text-center text-xs text-muted-foreground" data-testid="receipt-points">
+            Poin dari transaksi ini: {sale.points}
+          </p>
+        )}
+
         <p className="text-center text-xs text-muted-foreground">Terima kasih.</p>
       </article>
     </div>

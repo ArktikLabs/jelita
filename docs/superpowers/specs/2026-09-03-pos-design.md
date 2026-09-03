@@ -25,8 +25,9 @@ downstream is only as trustworthy as the immutability of the rows underneath.
 
 ### Out of scope
 
-- **Points.** Deferred with the member database (§5.7, P1). The seam is named
-  in §6; nothing is built.
+- **Points.** Built later, in
+  `docs/superpowers/specs/2026-09-03-points-design.md`. `checkout` writes them
+  beside commissions and stock.
 - **Stock deduction and commission records.** Same: seams, not stubs.
 - **Split payment.** The schema is one-row-per-payment so it costs nothing
   later; the UI takes one method per sale (PRD marks split P1).

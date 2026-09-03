@@ -4,6 +4,7 @@ import { ManualPayment, type PaymentMethod } from './payment'
 import { pgMentions } from './pg-error'
 import { writeCommissions } from './commission'
 import { moveStockForSale } from './inventory'
+import { writePoints } from './customer'
 
 /**
  * The sale.
@@ -242,6 +243,8 @@ async function ring(
     // Retail lines leave the shelf. Inside the same transaction, so a failure
     // anywhere leaves neither the sale nor the deduction behind.
     await moveStockForSale(tx, input.organizationId, input.teamId, id, input.userId)
+    // Points, from the total this transaction just wrote (PRD 5.7).
+    await writePoints(tx, input.organizationId, id)
 
     const result = await ManualPayment.record({ method: input.method, amount: total, currency })
     await tx.execute(sql`
@@ -266,9 +269,6 @@ async function ring(
          where id = ${input.bookingId} and organization_id = ${input.organizationId}
            and status in ('pending', 'confirmed')`)
     }
-
-    // Remaining seams, named rather than stubbed: stock deduction (PRD 5.4)
-    // and member points (5.7), each needing a table that does not exist yet.
 
     return { id, invoiceNo }
   })
@@ -350,6 +350,8 @@ async function reverse(
       select team_id from transactions where id = ${id}`)
     await moveStockForSale(
       tx, organizationId, (teamRows[0] as { team_id: string }).team_id, id, actorUserId)
+    // And the points come back off, from the reversal's negative total.
+    await writePoints(tx, organizationId, id)
 
     await tx.execute(sql`
       update transactions
@@ -435,6 +437,8 @@ export async function getSale(transactionId: string, organizationId: string) {
   const payments = await db.execute(sql`
     select method, amount from transaction_payments
      where transaction_id = ${transactionId} order by id`)
+  const earned = await db.execute(sql`
+    select points from customer_points where transaction_id = ${transactionId}`)
 
   return {
     ...toSale(r),
@@ -454,6 +458,10 @@ export async function getSale(transactionId: string, organizationId: string) {
       method: p.method as string,
       amount: Number(p.amount),
     })),
+    // Null when this sale earned none -- no customer, or no loyalty scheme.
+    points: earned.rows[0]
+      ? Number((earned.rows[0] as { points: number }).points)
+      : null,
   }
 }
 

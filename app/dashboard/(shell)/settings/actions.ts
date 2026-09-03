@@ -4,8 +4,9 @@ import { revalidatePath } from 'next/cache'
 import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
-import { isCurrencyCode } from '@/lib/money'
+import { isCurrencyCode, parseMoney } from '@/lib/money'
 import { imageType, logoKey, putObject } from '@/lib/storage'
+import { salonSettings } from '@/lib/service'
 import { type FormState } from '@/lib/form-state'
 
 /**
@@ -85,6 +86,33 @@ export async function setAutoCloseShiftAction(
      where organization_id = ${organizationId}`)
   revalidatePath('/dashboard/settings')
   revalidatePath('/dashboard/transactions')
+  return { done: true }
+}
+
+/**
+ * PRD §5.7's "Rp X spent = 1 point (configurable)".
+ *
+ * An EMPTY field turns points off, rather than storing zero: a salon not
+ * running a loyalty scheme should see no points at all, and zero would read as
+ * "you have earned nothing".
+ */
+export async function setPointsRateAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ settings: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const { currency } = await salonSettings(organizationId)
+
+  const raw = String(formData.get('pointsPerUnit') ?? '').trim()
+  const perUnit = raw === '' ? null : parseMoney(raw, currency)
+  if (raw !== '' && (perUnit === null || perUnit <= 0)) {
+    return { error: 'Nilai per poin harus lebih dari nol.' }
+  }
+
+  await db.execute(sql`
+    update salon_profiles set points_per_unit = ${perUnit}, updated_at = now()
+     where organization_id = ${organizationId}`)
+  revalidatePath('/dashboard/settings')
   return { done: true }
 }
 

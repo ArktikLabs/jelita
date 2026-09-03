@@ -197,6 +197,13 @@
       "when": 1788432947124,
       "tag": "0027_payroll_close",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1788442166069,
+      "tag": "0028_points",
+      "breakpoints": true
     }
   ]
 }

@@ -27,6 +27,13 @@ export const salonProfiles = pgTable('salon_profiles', {
   // OFF by default: closing is the act that locks the takings, and a salon
   // should opt into having that happen without anyone deciding it.
   autoCloseShift: boolean('auto_close_shift').notNull().default(false),
+  // PRD §5.7: "Rp X spent = 1 point (configurable)". This is X -- the divisor,
+  // so no float is needed anywhere.
+  //
+  // NULLABLE and null by default: a salon not running a loyalty scheme should
+  // see no points at all, not a zero balance. Zero reads as "you have earned
+  // nothing"; absence reads as "we do not do this".
+  pointsPerUnit: integer('points_per_unit'),
   // Commission (PRD 5.3). Resolved salon -> service -> service_staff by the
   // commission_rule view, the same coalesce shape service_branch_pricing uses
   // for price. `percent` is BASIS POINTS so 12.5% is exact and there is one

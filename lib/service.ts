@@ -85,6 +85,7 @@ export async function salonCurrency(organizationId: string): Promise<CurrencyCod
 export async function salonSettings(organizationId: string) {
   const { rows } = await db.execute(sql`
     select currency, slot_minutes, logo_key, brand_color, auto_close_shift,
+           points_per_unit,
            to_char(logo_updated_at, 'YYYYMMDDHH24MISS') as logo_version
       from salon_profiles where organization_id = ${organizationId}`)
   const r = rows[0] as Record<string, unknown> | undefined
@@ -97,6 +98,10 @@ export async function salonSettings(organizationId: string) {
     logoVersion: (r?.logo_version as string) ?? '',
     brandColor: (r?.brand_color as string) ?? null,
     autoCloseShift: Boolean(r?.auto_close_shift),
+    // Null means the salon runs no loyalty scheme -- distinct from zero.
+    pointsPerUnit: r?.points_per_unit === null || r?.points_per_unit === undefined
+      ? null
+      : Number(r.points_per_unit),
   }
 }
 

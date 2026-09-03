@@ -3,7 +3,7 @@ import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { checkout, closeShift, currentShift, voidSale } from '../lib/pos'
 import { commissionFor, commissionRecap } from '../lib/commission'
-import { customerProfile } from '../lib/customer'
+import { customerProfile, pointsBalance, pointsFor } from '../lib/customer'
 
 /**
  * The POS ledger's guarantees, asserted against real Postgres.
@@ -861,5 +861,113 @@ describe('the member profile (PRD 5.7)', () => {
     const p = await customerProfile(CUSTOMER, ORG2)
     expect(p.spend).toBe(0)
     expect(p.visitHistory).toEqual([])
+  })
+})
+
+describe('member points (PRD 5.7)', () => {
+  const STAFF = 'pos_stylist'
+
+  const setRate = (perUnit: number | null) => pool.query(
+    `update salon_profiles set points_per_unit = $2 where organization_id = $1`,
+    [ORG, perUnit])
+
+  const sell = (discount = 0, customerId: string | null = CUSTOMER) => checkout({
+    organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
+    items: [{ serviceId: SERVICE, quantity: 1, discount }],
+    customerId,
+  })
+
+  const balance = () => pointsBalance(CUSTOMER, ORG)
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+    await pool.query(`update salon_profiles set commission_kind = null,
+                       commission_value = null, points_per_unit = null
+                       where organization_id = $1`, [ORG])
+    await pool.query(`update services set price = 150000 where id = $1`, [SERVICE])
+    await pool.query(`delete from service_branch_overrides where service_id = $1`, [SERVICE])
+  })
+
+  it('earns nothing at all when no rate is configured', async () => {
+    await sell()
+    expect(await balance()).toBe(0)
+    const { rows } = await pool.query(
+      `select count(*)::int n from customer_points where organization_id = $1`, [ORG])
+    expect(rows[0].n, 'absence, not a zero row').toBe(0)
+  })
+
+  it('earns one point per configured unit', async () => {
+    await setRate(10000)
+    await sell()
+    expect(await balance()).toBe(15)
+  })
+
+  it('earns on the total AFTER discount -- what was actually spent', async () => {
+    await setRate(10000)
+    await sell(50000)
+    expect(await balance()).toBe(10)
+  })
+
+  it('floors a partial point rather than rounding it up', async () => {
+    await setRate(10000)
+    await pool.query(`update services set price = 155000 where id = $1`, [SERVICE])
+    await sell()
+    expect(await balance(), 'part of a point is not a point').toBe(15)
+  })
+
+  it('gives back EXACTLY what the sale earned when voided', async () => {
+    // The asymmetric-floor case: floor(-15.5) is -16 while the sale earned 15,
+    // so a naive void takes back one point too many.
+    await setRate(10000)
+    await pool.query(`update services set price = 155000 where id = $1`, [SERVICE])
+    const { id } = await sell()
+    expect(await balance()).toBe(15)
+    await voidSale(id, ORG, STAFF)
+    expect(await balance(), 'the balance returns to zero, not to -1').toBe(0)
+  })
+
+  it('writes nothing for a sale with no customer', async () => {
+    await setRate(10000)
+    await sell(0, null)
+    const { rows } = await pool.query(
+      `select count(*)::int n from customer_points where organization_id = $1`, [ORG])
+    expect(rows[0].n).toBe(0)
+  })
+
+  it('refuses to change points once the sale is settled', async () => {
+    await setRate(10000)
+    const { id } = await sell()
+    await expect(pool.query(
+      `update customer_points set points = 999 where transaction_id = $1`, [id]))
+      .rejects.toThrow(/settled; its lines cannot change/)
+  })
+
+  it('refuses a rate of zero or less', async () => {
+    for (const bad of [0, -1]) {
+      await expect(setRate(bad), String(bad))
+        .rejects.toThrow(/salon_profiles_points_per_unit/)
+    }
+  })
+
+  it('never counts another salon\'s balance', async () => {
+    await setRate(10000)
+    await sell()
+    expect(await pointsBalance(CUSTOMER, ORG2)).toBe(0)
+  })
+})
+
+describe('pointsFor', () => {
+  it('is symmetric, so a void returns exactly what the sale gave', () => {
+    // floor(-15.5) is -16 in JavaScript; taking the sign out first is what
+    // keeps the pair at zero. Same trap commissionFor's rounding hit.
+    expect(pointsFor(155000, 10000)).toBe(15)
+    expect(pointsFor(-155000, 10000)).toBe(-15)
+    expect(pointsFor(155000, 10000) + pointsFor(-155000, 10000)).toBe(0)
+  })
+
+  it('earns nothing without a rate', () => {
+    expect(pointsFor(150000, null)).toBe(0)
+    expect(pointsFor(150000, 0)).toBe(0)
   })
 })

@@ -2,7 +2,8 @@
 
 import { useActionState } from 'react'
 import {
-  setAutoCloseShiftAction, setBrandingAction, setCurrencyAction, setSlotMinutesAction,
+  setAutoCloseShiftAction, setBrandingAction, setCurrencyAction, setPointsRateAction,
+  setSlotMinutesAction,
 } from './actions'
 import type { FormState } from '@/lib/form-state'
 import { SUPPORTED_CURRENCIES, type CurrencyCode } from '@/lib/money'
@@ -259,6 +260,49 @@ export function ShiftCard({ autoCloseShift }: { autoCloseShift: boolean }) {
           </p>
           <Button type="submit" variant="outline" disabled={pending}>
             {pending ? 'Menyimpan…' : 'Simpan pengaturan shift'}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * PRD §5.7's points rule. Empty turns it off -- null is "we do not do this",
+ * which is a different statement from a zero balance.
+ */
+export function PointsCard({ pointsPerUnit }: { pointsPerUnit: string }) {
+  const [state, action, pending] = useActionState(setPointsRateAction, initial)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Poin pelanggan</CardTitle>
+        <CardDescription>
+          Setiap belanja sebesar nilai ini menghasilkan satu poin. Kosongkan kalau
+          salon tidak memakai poin.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form action={action} className="space-y-3">
+          {state.error && (
+            <Alert variant="destructive"><AlertDescription>{state.error}</AlertDescription></Alert>
+          )}
+          {state.done && (
+            <Alert><AlertDescription>Aturan poin disimpan.</AlertDescription></Alert>
+          )}
+          <div className="space-y-2">
+            <Label htmlFor="pointsPerUnit">Belanja per 1 poin</Label>
+            <input
+              id="pointsPerUnit"
+              name="pointsPerUnit"
+              defaultValue={pointsPerUnit}
+              placeholder="10.000"
+              className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
+            />
+          </div>
+          <Button type="submit" variant="outline" disabled={pending}>
+            {pending ? 'Menyimpan…' : 'Simpan aturan poin'}
           </Button>
         </form>
       </CardContent>

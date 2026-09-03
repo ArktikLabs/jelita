@@ -42,10 +42,15 @@ export default async function CustomerDetailPage({
         </Link>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-4">
         <Stat label="Total belanja" value={formatMoney(profile.spend, currency)} />
         <Stat label="Kunjungan" value={String(profile.visits)} />
         <Stat label="Terakhir" value={profile.lastVisit ?? '—'} />
+        {/* Left out entirely when the salon runs no loyalty scheme -- a zero
+            balance would read as "you have earned nothing". */}
+        {profile.points !== null && (
+          <Stat label="Poin" value={String(profile.points)} />
+        )}
       </div>
 
       {profile.upcoming.length > 0 && (

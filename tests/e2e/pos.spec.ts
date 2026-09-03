@@ -415,6 +415,70 @@ test.describe.serial('the member profile', () => {
   })
 })
 
+test.describe.serial('member points', () => {
+  test.beforeEach(async () => {
+    await pool.query(`update salon_profiles set points_per_unit = null
+                       where organization_id = $1`, [orgId])
+  })
+
+  test('are absent entirely until a rate is set, then appear', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+    // No scheme, so the receipt says nothing about points at all -- not zero.
+    await expect(page.getByTestId('receipt-points')).toHaveCount(0)
+
+    const { rows } = await pool.query(
+      `select customer_id from transactions where organization_id = $1`, [orgId])
+    await page.goto(`/dashboard/customers/${rows[0].customer_id}`)
+    await expect(page.getByTestId('stat-Poin')).toHaveCount(0)
+
+    await page.goto('/dashboard/settings')
+    await page.locator('#pointsPerUnit').fill('10.000')
+    await page.getByRole('button', { name: 'Simpan aturan poin' }).click()
+    await expect(page.getByText('Aturan poin disimpan.')).toBeVisible()
+
+    // The earlier sale earned nothing -- points are recorded at checkout, not
+    // computed on read, so turning the scheme on is not retroactive.
+    await page.goto(`/dashboard/customers/${rows[0].customer_id}`)
+    await expect(page.getByTestId('stat-Poin')).toHaveText('0')
+  })
+
+  test('a sale earns them, the receipt shows them, and a void gives them back', async ({ page }) => {
+    await pool.query(`update salon_profiles set points_per_unit = 10000
+                       where organization_id = $1`, [orgId])
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+    // 150.000 at 10.000 per point.
+    await expect(page.getByTestId('receipt-points')).toContainText('15')
+
+    const { rows } = await pool.query(
+      `select customer_id from transactions where organization_id = $1
+        and reverses_id is null`, [orgId])
+    await page.goto(`/dashboard/customers/${rows[0].customer_id}`)
+    await expect(page.getByTestId('stat-Poin')).toHaveText('15')
+
+    await page.goto(`/dashboard/transactions?date=${todayIso()}`)
+    await page.getByRole('button', { name: 'Batalkan' }).click()
+    await expect(page.getByText('Pembatalan')).toBeVisible()
+
+    await page.goto(`/dashboard/customers/${rows[0].customer_id}`)
+    await expect(page.getByTestId('stat-Poin'),
+      'the void returns exactly what the sale gave').toHaveText('0')
+  })
+
+  test('refuses a rate of zero', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/settings')
+    await page.locator('#pointsPerUnit').fill('0')
+    await page.getByRole('button', { name: 'Simpan aturan poin' }).click()
+    await expect(page.getByText('Nilai per poin harus lebih dari nol.')).toBeVisible()
+  })
+})
+
 test.describe.serial('branding', () => {
   test('an SVG is refused, and a PNG is accepted and served', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())

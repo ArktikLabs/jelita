@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
 import { normalizePhone } from './phone'
+import { roundHalfUp } from './commission'
 
 export type CustomerRow = {
   id: string
@@ -149,7 +150,16 @@ export async function customerProfile(customerId: string, organizationId: string
      order by b.starts_at
      limit 10`)
 
+  const points = await pointsBalance(customerId, organizationId)
+  const { rows: rate } = await db.execute(sql`
+    select points_per_unit from salon_profiles where organization_id = ${organizationId}`)
+
   return {
+    // Null when the salon runs no loyalty scheme, so the profile can leave
+    // points out entirely rather than showing a zero balance.
+    points: (rate[0] as { points_per_unit: number | null })?.points_per_unit === null
+      ? null
+      : points,
     spend: Number(s.spend),
     // Reversals are excluded from the COUNT but not from the sum: a voided
     // sale was not a visit, yet its money must still come back off the total.
@@ -173,4 +183,67 @@ export async function customerProfile(customerId: string, organizationId: string
       status: r.status as string,
     })) satisfies CustomerBooking[],
   }
+}
+
+/**
+ * Points for one sale's total (PRD §5.7).
+ *
+ * FLOORED, because part of a point is not a point -- and SYMMETRIC around
+ * zero, which is the bit that bites: a reversal's total is negative, and
+ * `Math.floor(-15.5)` is -16 while the sale earned 15, so a void would take
+ * back one more point than it gave. Sign out, magnitude floored, sign back.
+ *
+ * The same trap commissionFor's rounding hit, which is why the sign handling
+ * lives beside it rather than being re-derived here.
+ */
+export function pointsFor(total: number, perUnit: number | null): number {
+  if (!perUnit || perUnit <= 0) return 0
+  return Math.sign(total) * Math.floor(Math.abs(total) / perUnit)
+}
+
+/**
+ * Write the points row for one transaction, inside the sale's own database
+ * transaction.
+ *
+ * A sale with no customer earns NOTHING -- no row, not a zero row. §5.7 keys
+ * members by WhatsApp number, and a walk-in who gave no number is not a member
+ * yet. That is the cost of making the customer optional at the POS.
+ */
+export async function writePoints(
+  tx: { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: unknown[] }> },
+  organizationId: string,
+  transactionId: string,
+): Promise<void> {
+  // The SIGN comes from `reverses_id`, not from `total`. A reversal is built
+  // with POSITIVE amounts and negated by the statement that settles it -- so
+  // reading total here, before that statement runs, would have a void ADDING
+  // points instead of giving them back. Same reason moveStockForSale reads the
+  // direction the same way.
+  const { rows } = await tx.execute(sql`
+    select t.customer_id, p.points_per_unit,
+           case when t.reverses_id is null then t.total else -t.total end as total
+      from transactions t
+      join salon_profiles p on p.organization_id = t.organization_id
+     where t.id = ${transactionId} and t.customer_id is not null`)
+  const r = rows[0] as Record<string, unknown> | undefined
+  if (!r) return
+
+  const points = pointsFor(Number(r.total), r.points_per_unit as number | null)
+  // A zero-point row records nothing, and the check constraint refuses it.
+  if (points === 0) return
+
+  await tx.execute(sql`
+    insert into customer_points (id, organization_id, customer_id, transaction_id, points)
+    values (${crypto.randomUUID()}, ${organizationId}, ${r.customer_id as string},
+            ${transactionId}, ${points})`)
+}
+
+/** The balance, summed from the ledger. */
+export async function pointsBalance(
+  customerId: string, organizationId: string,
+): Promise<number> {
+  const { rows } = await db.execute(sql`
+    select coalesce(sum(points), 0)::bigint as balance from customer_points
+     where organization_id = ${organizationId} and customer_id = ${customerId}`)
+  return Number((rows[0] as { balance: string }).balance)
 }
