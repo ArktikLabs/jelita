@@ -10,6 +10,13 @@ import { RoleForm, TransferForm, StatusForm, PasswordForm } from './staff-detail
 import {
   ScheduleExceptionsForm, StaffScheduleForm, TimeOffForm,
 } from './schedule-forms'
+import { BaseSalaryForm } from '../../payroll/base-salary-form'
+import { toAmountInput } from '@/lib/money'
+import { auth } from '@/lib/auth'
+import { headers } from 'next/headers'
+import { salonSettings } from '@/lib/service'
+import { db } from '@/lib/db'
+import { sql } from 'drizzle-orm'
 
 // Mirrors actions.ts's NEEDS_BRANCH -- duplicated, not imported, since that
 // file is 'use server' and only its async actions can cross into this page.
@@ -56,6 +63,19 @@ export default async function StaffDetailPage({
   // offered. The server refuses the deactivation regardless.
   const isSelf = staff.userId === actor.user.id
 
+  // Base salary is a PAYROLL fact, guarded by payroll:['read'] rather than
+  // staff:['update']: a role that may move a stylist between branches need
+  // not be able to change what they are paid.
+  const { success: canSeePay } = await auth.api.hasPermission({
+    headers: await headers(),
+    body: { permissions: { payroll: ['read'] } },
+  })
+  const { currency } = await salonSettings(organizationId)
+  const { rows: payRows } = await db.execute(sql`
+    select base_salary from staff_profiles
+     where user_id = ${staff.userId} and organization_id = ${organizationId}`)
+  const baseSalary = (payRows[0] as { base_salary: string | null }).base_salary
+
   return (
     <div className="mx-auto max-w-lg space-y-6">
       <Card>
@@ -88,6 +108,23 @@ export default async function StaffDetailPage({
           <TransferForm staff={staff} branches={branchOptions} needsBranch={needsBranch} />
         </CardContent>
       </Card>
+
+      {canSeePay && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Gaji pokok</CardTitle>
+            <CardDescription>
+              Dipakai di rekap penggajian bersama komisi dan potongan.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <BaseSalaryForm
+              userId={staff.userId}
+              baseSalary={baseSalary === null ? '' : toAmountInput(Number(baseSalary), currency)}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {!isSelf && (
         <Card>

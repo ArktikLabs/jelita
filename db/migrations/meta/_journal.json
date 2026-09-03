@@ -169,6 +169,13 @@
       "when": 1788418879285,
       "tag": "0023_shift_auto_close",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788428449742,
+      "tag": "0024_payroll",
+      "breakpoints": true
     }
   ]
 }
