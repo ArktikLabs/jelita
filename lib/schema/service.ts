@@ -23,6 +23,10 @@ export const salonProfiles = pgTable('salon_profiles', {
   // is one statement and therefore serialises per salon without an explicit
   // lock -- two sales cannot be handed the same number.
   nextInvoiceNo: integer('next_invoice_no').notNull().default(1),
+  // Whether the first sale of a new day closes yesterday's till session.
+  // OFF by default: closing is the act that locks the takings, and a salon
+  // should opt into having that happen without anyone deciding it.
+  autoCloseShift: boolean('auto_close_shift').notNull().default(false),
   // Commission (PRD 5.3). Resolved salon -> service -> service_staff by the
   // commission_rule view, the same coalesce shape service_branch_pricing uses
   // for price. `percent` is BASIS POINTS so 12.5% is exact and there is one

@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { salonSettings, listServices } from '@/lib/service'
-import { BrandingCard, CurrencyCard, SlotGridCard } from './settings-forms'
+import { BrandingCard, CurrencyCard, ShiftCard, SlotGridCard } from './settings-forms'
 
 /**
  * Salon-wide settings. Guarded by settings:['update'] -- owner and admin
@@ -25,6 +25,7 @@ export default async function SettingsPage() {
       <h1 className="text-xl font-medium">Pengaturan</h1>
       <CurrencyCard currency={currency} hasServices={services.length > 0} />
       <SlotGridCard slotMinutes={slotMinutes} />
+      <ShiftCard autoCloseShift={salon.autoCloseShift} />
       <BrandingCard
         slug={slug}
         hasLogo={salon.hasLogo}

@@ -1,7 +1,9 @@
 'use client'
 
 import { useActionState } from 'react'
-import { setBrandingAction, setCurrencyAction, setSlotMinutesAction } from './actions'
+import {
+  setAutoCloseShiftAction, setBrandingAction, setCurrencyAction, setSlotMinutesAction,
+} from './actions'
 import type { FormState } from '@/lib/form-state'
 import { SUPPORTED_CURRENCIES, type CurrencyCode } from '@/lib/money'
 import { Button } from '@/components/ui/button'
@@ -210,6 +212,53 @@ export function BrandingCard({
           </div>
           <Button type="submit" variant="outline" disabled={pending}>
             {pending ? 'Menyimpan…' : 'Simpan tampilan'}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * PRD has no shift concept; this exists because voiding is bounded by one
+ * (POS spec §2.7). Manual by default -- see setAutoCloseShiftAction.
+ */
+export function ShiftCard({ autoCloseShift }: { autoCloseShift: boolean }) {
+  const [state, action, pending] = useActionState(setAutoCloseShiftAction, initial)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Shift kasir</CardTitle>
+        <CardDescription>
+          Transaksi bisa dibatalkan selama shift-nya masih terbuka. Menutup shift
+          mengunci pemasukannya.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form action={action} className="space-y-3">
+          {state.error && (
+            <Alert variant="destructive"><AlertDescription>{state.error}</AlertDescription></Alert>
+          )}
+          {state.done && (
+            <Alert><AlertDescription>Pengaturan shift disimpan.</AlertDescription></Alert>
+          )}
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              id="autoCloseShift"
+              type="checkbox"
+              name="autoCloseShift"
+              value="1"
+              defaultChecked={autoCloseShift}
+            />
+            Tutup shift kemarin otomatis saat transaksi pertama hari ini
+          </label>
+          <p className="text-xs text-muted-foreground">
+            Kalau dimatikan, shift hanya tertutup saat ditutup manual — dan transaksi
+            kemarin masih bisa dibatalkan.
+          </p>
+          <Button type="submit" variant="outline" disabled={pending}>
+            {pending ? 'Menyimpan…' : 'Simpan pengaturan shift'}
           </Button>
         </form>
       </CardContent>

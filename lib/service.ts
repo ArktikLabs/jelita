@@ -84,7 +84,7 @@ export async function salonCurrency(organizationId: string): Promise<CurrencyCod
  *  receipt and public page that render the branding. */
 export async function salonSettings(organizationId: string) {
   const { rows } = await db.execute(sql`
-    select currency, slot_minutes, logo_key, brand_color,
+    select currency, slot_minutes, logo_key, brand_color, auto_close_shift,
            to_char(logo_updated_at, 'YYYYMMDDHH24MISS') as logo_version
       from salon_profiles where organization_id = ${organizationId}`)
   const r = rows[0] as Record<string, unknown> | undefined
@@ -96,6 +96,7 @@ export async function salonSettings(organizationId: string) {
     // what lets that route cache immutably.
     logoVersion: (r?.logo_version as string) ?? '',
     brandColor: (r?.brand_color as string) ?? null,
+    autoCloseShift: Boolean(r?.auto_close_shift),
   }
 }
 

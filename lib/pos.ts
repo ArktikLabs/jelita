@@ -41,6 +41,16 @@ export type CartItem = {
  * button is the worst failure a POS can have. Closing stays explicit, because
  * closing is the act that locks the takings.
  *
+ * CLOSING is opt-in per salon (`auto_close_shift`, off by default). With it on,
+ * the first sale of a new day closes yesterday's session -- which is what makes
+ * "void until the shift ends" true without depending on anyone remembering.
+ * Left off, a shift nobody closes stays open and yesterday's sales stay
+ * voidable, which is the salon's choice to make rather than ours.
+ *
+ * The automatic close records NO closer. Attributing it to whoever happened to
+ * ring up the first sale of the next day would put a name on a decision they
+ * did not make.
+ *
  * `on conflict do nothing` against the one-open-shift-per-branch index, then
  * re-read: two concurrent first-sales settle on one shift rather than one of
  * them erroring, the same shape findOrCreateByPhone uses.
@@ -48,6 +58,19 @@ export type CartItem = {
 export async function currentShift(
   organizationId: string, teamId: string, userId: string,
 ): Promise<string> {
+  // Day boundaries are the server's, matching every other wall-clock time in
+  // the product (booking spec 2.6): the salon and its customers are in one
+  // timezone.
+  const stale = await db.execute(sql`
+    update shifts s set closed_at = now()
+      from salon_profiles p
+     where s.team_id = ${teamId} and s.closed_at is null
+       and p.organization_id = s.organization_id
+       and p.auto_close_shift
+       and s.opened_at::date < current_date
+    returning s.id`)
+  void stale
+
   const open = await db.execute(sql`
     select id from shifts where team_id = ${teamId} and closed_at is null`)
   if (open.rows[0]) return (open.rows[0] as { id: string }).id

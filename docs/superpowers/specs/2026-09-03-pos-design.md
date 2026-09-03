@@ -140,6 +140,19 @@ will go. No cash counting in the MVP — this is a boundary, not a drawer.
 two concurrent first-sales cannot split the day across two windows that both
 look current.
 
+**Closing can be automatic, and is not by default.** `auto_close_shift` on
+`salon_profiles`: with it on, the first sale of a new day closes yesterday's
+session, which is what makes "void until the shift ends" true without
+depending on anyone remembering. Off, a shift nobody closes stays open and
+yesterday's sales stay voidable — the salon's choice to make rather than ours,
+since closing is the act that locks the takings.
+
+An automatic close records **no closer**. Attributing it to whoever happened to
+ring up the first sale of the next day would put a name on a decision they did
+not make, so `shifts_closed_pair` (both-or-neither) was replaced by
+`shifts_closer_needs_close`: you cannot have a closer without a close, but a
+close needs no closer.
+
 **A reversal is built `open` and settled at the end**, exactly as a sale is.
 Not written straight to `reversal`: the line trigger refuses writes whose
 parent is past `open`, so a reversal born settled could never be given its own

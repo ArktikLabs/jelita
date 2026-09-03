@@ -688,3 +688,86 @@ describe('commissionFor', () => {
       .toBe(0)
   })
 })
+
+describe('automatic shift close', () => {
+  const STAFF = 'pos_stylist'
+
+  const sell = () => checkout({
+    organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
+    items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+  })
+
+  /** Backdate the open shift, so "yesterday" needs no waiting. */
+  const backdateOpenShift = () => pool.query(
+    `update shifts set opened_at = now() - interval '2 days'
+      where team_id = $1 and closed_at is null`, [TEAM])
+
+  const openShifts = async () => (await pool.query(
+    `select id, closed_by, closed_at from shifts where team_id = $1 and closed_at is null`,
+    [TEAM])).rows
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+    await pool.query(`update salon_profiles set auto_close_shift = false,
+                       commission_kind = null, commission_value = null
+                       where organization_id = $1`, [ORG])
+    await pool.query(`delete from service_branch_overrides where service_id = $1`, [SERVICE])
+    await pool.query(`update services set price = 150000 where id = $1`, [SERVICE])
+  })
+
+  it('is OFF by default: yesterday\'s shift stays open and its sales stay voidable', async () => {
+    const first = await sell()
+    await backdateOpenShift()
+    await sell()
+
+    expect(await openShifts(), 'one shift, still yesterday\'s').toHaveLength(1)
+    // Which is the point of leaving it off: the guarantee is only as good as
+    // the habit, and that is the salon's choice to make.
+    await expect(voidSale(first.id, ORG)).resolves.toBeTruthy()
+  })
+
+  it('closes yesterday\'s shift on the first sale of a new day when switched on', async () => {
+    const first = await sell()
+    await backdateOpenShift()
+    await pool.query(`update salon_profiles set auto_close_shift = true
+                       where organization_id = $1`, [ORG])
+    await sell()
+
+    const closed = await pool.query(
+      `select closed_at, closed_by from shifts where team_id = $1 and closed_at is not null`,
+      [TEAM])
+    expect(closed.rows).toHaveLength(1)
+    // No closer: attributing it to whoever rang up the first sale of the next
+    // day would put a name on a decision they did not make.
+    expect(closed.rows[0].closed_by).toBeNull()
+    expect(await openShifts(), 'and a fresh one is open').toHaveLength(1)
+
+    await expect(voidSale(first.id, ORG), 'yesterday is locked')
+      .rejects.toThrow('SHIFT_CLOSED')
+  })
+
+  it('does not close a shift opened TODAY, even when switched on', async () => {
+    await pool.query(`update salon_profiles set auto_close_shift = true
+                       where organization_id = $1`, [ORG])
+    const first = await sell()
+    await sell()
+    expect(await openShifts(), 'the day is not over').toHaveLength(1)
+    await expect(voidSale(first.id, ORG)).resolves.toBeTruthy()
+  })
+
+  it('lets a close record no closer at all, which the old constraint forbade', async () => {
+    await sell()
+    const [open] = await openShifts()
+    await expect(pool.query(
+      `update shifts set closed_at = now() where id = $1`, [open.id])).resolves.toBeTruthy()
+  })
+
+  it('still refuses a closer with no close', async () => {
+    await sell()
+    const [open] = await openShifts()
+    await expect(pool.query(
+      `update shifts set closed_by = $2 where id = $1`, [open.id, STAFF]))
+      .rejects.toThrow(/shifts_closer_needs_close/)
+  })
+})

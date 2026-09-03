@@ -68,6 +68,26 @@ export async function setCurrencyAction(
  */
 const SLOT_CHOICES = [15, 20, 30, 45, 60]
 
+/**
+ * Whether the first sale of a new day closes yesterday's till session.
+ *
+ * Off by default and opt-in: closing is what locks the takings, so a salon
+ * should choose to have it happen without anyone deciding it.
+ */
+export async function setAutoCloseShiftAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ settings: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const on = formData.get('autoCloseShift') === '1'
+  await db.execute(sql`
+    update salon_profiles set auto_close_shift = ${on}, updated_at = now()
+     where organization_id = ${organizationId}`)
+  revalidatePath('/dashboard/settings')
+  revalidatePath('/dashboard/transactions')
+  return { done: true }
+}
+
 export async function setSlotMinutesAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {

@@ -162,6 +162,13 @@
       "when": 1788418878285,
       "tag": "0022_inventory",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1788418879285,
+      "tag": "0023_shift_auto_close",
+      "breakpoints": true
     }
   ]
 }
