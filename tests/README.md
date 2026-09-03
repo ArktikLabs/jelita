@@ -98,36 +98,51 @@ restore, watch it pass.
 **The break has to compile.** An edit that fails the build fails the run
 without exercising the assertion at all, and proves nothing.
 
-## One assertion carries no break-and-restore evidence
+## Every assertion now carries break-and-restore evidence
 
-Both were migrated from the retired `staff-check.mjs`, and the sandbox's tool
-classifier refuses edits that weaken a security or concurrency guard — so
-neither the migration nor a later attempt could run the suite against a
-deliberately broken version. Recorded here rather than left implied.
+This section used to list two that did not. Both are closed.
 
 **The privilege-escalation allow-list** (`ASSIGNABLE_ROLES`,
-`app/dashboard/(shell)/staff/actions.ts`). It stops `role=owner` from minting a second
-owner — an admin holds `staff:['create']`, so without it an admin could grant
-themselves org-deletion rights. The migrated assertion is written in the right
-shape: it checks the **member row count**, not merely that an error came back,
-because code can refuse a response after already writing the row. But nobody
-has watched it fail.
+`lib/permissions.ts`). It stops `role=owner` from minting a second owner — an
+admin holds `staff:['create']`, so without it an admin could grant themselves
+org-deletion rights. The break had never been run, because the sandbox used to
+refuse edits weakening a security guard. It runs now: adding `'owner'` back to
+the list fails exactly two assertions in `tests/e2e/staff.spec.ts`, both on the
+**member row count** rather than a status code — the JSON route and the form.
 
-**Closed:** the ownerless-salon guarantee moved into the database (migration
-0025, `refuse_ownerless_salon`) and now has four breaks of its own in
-`tests/owner-guard.db.test.ts` — removing the trigger, making it non-deferred,
-dropping the `staff_profiles` half, and dropping the organization-existence
-check each fail a distinct assertion. `deactivateStaffAction`'s
-`for update of s, m` lock is now the friendly half rather than the guarantee.
+**The ownerless-salon guarantee** moved into the database (migration 0025,
+`refuse_ownerless_salon`) and has four breaks of its own in
+`tests/owner-guard.db.test.ts`: removing the trigger, making it non-deferred,
+dropping the `staff_profiles` half, and dropping the organization lookup each
+fail a distinct assertion. `deactivateStaffAction`'s `for update of s, m` lock
+is now the friendly half rather than the guarantee.
 
-**Also closed:** demote-versus-demote, which was a known accepted gap. The same
-trigger refuses it. Worth reading if you ever write one: **deferring the check
-was not enough.** A deferred trigger takes its snapshot while the transaction
-is committing, so two commits at the same instant each still saw the other's
-owner and both passed. The trigger takes `for update` on the organization row
-first, which gives them something to contend on. The version without the lock
-fails the race assertion on every run.
+**Also closed:** demote-versus-demote, previously a known accepted gap.
 
+## Concurrency tests are the easiest to write wrong
+
+Four assertions in this project have "passed" against a deliberately broken
+guard, because they serialised by accident rather than by the thing under test:
+
+| Shape | Why it proves nothing |
+|---|---|
+| `insert().then(commit)` on both connections | the first finishes entirely before the second starts |
+| `allSettled` on both inserts, commit after | deadlocks when the second blocks on the first's lock |
+| act on A, issue B, commit A | A's commit can land before B's statement reaches the server |
+| two `createBooking` calls at once | their queries interleave and the second reads the first's row |
+
+And one that looked like a fix but was not: **deferring a constraint trigger
+is not serialisation.** A deferred trigger takes its snapshot while the
+transaction is committing, so two commits at the same instant each still see
+the other's pre-change state. Both migration 0025 and 0026 take `for update`
+on the organization row first, which is what actually makes them contend.
+
+What works: **hold the contended state open deliberately** — an uncommitted
+row, or a lock — poll `pg_stat_activity` until the other side is provably
+waiting, then release. And assert the OUTCOME that differs (a seat count, a
+stylist id), never which promise rejected.
+
+Run a concurrency break three times before believing it.
 
 ## One guard is redundant, and its test asserts the coupling instead
 
