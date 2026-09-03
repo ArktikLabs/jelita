@@ -12,10 +12,18 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 
 const initial: FormState = {}
 
-type Offer = { serviceId: string; name: string; price: number; currency: string }
+type Offer = {
+  /** A service id or a product id -- the cart does not care which until it
+   *  posts, and `isProduct` is what decides the field it lands in. */
+  id: string
+  name: string
+  price: number
+  isProduct: boolean
+}
 type Performer = { userId: string; name: string }
 type Item = {
-  serviceId: string; name: string; price: number; quantity: number; discount: number
+  id: string; isProduct: boolean; name: string; price: number
+  quantity: number; discount: number
   /** Who performed it. Drives the commission record; empty earns nothing,
    *  which is legitimate for a sale nobody worked on. */
   staffUserId: string
@@ -48,14 +56,15 @@ export function Cart({
   const [items, setItems] = useState<Item[]>(prefill.items)
   const [discount, setDiscount] = useState(0)
 
-  const add = (serviceId: string) => {
-    const o = offers.find((x) => x.serviceId === serviceId)
+  const add = (id: string) => {
+    const o = offers.find((x) => x.id === id)
     if (!o) return
     setItems((cur) => {
-      const at = cur.findIndex((i) => i.serviceId === serviceId)
+      const at = cur.findIndex((i) => i.id === id)
       if (at < 0) {
         return [...cur, {
-          serviceId, name: o.name, price: o.price, quantity: 1, discount: 0, staffUserId: '',
+          id, isProduct: o.isProduct, name: o.name, price: o.price,
+          quantity: 1, discount: 0, staffUserId: '',
         }]
       }
       return cur.map((i, n) => (n === at ? { ...i, quantity: i.quantity + 1 } : i))
@@ -78,7 +87,15 @@ export function Cart({
         type="hidden"
         name="items"
         value={JSON.stringify(items.map((i) => ({
-          serviceId: i.serviceId, quantity: i.quantity, discount: i.discount,
+          serviceId: i.isProduct ? null : i.id,
+          productId: i.isProduct ? i.id : null,
+          quantity: i.quantity,
+          discount: i.discount,
+          // Products never get a performer select above, so this is already
+          // empty for them -- and a `isProduct ? null : ...` here would be a
+          // guard nothing could falsify. What actually makes retail earn
+          // nothing is that commission_rule is keyed by service, asserted in
+          // tests/inventory.db.test.ts.
           staffUserId: i.staffUserId || null,
         })))}
       />
@@ -98,10 +115,10 @@ export function Cart({
           onChange={(e) => add(e.target.value)}
           className="flex h-9 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
         >
-          <option value="">Pilih layanan…</option>
+          <option value="">Pilih layanan atau produk…</option>
           {offers.map((o) => (
-            <option key={o.serviceId} value={o.serviceId}>
-              {o.name} — {formatMoney(o.price, currency)}
+            <option key={o.id} value={o.id}>
+              {o.isProduct ? '🛍 ' : ''}{o.name} — {formatMoney(o.price, currency)}
             </option>
           ))}
         </select>
@@ -112,8 +129,9 @@ export function Cart({
       ) : (
         <ul className="divide-y rounded-md border">
           {items.map((i, n) => (
-            <li key={i.serviceId} className="flex flex-wrap items-center gap-2 p-2 text-sm">
+            <li key={i.id} className="flex flex-wrap items-center gap-2 p-2 text-sm">
               <span className="flex-1 font-medium">{i.name}</span>
+              {!i.isProduct && (
               <select
                 aria-label={`Staf ${i.name}`}
                 value={i.staffUserId}
@@ -126,6 +144,7 @@ export function Cart({
                   <option key={p.userId} value={p.userId}>{p.name}</option>
                 ))}
               </select>
+              )}
               <input
                 type="number"
                 min={1}

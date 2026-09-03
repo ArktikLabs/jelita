@@ -155,6 +155,13 @@
       "when": 1788418139731,
       "tag": "0021_one_sale_per_booking",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788418878285,
+      "tag": "0022_inventory",
+      "breakpoints": true
     }
   ]
 }

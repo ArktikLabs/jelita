@@ -272,6 +272,82 @@ test.describe.serial('commissions', () => {
   })
 })
 
+test.describe.serial('retail and stock', () => {
+  let productId: string
+  let stylistCtx: Awaited<ReturnType<typeof signIn>>
+
+  test.beforeAll(async () => {
+    stylistCtx = await signIn(`stylist@${DOMAIN}`, PW)
+  })
+
+  test.beforeEach(async () => {
+    await pool.query(`delete from stock_movements where organization_id = $1`, [orgId])
+    await pool.query(`delete from products where organization_id = $1`, [orgId])
+    productId = crypto.randomUUID()
+    await pool.query(
+      `insert into products (id, organization_id, name, kind, price, reorder_level)
+       values ($1, $2, 'Sampo Ritel', 'retail', 60000, 2)`, [productId, orgId])
+    await pool.query(
+      `insert into stock_movements (id, organization_id, team_id, product_id, quantity, reason)
+       values ($1, $2, $3, $4, 10, 'purchase')`,
+      [crypto.randomUUID(), orgId, teamId, productId])
+  })
+
+  test('sells a product beside a service, and the stock drops', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/pos')
+    await page.locator('#add').selectOption(serviceId)
+    await page.locator('#add').selectOption(productId)
+    // 150.000 + 60.000
+    await expect(page.getByTestId('cart-total')).toContainText('210.000')
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    await page.goto('/dashboard/products')
+    await expect(page.getByTestId(`stock-${productId}`)).toContainText('9')
+  })
+
+  test('voiding puts the product back on the shelf', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/pos')
+    await page.locator('#add').selectOption(productId)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    await page.goto(`/dashboard/transactions?date=${todayIso()}`)
+    await page.getByRole('button', { name: 'Batalkan' }).click()
+    await expect(page.getByText('Pembatalan')).toBeVisible()
+
+    await page.goto('/dashboard/products')
+    await expect(page.getByTestId(`stock-${productId}`)).toContainText('10')
+  })
+
+  test('flags low stock at or below the reorder level', async ({ page }) => {
+    await pool.query(
+      `insert into stock_movements (id, organization_id, team_id, product_id, quantity, reason)
+       values ($1, $2, $3, $4, -8, 'usage')`,
+      [crypto.randomUUID(), orgId, teamId, productId])
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/products')
+    await expect(page.getByText('Stok menipis:')).toBeVisible()
+    await expect(page.getByTestId(`stock-${productId}`)).toContainText('Menipis')
+  })
+
+  test('front desk may read stock but is never offered the adjust form', async () => {
+    // Front desk, not a stylist: lib/permissions.ts grants product:['read']
+    // and stock:['read'] to frontdesk and neither to stylist. Asserted after
+    // writing this against a stylist and watching the page redirect.
+    const html = await (await desk.get('/dashboard/products')).text()
+    expect(html, 'front desk holds product:[read]').toContain('Sampo Ritel')
+    expect(html, 'but not stock:[adjust]').not.toContain('Catat stok')
+    expect(html, 'nor product:[create]').not.toContain('Tambah produk')
+
+    const asStylist = await stylistCtx.get('/dashboard/products')
+    expect(asStylist.headers()['location'] ?? '',
+      'a stylist holds no product statement at all').toContain('/dashboard')
+  })
+})
+
 test.describe.serial('branding', () => {
   test('an SVG is refused, and a PNG is accepted and served', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())

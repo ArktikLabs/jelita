@@ -3,6 +3,7 @@ import { db } from './db'
 import { ManualPayment, type PaymentMethod } from './payment'
 import { pgMentions } from './pg-error'
 import { writeCommissions } from './commission'
+import { moveStockForSale } from './inventory'
 
 /**
  * The sale.
@@ -22,7 +23,9 @@ import { writeCommissions } from './commission'
  */
 
 export type CartItem = {
-  serviceId: string
+  /** Exactly one of these. `kind` on the line is derived from which. */
+  serviceId?: string | null
+  productId?: string | null
   quantity: number
   /** Minor units, never a percentage (spec 2.3). Zero unless the actor holds
    *  pos:['discount'] -- checked by the caller, which has the session. */
@@ -108,34 +111,60 @@ async function ring(
   return db.transaction(async (tx) => {
     const id = crypto.randomUUID()
 
-    // Prices come from the view, inside this transaction, keyed by the branch
-    // -- so a branch override applies and a posted price cannot.
-    const priced = await tx.execute(sql`
-      select p.service_id, s.name, p.price, p.currency
-        from service_branch_pricing p
-        join services s on s.id = p.service_id
-       where p.organization_id = ${input.organizationId}
-         and p.team_id = ${input.teamId}
-         and p.offered
-         and p.service_id in ${sql`(${sql.join(
-           input.items.map((i) => sql`${i.serviceId}`), sql`, `)})`}`)
-    const prices = new Map((priced.rows as Record<string, unknown>[]).map((r) => [
-      r.service_id as string,
-      { name: r.name as string, price: Number(r.price), currency: r.currency as string },
-    ]))
-    // Every line must price, or the sale is refused whole. A cart that
-    // silently drops a service the branch stopped offering would charge less
-    // than the receipt lists.
-    if (prices.size !== new Set(input.items.map((i) => i.serviceId)).size) {
-      throw new Error('NOT_OFFERED')
+    // Prices come from the database inside this transaction, never from the
+    // caller: a branch override applies and a posted price cannot.
+    const serviceIds = input.items.map((i) => i.serviceId).filter(Boolean) as string[]
+    const productIds = input.items.map((i) => i.productId).filter(Boolean) as string[]
+    if (serviceIds.length + productIds.length !== input.items.length) {
+      // Exactly one subject per line -- also a check constraint, but caught
+      // here so it reads as a refusal rather than a constraint error.
+      throw new Error('BAD_LINE')
     }
 
-    const currency = [...prices.values()][0].currency
+    const prices = new Map<string, { name: string; price: number }>()
+    let currency: string | null = null
+
+    if (serviceIds.length > 0) {
+      const priced = await tx.execute(sql`
+        select p.service_id as id, s.name, p.price, p.currency
+          from service_branch_pricing p
+          join services s on s.id = p.service_id
+         where p.organization_id = ${input.organizationId}
+           and p.team_id = ${input.teamId}
+           and p.offered
+           and p.service_id in ${sql`(${sql.join(
+             serviceIds.map((id) => sql`${id}`), sql`, `)})`}`)
+      for (const r of priced.rows as Record<string, unknown>[]) {
+        prices.set(r.id as string, { name: r.name as string, price: Number(r.price) })
+        currency = r.currency as string
+      }
+      if (prices.size !== new Set(serviceIds).size) throw new Error('NOT_OFFERED')
+    }
+
+    if (productIds.length > 0) {
+      // Only ACTIVE RETAIL products. An internal-use item has no price and is
+      // never sold; an inactive one has been withdrawn.
+      const priced = await tx.execute(sql`
+        select pr.id, pr.name, pr.price, sp.currency
+          from products pr
+          join salon_profiles sp on sp.organization_id = pr.organization_id
+         where pr.organization_id = ${input.organizationId}
+           and pr.active and pr.kind = 'retail'
+           and pr.id in ${sql`(${sql.join(
+             productIds.map((id) => sql`${id}`), sql`, `)})`}`)
+      const before = prices.size
+      for (const r of priced.rows as Record<string, unknown>[]) {
+        prices.set(r.id as string, { name: r.name as string, price: Number(r.price) })
+        currency = r.currency as string
+      }
+      if (prices.size - before !== new Set(productIds).size) throw new Error('NOT_OFFERED')
+    }
+    if (!currency) throw new Error('NOT_OFFERED')
     let subtotal = 0
     let lineDiscounts = 0
     for (const item of input.items) {
       if (item.quantity < 1) throw new Error('BAD_QUANTITY')
-      const p = prices.get(item.serviceId)!
+      const p = prices.get((item.serviceId ?? item.productId)!)!
       const gross = p.price * item.quantity
       if (item.discount < 0 || item.discount > gross) throw new Error('BAD_DISCOUNT')
       subtotal += gross
@@ -163,11 +192,14 @@ async function ring(
               ${subtotal}, ${discount}, ${total}, ${currency})`)
 
     for (const item of input.items) {
-      const p = prices.get(item.serviceId)!
+      const p = prices.get((item.serviceId ?? item.productId)!)!
       await tx.execute(sql`
-        insert into transaction_lines (id, transaction_id, organization_id, service_id,
-                                       staff_user_id, name, unit_price, quantity, discount)
-        values (${crypto.randomUUID()}, ${id}, ${input.organizationId}, ${item.serviceId},
+        insert into transaction_lines (id, transaction_id, organization_id, kind,
+                                       service_id, product_id, staff_user_id, name,
+                                       unit_price, quantity, discount)
+        values (${crypto.randomUUID()}, ${id}, ${input.organizationId},
+                ${item.serviceId ? 'service' : 'product'},
+                ${item.serviceId ?? null}, ${item.productId ?? null},
                 ${item.staffUserId ?? null}, ${p.name}, ${p.price}, ${item.quantity},
                 ${item.discount})`)
     }
@@ -176,6 +208,9 @@ async function ring(
     // trigger permits it and a voided sale's commissions can be written the
     // same way.
     await writeCommissions(tx, input.organizationId, id)
+    // Retail lines leave the shelf. Inside the same transaction, so a failure
+    // anywhere leaves neither the sale nor the deduction behind.
+    await moveStockForSale(tx, input.organizationId, input.teamId, id, input.userId)
 
     const result = await ManualPayment.record({ method: input.method, amount: total, currency })
     await tx.execute(sql`
@@ -213,10 +248,10 @@ async function ring(
  * actually decides.
  */
 export async function voidSale(
-  transactionId: string, organizationId: string,
+  transactionId: string, organizationId: string, actorUserId = 'system',
 ): Promise<{ id: string; invoiceNo: number }> {
   try {
-    return await reverse(transactionId, organizationId)
+    return await reverse(transactionId, organizationId, actorUserId)
   } catch (e) {
     // The trigger's own words, turned into something an action can act on.
     if (pgMentions(e, 'shift that closed')) throw new Error('SHIFT_CLOSED')
@@ -225,7 +260,7 @@ export async function voidSale(
 }
 
 async function reverse(
-  transactionId: string, organizationId: string,
+  transactionId: string, organizationId: string, actorUserId: string,
 ): Promise<{ id: string; invoiceNo: number }> {
   return db.transaction(async (tx) => {
     const found = await tx.execute(sql`
@@ -264,15 +299,23 @@ async function reverse(
         from transactions t where t.id = ${transactionId}`)
 
     await tx.execute(sql`
-      insert into transaction_lines (id, transaction_id, organization_id, service_id,
-                                     staff_user_id, name, unit_price, quantity, discount)
-      select gen_random_uuid()::text, ${id}, l.organization_id, l.service_id,
-             l.staff_user_id, l.name, -l.unit_price, l.quantity, -l.discount
+      insert into transaction_lines (id, transaction_id, organization_id, kind,
+                                     service_id, product_id, staff_user_id, name,
+                                     unit_price, quantity, discount)
+      select gen_random_uuid()::text, ${id}, l.organization_id, l.kind,
+             l.service_id, l.product_id, l.staff_user_id, l.name,
+             -l.unit_price, l.quantity, -l.discount
         from transaction_lines l where l.transaction_id = ${transactionId}`)
 
     // From the mirrored (negative) lines, so the earnings come back off the
     // month without anything having to know it is a void.
     await writeCommissions(tx, organizationId, id)
+    // And the goods go back on the shelf. moveStockForSale reads the
+    // direction from `reverses_id`, which is already set above.
+    const { rows: teamRows } = await tx.execute(sql`
+      select team_id from transactions where id = ${id}`)
+    await moveStockForSale(
+      tx, organizationId, (teamRows[0] as { team_id: string }).team_id, id, actorUserId)
 
     await tx.execute(sql`
       update transactions

@@ -61,8 +61,13 @@ export const transactionLines = pgTable('transaction_lines', {
   id: text('id').primaryKey(),
   transactionId: text('transaction_id').notNull(),
   organizationId: text('organization_id').notNull(),
-  serviceId: text('service_id').notNull(),
-  // Who performed it -- the hook commission records will hang off (spec 4.1).
+  // Exactly one of serviceId / productId is set, enforced by a check. `kind`
+  // says which without a caller having to test for null.
+  kind: text('kind').notNull().default('service'),
+  serviceId: text('service_id'),
+  productId: text('product_id'),
+  // Who performed it. Drives the commission record; product lines carry none,
+  // because §5.3's rules are keyed by service.
   staffUserId: text('staff_user_id'),
   name: text('name').notNull(),
   unitPrice: bigint('unit_price', { mode: 'number' }).notNull(),

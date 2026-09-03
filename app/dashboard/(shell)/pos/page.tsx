@@ -5,6 +5,7 @@ import { bookableServices, getBooking } from '@/lib/booking'
 import { getCustomer } from '@/lib/customer'
 import { salonSettings } from '@/lib/service'
 import { listStaff } from '@/lib/staff'
+import { sellableProducts } from '@/lib/inventory'
 import { Cart } from './cart'
 
 /**
@@ -24,11 +25,22 @@ export default async function PosPage({
   const { branchId } = await requireBranch()
   const { bookingId } = await searchParams
 
-  const [offers, { currency }, staff] = await Promise.all([
+  const [services, retail, { currency }, staff] = await Promise.all([
     bookableServices(organizationId, branchId),
+    sellableProducts(organizationId, branchId),
     salonSettings(organizationId),
     listStaff(organizationId),
   ])
+  // Services and retail products in one list: §5.2's cart holds both, and the
+  // cart itself does not care which until it posts.
+  const offers = [
+    ...services.map((s) => ({
+      id: s.serviceId, name: s.name, price: s.price, isProduct: false,
+    })),
+    ...retail.map((p) => ({
+      id: p.id, name: p.name, price: p.price ?? 0, isProduct: true,
+    })),
+  ]
   // Who a line can be attributed to: active staff at this branch. A line with
   // nobody named earns no commission, which is legitimate.
   const performers = staff
@@ -51,9 +63,10 @@ export default async function PosPage({
   const prefill = booking
     ? {
       items: [{
-        serviceId: booking.serviceId,
+        id: booking.serviceId,
+        isProduct: false,
         name: booking.serviceName,
-        price: offers.find((o) => o.serviceId === booking.serviceId)?.price ?? 0,
+        price: services.find((o) => o.serviceId === booking.serviceId)?.price ?? 0,
         quantity: 1,
         discount: 0,
         // Defaulted from the booking: the stylist who did the work is already
