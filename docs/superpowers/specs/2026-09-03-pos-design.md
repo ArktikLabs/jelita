@@ -1,7 +1,7 @@
 # Cashier / POS — Design
 
 **Date:** 2026-09-03
-**Status:** draft
+**Status:** implemented
 **Covers:** PRD §5.2 (Cashier/POS, P0), §5.10 (Payment recording, P0), and the
 branding half of §7's white-label line
 
@@ -340,6 +340,23 @@ Playwright:
 15. Front desk may check out and discount but is refused void; owner may void.
 16. The receipt renders the logo and brand colour.
 17. Voiding shows the reversal and leaves the original readable.
+
+### 7a. Screens, as built
+
+- **`/dashboard/pos`** — one screen, `?bookingId=` prefilled from the day
+  list's "Bayar" button. The cart is React state; only service ids, quantities
+  and discount amounts are posted, in a single JSON field, and every price is
+  resolved again server-side.
+- **`/dashboard/transactions`** — the day, with the open shift's takings and
+  its close control. Void is drawn only for a role holding `pos:['void']`, on a
+  sale that is neither already reversed nor inside a closed shift — a button
+  that can only fail reads as a broken app.
+- **`/dashboard/transactions/[id]`** — the receipt, `window.print()`, branded.
+- **`/api/salon/logo?salon=<slug>&v=<version>`** — keyed by SLUG, not session,
+  because the public booking page shows the logo and has none. Cached
+  immutably, since a new upload is a new `v`. Served with
+  `Content-Security-Policy: default-src 'none'; sandbox` and `nosniff` on top
+  of refusing SVG at upload.
 
 ### 7b. What the breaks caught here
 

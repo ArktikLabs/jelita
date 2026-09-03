@@ -44,6 +44,13 @@ export function StatusActions({ id, status }: { id: string; status: string }) {
           {LABEL[s]}
         </Button>
       ))}
+      {/* Flow B starts here: open the day, hit Checkout on the booking. */}
+      <Link
+        href={`/dashboard/pos?bookingId=${id}`}
+        className={buttonVariants({ variant: 'secondary', size: 'sm' })}
+      >
+        Bayar
+      </Link>
       <Link
         href={`/dashboard/bookings/${id}`}
         className={buttonVariants({ variant: 'ghost', size: 'sm' })}

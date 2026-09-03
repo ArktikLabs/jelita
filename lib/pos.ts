@@ -274,3 +274,120 @@ async function reverse(
     return { id, invoiceNo }
   })
 }
+
+export type SaleRow = {
+  id: string
+  invoiceNo: number | null
+  status: string
+  total: number
+  currency: string
+  completedAt: string | null
+  customerName: string | null
+  reversesId: string | null
+  /** Set when this sale has already been voided -- what hides the button. */
+  reversedById: string | null
+  shiftClosed: boolean
+}
+
+/** One branch's sales for a day, newest first. */
+export async function listSales(
+  organizationId: string, teamId: string, date: string,
+): Promise<SaleRow[]> {
+  const { rows } = await db.execute(sql`
+    select t.id, t.invoice_no, t.status, t.total, t.currency, t.reverses_id,
+           to_char(t.completed_at, 'YYYY-MM-DD"T"HH24:MI') as completed_at,
+           c.name as customer_name,
+           r.id as reversed_by_id,
+           (s.closed_at is not null) as shift_closed
+      from transactions t
+      left join customers c on c.id = t.customer_id
+      left join transactions r on r.reverses_id = t.id
+      left join shifts s on s.id = t.shift_id
+     where t.organization_id = ${organizationId} and t.team_id = ${teamId}
+       and t.completed_at >= ${date}::date and t.completed_at < ${date}::date + 1
+     order by t.completed_at desc, t.invoice_no desc`)
+  return (rows as Record<string, unknown>[]).map(toSale)
+}
+
+const toSale = (r: Record<string, unknown>): SaleRow => ({
+  id: r.id as string,
+  invoiceNo: r.invoice_no === null ? null : Number(r.invoice_no),
+  status: r.status as string,
+  total: Number(r.total),
+  currency: r.currency as string,
+  completedAt: (r.completed_at as string) ?? null,
+  customerName: (r.customer_name as string) ?? null,
+  reversesId: (r.reverses_id as string) ?? null,
+  reversedById: (r.reversed_by_id as string) ?? null,
+  shiftClosed: r.shift_closed as boolean,
+})
+
+/** One sale with everything a receipt prints. Org-scoped in the query, so a
+ *  bare id cannot cross tenants. */
+export async function getSale(transactionId: string, organizationId: string) {
+  const { rows } = await db.execute(sql`
+    select t.id, t.invoice_no, t.status, t.total, t.subtotal, t.discount, t.currency,
+           t.reverses_id,
+           to_char(t.completed_at, 'YYYY-MM-DD"T"HH24:MI') as completed_at,
+           c.name as customer_name, c.phone as customer_phone,
+           r.id as reversed_by_id,
+           (s.closed_at is not null) as shift_closed,
+           tm.name as branch_name, bp.address as branch_address, bp.phone as branch_phone
+      from transactions t
+      left join customers c on c.id = t.customer_id
+      left join transactions r on r.reverses_id = t.id
+      left join shifts s on s.id = t.shift_id
+      join teams tm on tm.id = t.team_id
+      left join branch_profiles bp on bp.team_id = t.team_id
+     where t.id = ${transactionId} and t.organization_id = ${organizationId}`)
+  const r = rows[0] as Record<string, unknown> | undefined
+  if (!r) return null
+
+  const lines = await db.execute(sql`
+    select name, unit_price, quantity, discount from transaction_lines
+     where transaction_id = ${transactionId} order by id`)
+  const payments = await db.execute(sql`
+    select method, amount from transaction_payments
+     where transaction_id = ${transactionId} order by id`)
+
+  return {
+    ...toSale(r),
+    subtotal: Number(r.subtotal),
+    discount: Number(r.discount),
+    customerPhone: (r.customer_phone as string) ?? null,
+    branchName: r.branch_name as string,
+    branchAddress: (r.branch_address as string) ?? null,
+    branchPhone: (r.branch_phone as string) ?? null,
+    lines: (lines.rows as Record<string, unknown>[]).map((l) => ({
+      name: l.name as string,
+      unitPrice: Number(l.unit_price),
+      quantity: Number(l.quantity),
+      discount: Number(l.discount),
+    })),
+    payments: (payments.rows as Record<string, unknown>[]).map((p) => ({
+      method: p.method as string,
+      amount: Number(p.amount),
+    })),
+  }
+}
+
+/** The branch's open shift, if any -- what the close control needs. */
+export async function openShift(organizationId: string, teamId: string) {
+  const { rows } = await db.execute(sql`
+    select s.id, to_char(s.opened_at, 'YYYY-MM-DD"T"HH24:MI') as opened_at,
+           (select count(*)::int from transactions t
+             where t.shift_id = s.id and t.status <> 'open') as sales,
+           (select coalesce(sum(t.total), 0)::bigint from transactions t
+             where t.shift_id = s.id and t.status <> 'open') as takings
+      from shifts s
+     where s.organization_id = ${organizationId} and s.team_id = ${teamId}
+       and s.closed_at is null`)
+  const r = rows[0] as Record<string, unknown> | undefined
+  if (!r) return null
+  return {
+    id: r.id as string,
+    openedAt: r.opened_at as string,
+    sales: Number(r.sales),
+    takings: Number(r.takings),
+  }
+}

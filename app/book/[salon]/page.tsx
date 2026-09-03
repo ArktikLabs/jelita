@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { bookableBranches, resolveBranch, resolveSalon } from '@/lib/salon'
+import { salonSettings } from '@/lib/service'
 import { bookableServices, listSlots, slotTimes } from '@/lib/booking'
 import { listPerformers } from '@/lib/service'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
@@ -37,6 +38,13 @@ export default async function PublicBookingPage({
   if (!salon) notFound()
 
   const q = await searchParams
+  const settings = await salonSettings(salon.organizationId)
+  const brand = {
+    color: settings.brandColor,
+    logoUrl: settings.hasLogo
+      ? `/api/salon/logo?salon=${slug}&v=${settings.logoVersion}`
+      : null,
+  }
   const branches = await bookableBranches(salon.organizationId)
   // With exactly one bookable branch the choice is implicit -- free and
   // starter tiers cap branches at 1, so most salons never see this step.
@@ -44,7 +52,7 @@ export default async function PublicBookingPage({
 
   if (branches.length === 0) {
     return (
-      <Shell title={salon.name}>
+      <Shell title={salon.name} brand={brand}>
         <p className="text-sm text-muted-foreground">
           Salon ini sedang tidak menerima pemesanan online.
         </p>
@@ -54,7 +62,7 @@ export default async function PublicBookingPage({
 
   if (!branch) {
     return (
-      <Shell title={salon.name}>
+      <Shell title={salon.name} brand={brand}>
         <h2 className="text-sm font-medium">Pilih cabang</h2>
         <ul className="space-y-2">
           {branches.map((b) => (
@@ -97,7 +105,7 @@ export default async function PublicBookingPage({
   ].filter(Boolean).join(' · ')
 
   return (
-    <Shell title={salon.name} subtitle={branch.name}>
+    <Shell title={salon.name} subtitle={branch.name} brand={brand}>
       <form className="flex flex-wrap items-end gap-2">
         {/* Carried forward so choosing a service does not lose the branch. */}
         <input type="hidden" name="cabang" value={branch.teamId} />
@@ -153,17 +161,34 @@ export default async function PublicBookingPage({
   )
 }
 
+/**
+ * PRD §8: the public page is "brand-colored". The colour is validated
+ * `#rrggbb` at both the form and a check constraint, so it can safely reach a
+ * style attribute -- an unvalidated one here would be a CSS injection on a
+ * page anyone can load.
+ */
 function Shell({
-  title, subtitle, children,
+  title, subtitle, children, brand, logo,
 }: {
   title: string
   subtitle?: string
   children: React.ReactNode
+  brand?: { color: string | null; logoUrl: string | null }
+  logo?: string
 }) {
   return (
     <main className="mx-auto max-w-2xl space-y-6 p-6">
-      <div>
-        <h1 className="text-xl font-medium">{title}</h1>
+      <div className="space-y-2">
+        {brand?.logoUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={brand.logoUrl} alt="" className="h-12 w-auto" />
+        )}
+        <h1
+          className="text-xl font-medium"
+          style={brand?.color ? { color: brand.color } : undefined}
+        >
+          {title}
+        </h1>
         {subtitle && <p className="text-sm text-muted-foreground">{subtitle}</p>}
       </div>
       {children}

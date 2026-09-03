@@ -228,7 +228,7 @@ export async function bookableServices(organizationId: string, teamId: string) {
  *  cannot cross tenants. */
 export async function getBooking(bookingId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
-    select b.id, b.team_id, b.service_id, b.staff_user_id, b.status,
+    select b.id, b.team_id, b.service_id, b.staff_user_id, b.customer_id, b.status,
            to_char(b.starts_at, 'YYYY-MM-DD"T"HH24:MI') as starts_at,
            b.duration_minutes, s.name as service_name, c.name as customer_name
       from bookings b
@@ -242,6 +242,9 @@ export async function getBooking(bookingId: string, organizationId: string) {
     teamId: r.team_id as string,
     serviceId: r.service_id as string,
     staffUserId: r.staff_user_id as string,
+    // The id, not just the name: checkout attaches its sale to the same member
+    // record rather than looking one up again by name.
+    customerId: r.customer_id as string,
     status: r.status as string,
     startsAt: r.starts_at as string,
     durationMinutes: r.duration_minutes as number,

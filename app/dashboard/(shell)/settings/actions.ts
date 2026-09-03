@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { isCurrencyCode } from '@/lib/money'
+import { imageType, logoKey, putObject } from '@/lib/storage'
 import { type FormState } from '@/lib/form-state'
 
 /**
@@ -80,5 +81,51 @@ export async function setSlotMinutesAction(
      where organization_id = ${organizationId}`)
   revalidatePath('/dashboard/settings')
   revalidatePath('/dashboard/bookings')
+  return { done: true }
+}
+
+/** 200 KB. A salon logo is a header image, not a photograph, and an
+ *  unbounded upload endpoint is an unbounded bill. */
+const MAX_LOGO_BYTES = 200 * 1024
+
+/**
+ * White-label branding (PRD §7). The bytes go to object storage; the row
+ * records only that a logo exists and when it changed, which is what busts the
+ * cache on /api/salon/logo.
+ */
+export async function setBrandingAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  await requirePagePermission({ settings: ['update'] })
+  const { organizationId } = await requirePageOrg()
+
+  const color = String(formData.get('brandColor') ?? '').trim()
+  if (color && !/^#[0-9a-fA-F]{6}$/.test(color)) {
+    // Also a check constraint in the database. This one exists to say so in
+    // Indonesian rather than as a 500 -- a colour that reaches a stylesheet
+    // unvalidated is a CSS injection on the public booking page.
+    return { error: 'Warna harus format #rrggbb, misalnya #1a2b3c.' }
+  }
+
+  const file = formData.get('logo')
+  if (file instanceof File && file.size > 0) {
+    if (file.size > MAX_LOGO_BYTES) return { error: 'Logo maksimal 200 KB.' }
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    // The MAGIC BYTES decide, never file.type: that is the browser's label for
+    // what the user picked, and a browser sniffs the real content anyway.
+    const type = imageType(bytes)
+    if (!type) return { error: 'Logo harus PNG, JPEG atau WebP.' }
+    await putObject(logoKey(organizationId), bytes, type)
+    await db.execute(sql`
+      update salon_profiles
+         set logo_key = ${logoKey(organizationId)}, logo_updated_at = now(),
+             updated_at = now()
+       where organization_id = ${organizationId}`)
+  }
+
+  await db.execute(sql`
+    update salon_profiles set brand_color = ${color || null}, updated_at = now()
+     where organization_id = ${organizationId}`)
+  revalidatePath('/dashboard/settings')
   return { done: true }
 }

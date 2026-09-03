@@ -1,7 +1,7 @@
 'use client'
 
 import { useActionState } from 'react'
-import { setCurrencyAction, setSlotMinutesAction } from './actions'
+import { setBrandingAction, setCurrencyAction, setSlotMinutesAction } from './actions'
 import type { FormState } from '@/lib/form-state'
 import { SUPPORTED_CURRENCIES, type CurrencyCode } from '@/lib/money'
 import { Button } from '@/components/ui/button'
@@ -137,6 +137,80 @@ export function SlotGridCard({ slotMinutes }: { slotMinutes: number }) {
               {pending ? 'Menyimpan…' : 'Simpan interval'}
             </Button>
           </div>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * PRD §7's white-label line: "salon name, logo, brand color, currency in
+ * settings -- demo can be re-skinned per prospect in minutes."
+ *
+ * multipart, because a file cannot ride in a normal action payload.
+ */
+export function BrandingCard({
+  slug, hasLogo, logoVersion, brandColor,
+}: {
+  slug: string
+  hasLogo: boolean
+  logoVersion: string
+  brandColor: string | null
+}) {
+  const [state, action, pending] = useActionState(setBrandingAction, initial)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Tampilan</CardTitle>
+        <CardDescription>
+          Logo dan warna yang dipakai pada struk dan halaman pemesanan.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form action={action} className="space-y-4">
+          {state.error && (
+            <Alert variant="destructive">
+              <AlertDescription>{state.error}</AlertDescription>
+            </Alert>
+          )}
+          {state.done && (
+            <Alert><AlertDescription>Tampilan disimpan.</AlertDescription></Alert>
+          )}
+          {hasLogo && (
+            // eslint-disable-next-line @next/next/no-img-element -- served
+            // from object storage through our own route; next/image would add
+            // an optimiser in front of a 50 KB file for nothing.
+            <img
+              src={`/api/salon/logo?salon=${slug}&v=${logoVersion}`}
+              alt="Logo salon"
+              className="h-12 w-auto"
+            />
+          )}
+          <div className="space-y-2">
+            <Label htmlFor="logo">Logo</Label>
+            <input
+              id="logo"
+              name="logo"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="block text-sm"
+            />
+            <p className="text-xs text-muted-foreground">PNG, JPEG atau WebP. Maksimal 200 KB.</p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="brandColor">Warna utama</Label>
+            <input
+              id="brandColor"
+              name="brandColor"
+              defaultValue={brandColor ?? ''}
+              placeholder="#1a2b3c"
+              className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
+            />
+          </div>
+          <Button type="submit" variant="outline" disabled={pending}>
+            {pending ? 'Menyimpan…' : 'Simpan tampilan'}
+          </Button>
         </form>
       </CardContent>
     </Card>

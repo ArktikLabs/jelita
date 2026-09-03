@@ -80,15 +80,22 @@ export async function salonCurrency(organizationId: string): Promise<CurrencyCod
   return ((rows[0] as { currency?: string })?.currency ?? 'IDR') as CurrencyCode
 }
 
-/** Both salon-wide settings, for the one page that edits them. */
+/** The salon-wide settings, for the one page that edits them and for the
+ *  receipt and public page that render the branding. */
 export async function salonSettings(organizationId: string) {
   const { rows } = await db.execute(sql`
-    select currency, slot_minutes from salon_profiles
-     where organization_id = ${organizationId}`)
-  const r = rows[0] as { currency?: string; slot_minutes?: number } | undefined
+    select currency, slot_minutes, logo_key, brand_color,
+           to_char(logo_updated_at, 'YYYYMMDDHH24MISS') as logo_version
+      from salon_profiles where organization_id = ${organizationId}`)
+  const r = rows[0] as Record<string, unknown> | undefined
   return {
-    currency: (r?.currency ?? 'IDR') as CurrencyCode,
-    slotMinutes: r?.slot_minutes ?? 30,
+    currency: ((r?.currency as string) ?? 'IDR') as CurrencyCode,
+    slotMinutes: (r?.slot_minutes as number) ?? 30,
+    hasLogo: Boolean(r?.logo_key),
+    // Appended to /api/salon/logo so a new upload is a new URL -- which is
+    // what lets that route cache immutably.
+    logoVersion: (r?.logo_version as string) ?? '',
+    brandColor: (r?.brand_color as string) ?? null,
   }
 }
 
