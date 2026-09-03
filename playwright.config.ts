@@ -59,6 +59,13 @@ export default defineConfig({
       // so the public page is exercised on a REAL tenant hostname rather
       // than through the /book/<slug> path it also answers on.
       NEXT_PUBLIC_APEX_HOST: `localhost:${PORT}`,
+      // The same MinIO the Vitest suites use (docker-compose.test.yml). An
+      // S3-compatible store means dev, this run and production differ by
+      // endpoint and credentials, never by code path.
+      S3_ENDPOINT: 'http://127.0.0.1:59000',
+      S3_BUCKET: 'jelita-assets',
+      S3_ACCESS_KEY: 'jelita',
+      S3_SECRET_KEY: 'jelitajelita',
     },
   },
 })

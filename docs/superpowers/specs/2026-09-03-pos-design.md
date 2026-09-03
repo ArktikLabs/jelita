@@ -97,35 +97,43 @@ and money is better proof of attendance than a front-desk click.
 Recorded here because it is a deliberate widening of a table that otherwise
 exists to refuse exactly this.
 
-### 2.6 Branding lives in the database, not object storage
+### 2.6 Branding goes to S3-compatible object storage
 
 §7 asks for "salon name, logo, brand color, currency in settings — demo can be
 re-skinned per prospect in minutes". Currency is already on `salon_profiles`;
 logo and brand colour join it.
 
-**The image bytes go in Postgres (`bytea`), served by a route handler.** Not
-Supabase Storage, for three reasons that all point the same way:
+**The bytes go to an S3-compatible store.** MinIO in dev and in the test suite
+(`docker-compose.test.yml`), real S3 in production — the same protocol either
+way, so the difference between environments is an endpoint and a pair of
+credentials, never a code path.
 
-- §7's deployment is a **VPS with Docker Compose**, not Supabase hosting.
-  Supabase is this project's dev database, not its runtime. Coupling the
-  product to Supabase Storage would tie a self-hosted app to a service it does
-  not otherwise use.
-- The disposable test database is real Postgres. A logo in `bytea` works
-  identically in dev, e2e and production; a bucket does not, and the suite
-  would either skip the assertion or reach the internet.
-- It travels with `pg_dump`. Re-skinning a demo per prospect stays one
-  database.
+`forcePathStyle` is what makes MinIO work: virtual-host addressing needs DNS
+per bucket, which a container on a compose network does not have.
 
-**ponytail: bytea + an app route, capped at 200 KB.** Ceiling: no CDN, and the
-bytes ride in the row. Upgrade path when a tenant count makes that matter:
-move to object storage behind the same route, which is why the page references
-`/api/salon/logo` and never a storage URL.
+The MinIO service carries **no volume**, following the database's disposability
+rule: a run starts with an empty bucket, and nothing a crashed run left behind
+can leak into the next.
 
-**SVG is refused.** An SVG is a script container, and this one would be served
+**The app does not create its own bucket.** In production that needs
+permissions no application should hold, and a typo in the bucket name would
+quietly succeed instead of failing on the first upload. The bucket is
+infrastructure — a one-shot `mc` job in compose now, terraform later.
+
+`salon_profiles` records only that a logo exists (`logo_key`) and when it
+changed; the bytes never touch Postgres.
+
+**Served through `/api/salon/logo`, not a bucket URL.** The bucket stays
+private, there is no CORS or bucket policy to get right, and dev and production
+share one URL shape. The app is in the byte path for a ~50 KB file behind a
+long cache header — and a CDN can front the same route without the pages
+knowing.
+
+**SVG is refused**, and the type is decided by the **magic bytes** rather than
+the declared content type. A browser sniffs, so trusting the client's label is
+trusting the client — and an SVG is a script container that would be served
 from the app's own origin on a page that also renders a booking form. PNG,
-JPEG and WebP only, checked on the magic bytes rather than the declared
-content type — a browser sniffs, so trusting the client's label is trusting
-the client.
+JPEG and WebP.
 
 ## 3. Data model
 
@@ -167,9 +175,10 @@ migration.
 
 ### 3.4 Branding on `salon_profiles`
 
-`logo` (`bytea`), `logo_type` (`text`), `brand_color` (`text`, a `#rrggbb`
-check). Cross-tenant is not a concern here — the row is keyed by
-`organization_id`.
+`logo_key` (`text`, nullable), `logo_updated_at` (`timestamptz`, nullable, the
+cache buster) and `brand_color` (`text`, a `#rrggbb` check). The bytes live in
+the object store under `salons/<organizationId>/logo`, keyed per salon so one
+prospect's re-skin cannot reach another's.
 
 ### 3.5 Cross-tenant rows stay unrepresentable
 
@@ -253,8 +262,12 @@ Vitest against real Postgres:
 10. The database refuses a line, payment or transaction naming another salon's
     row.
 11. `brand_color` refuses anything that is not `#rrggbb`.
-12. An SVG upload is refused, and a PNG whose bytes disagree with its declared
-    type is refused.
+12. An SVG upload is refused; so are bytes that merely claim to be an image,
+    and a PNG signature that is only nearly right.
+13. Bytes round-trip through the real store with their content type, an
+    overwrite replaces rather than accumulates, and a salon with no logo
+    answers null instead of throwing. Against MinIO, not a mock — a mocked
+    client would prove only that the mock works.
 
 Playwright:
 

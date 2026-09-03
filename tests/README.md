@@ -10,7 +10,7 @@ Three tools, each doing what it is for.
 | Flows through the running app — guards, redirects, form posts, RSC payload | `tests/e2e/*.spec.ts` | Playwright |
 
 ```bash
-pnpm test:db        # start the disposable Postgres (once)
+pnpm test:db        # start the disposable Postgres AND MinIO (once)
 pnpm test           # Vitest
 pnpm test:e2e       # Playwright
 pnpm test:db:down   # tear the database down

@@ -1,5 +1,5 @@
 import {
-  bigint, char, index, pgTable, smallint, text, timestamp,
+  bigint, char, index, pgTable, smallint, text, timestamp, unique,
 } from 'drizzle-orm/pg-core'
 import { organizations } from './auth'
 
@@ -41,6 +41,9 @@ export const bookings = pgTable('bookings', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
+  // So a transaction can carry a composite FK and make a cross-tenant
+  // reference unrepresentable, the way customers and services already do.
+  unique('bookings_org_id').on(t.organizationId, t.id),
   // The day list's only query.
   index('bookings_day_idx').on(t.organizationId, t.teamId, t.startsAt),
 ])

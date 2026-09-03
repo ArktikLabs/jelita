@@ -13,6 +13,12 @@ export const salonProfiles = pgTable('salon_profiles', {
   // {15, 20, 30, 45, 60} in the migration: 7-minute grids are a bug, not a
   // business model, and the check is what makes generate_series safe.
   slotMinutes: smallint('slot_minutes').notNull().default(30),
+  // White-label (PRD 7). The BYTES live in object storage under
+  // salons/<organizationId>/logo -- this records only that a logo exists and
+  // when it changed, which is what busts the cache on /api/salon/logo.
+  logoKey: text('logo_key'),
+  logoUpdatedAt: timestamp('logo_updated_at', { withTimezone: true }),
+  brandColor: text('brand_color'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

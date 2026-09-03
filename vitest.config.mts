@@ -10,6 +10,11 @@ export default defineConfig({
     env: {
       DATABASE_URL: process.env.TEST_DATABASE_URL
         ?? 'postgres://jelita:jelita@127.0.0.1:55432/jelita_test',
+      // Same disposable MinIO, same reason.
+      S3_ENDPOINT: process.env.S3_ENDPOINT ?? 'http://127.0.0.1:59000',
+      S3_BUCKET: process.env.S3_BUCKET ?? 'jelita-assets',
+      S3_ACCESS_KEY: process.env.S3_ACCESS_KEY ?? 'jelita',
+      S3_SECRET_KEY: process.env.S3_SECRET_KEY ?? 'jelitajelita',
     },
     // Files run sequentially for now: the suites still share one database, so
     // two files creating fixtures at once would interleave. Once every suite

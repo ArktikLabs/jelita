@@ -25,3 +25,39 @@ services:
       interval: 1s
       timeout: 3s
       retries: 30
+
+  # S3-compatible object storage for salon branding (PRD §7's white-label
+  # line). MinIO speaks the same protocol as S3, so dev, the test suite and
+  # production differ by endpoint and credentials -- not by code path.
+  #
+  # Same disposability rule as the database: no volume, so a run starts with an
+  # empty bucket and nothing a crashed run left behind can leak into the next.
+  s3:
+    image: minio/minio:latest
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: jelita
+      MINIO_ROOT_PASSWORD: jelitajelita
+    ports:
+      - '59000:9000'
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local || exit 1']
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: create the bucket and exit. The app deliberately does NOT create
+  # its own bucket -- in production that would need permissions no application
+  # should hold, and a typo in the bucket name would silently succeed instead
+  # of failing loudly on the first upload.
+  s3-init:
+    image: minio/mc:latest
+    depends_on:
+      s3:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://s3:9000 jelita jelitajelita &&
+      mc mb --ignore-existing local/jelita-assets &&
+      echo bucket ready
+      "
