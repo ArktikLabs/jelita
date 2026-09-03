@@ -1,16 +1,16 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
-import { pgCode } from './pg-error'
+import { pgCode, pgMentions } from './pg-error'
 
 /**
  * PRD §5.9: "payroll recap = base salary + commission + deductions per staff
  * per month".
  *
- * COMPUTED ON READ, and that is a stated limitation rather than an oversight.
- * Commissions are immutable so that half cannot drift, but a deduction edited
- * after payday silently rewrites a month somebody was already paid for. The
- * fix is a payroll RUN that snapshots and freezes -- which is what
- * payroll:['run','lock'] are reserved for (spec 2.4).
+ * Computed on read while a month is OPEN, and read from a snapshot once it is
+ * CLOSED. That distinction is the whole point: commissions are immutable so
+ * that half never drifts, but a deduction edited after payday used to rewrite
+ * a month somebody was already paid for. Closing a month freezes it (spec
+ * 2.5b), and the database refuses edits to a closed month's deductions.
  */
 
 export type PayrollRow = {
@@ -38,10 +38,51 @@ export type DeductionRow = {
  *  the 15th gets that month rather than nothing. */
 const firstOf = (month: string) => `${month.slice(0, 7)}-01`
 
+/** Null when the month is still open. */
+export async function payrollRun(organizationId: string, month: string) {
+  const { rows } = await db.execute(sql`
+    select id, to_char(closed_at, 'YYYY-MM-DD HH24:MI') as closed_at, closed_by
+      from payroll_runs
+     where organization_id = ${organizationId} and month = ${firstOf(month)}::date`)
+  const r = rows[0] as Record<string, unknown> | undefined
+  return r ? {
+    id: r.id as string,
+    closedAt: r.closed_at as string,
+    closedBy: (r.closed_by as string) ?? null,
+  } : null
+}
+
 export async function payrollRecap(
   organizationId: string, month: string,
 ): Promise<PayrollRow[]> {
   const start = firstOf(month)
+
+  // A closed month reads its SNAPSHOT, not the live figures. Reading live
+  // would defeat the freeze: base salaries change, and a later void books a
+  // negative commission that belongs to the month it happened in, not this one.
+  const closed = await payrollRun(organizationId, start)
+  if (closed) {
+    const { rows } = await db.execute(sql`
+      select l.user_id, u.name, m.role, l.base_salary, l.commission, l.deductions, l.net,
+             coalesce(p.currency, 'IDR') as currency
+        from payroll_run_lines l
+        join users u on u.id = l.user_id
+        join members m on m.user_id = l.user_id and m.organization_id = l.organization_id
+        join salon_profiles p on p.organization_id = l.organization_id
+       where l.run_id = ${closed.id}
+       order by u.name, l.user_id`)
+    return (rows as Record<string, unknown>[]).map((r) => ({
+      userId: r.user_id as string,
+      name: r.name as string,
+      role: r.role as string,
+      baseSalary: r.base_salary === null ? null : Number(r.base_salary),
+      commission: Number(r.commission),
+      deductions: Number(r.deductions),
+      net: Number(r.net),
+      currency: r.currency as string,
+    }))
+  }
+
   const { rows } = await db.execute(sql`
     select sp.user_id, u.name, m.role, sp.base_salary,
            coalesce(c.commission, 0)::bigint as commission,
@@ -128,6 +169,9 @@ export async function addDeduction(input: {
     // matching on `.message` would see only "Failed query: ...".
     if (pgCode(e) === '23503') throw new Error('NOT_FOUND')
     if (pgCode(e) === '23514') throw new Error('BAD_AMOUNT')
+    // The closed-month trigger. Translated here so the action can say which
+    // month rather than surfacing a constraint error.
+    if (pgMentions(e, 'is closed')) throw new Error('MONTH_CLOSED')
     throw e
   }
 }
@@ -137,9 +181,15 @@ export async function addDeduction(input: {
 export async function removeDeduction(
   id: string, organizationId: string,
 ): Promise<void> {
-  const { rowCount } = await db.execute(sql`
-    delete from payroll_deductions
-     where id = ${id} and organization_id = ${organizationId}`)
+  let rowCount: number | null
+  try {
+    ({ rowCount } = await db.execute(sql`
+      delete from payroll_deductions
+       where id = ${id} and organization_id = ${organizationId}`))
+  } catch (e) {
+    if (pgMentions(e, 'is closed')) throw new Error('MONTH_CLOSED')
+    throw e
+  }
   if (!rowCount) throw new Error('NOT_FOUND')
 }
 
@@ -159,4 +209,44 @@ export async function setBaseSalary(
     throw e
   }
   if (!rowCount) throw new Error('NOT_FOUND')
+}
+
+/**
+ * Close a month: snapshot every staff member's figures and freeze the inputs.
+ *
+ * One action rather than a separate run-then-lock. A "run" step earns its
+ * place when there are payslips to produce and review before payment; with
+ * nothing to produce, run and lock would be the same button with two names --
+ * which is why payroll:['run'] is still unused.
+ *
+ * The snapshot is taken from payrollRecap itself, so a closed month reads back
+ * exactly what the screen showed when it was closed. Computing it here a
+ * second way is how the two quietly diverge.
+ */
+export async function closePayrollMonth(
+  organizationId: string, month: string, closedBy: string,
+): Promise<void> {
+  const start = firstOf(month)
+  const rows = await payrollRecap(organizationId, start)
+  if (rows.length === 0) throw new Error('NOTHING_TO_CLOSE')
+
+  await db.transaction(async (tx) => {
+    const runId = crypto.randomUUID()
+    try {
+      await tx.execute(sql`
+        insert into payroll_runs (id, organization_id, month, closed_by)
+        values (${runId}, ${organizationId}, ${start}::date, ${closedBy})`)
+    } catch (e) {
+      // The unique constraint: closing twice is not a thing.
+      if (pgCode(e) === '23505') throw new Error('ALREADY_CLOSED')
+      throw e
+    }
+    for (const r of rows) {
+      await tx.execute(sql`
+        insert into payroll_run_lines (id, run_id, organization_id, user_id,
+                                       base_salary, commission, deductions, net)
+        values (${crypto.randomUUID()}, ${runId}, ${organizationId}, ${r.userId},
+                ${r.baseSalary}, ${r.commission}, ${r.deductions}, ${r.net})`)
+    }
+  })
 }

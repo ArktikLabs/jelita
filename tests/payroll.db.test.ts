@@ -2,7 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import {
-  addDeduction, listDeductions, payrollRecap, removeDeduction, setBaseSalary,
+  addDeduction, closePayrollMonth, listDeductions, payrollRecap, payrollRun,
+  removeDeduction, setBaseSalary,
 } from '../lib/payroll'
 import { checkout, voidSale } from '../lib/pos'
 
@@ -93,6 +94,15 @@ afterAll(async () => {
 beforeEach(async () => {
   await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
   await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+  // TRUNCATE, not DELETE: a closed month cannot be reopened, and that trigger
+  // is exactly what a teardown needs to bypass. TRUNCATE fires statement-level
+  // triggers only. Disabling the trigger by name would work too, and did --
+  // until a break that REMOVED the trigger made this teardown error, failing
+  // all 22 tests instead of the one that was about reopening.
+  //
+  // Runs before deductions, because deleting a deduction for a closed month is
+  // refused too.
+  await pool.query(`truncate payroll_run_lines, payroll_runs cascade`)
   await pool.query(`delete from payroll_deductions where organization_id = $1`, [ORG])
   await pool.query(`update staff_profiles set base_salary = null
                      where organization_id = $1`, [ORG])
@@ -239,5 +249,111 @@ describe('what the database refuses', () => {
     await expect(removeDeduction(d.id, ORG2)).rejects.toThrow('NOT_FOUND')
     await removeDeduction(d.id, ORG)
     expect(await listDeductions(ORG, MONTH)).toEqual([])
+  })
+})
+
+describe('closing a month', () => {
+  const close = () => closePayrollMonth(ORG, MONTH, SINTA)
+
+  it('snapshots exactly what the screen showed', async () => {
+    await setBaseSalary(SINTA, ORG, 3000000)
+    await sell(SINTA, '2027-09-05 10:00')
+    await addDeduction({
+      organizationId: ORG, userId: SINTA, month: MONTH, amount: 150000, actorUserId: SINTA,
+    })
+    const before = (await recap())[SINTA]
+    await close()
+
+    const after = (await recap())[SINTA]
+    expect(after).toMatchObject({
+      baseSalary: before.baseSalary,
+      commission: before.commission,
+      deductions: before.deductions,
+      net: before.net,
+    })
+    expect(await payrollRun(ORG, MONTH)).not.toBeNull()
+  })
+
+  it('stops later changes from rewriting it', async () => {
+    await setBaseSalary(SINTA, ORG, 3000000)
+    await sell(SINTA, '2027-09-05 10:00')
+    await close()
+
+    // Everything that could have moved the number, moved.
+    await setBaseSalary(SINTA, ORG, 9000000)
+    await sell(SINTA, '2027-09-20 10:00')
+
+    expect((await recap())[SINTA]).toMatchObject({
+      baseSalary: 3000000, commission: 20000, net: 3020000,
+    })
+  })
+
+  it('keeps "not salaried" distinct from zero in the snapshot too', async () => {
+    await setBaseSalary(RINA, ORG, 0)
+    await close()
+    const r = await recap()
+    expect(r[SINTA].baseSalary).toBeNull()
+    expect(r[RINA].baseSalary).toBe(0)
+  })
+
+  it('refuses a deduction for a closed month, added or removed', async () => {
+    await addDeduction({
+      organizationId: ORG, userId: SINTA, month: MONTH, amount: 50000, actorUserId: SINTA,
+    })
+    const [existing] = await listDeductions(ORG, MONTH)
+    await close()
+
+    await expect(addDeduction({
+      organizationId: ORG, userId: SINTA, month: MONTH, amount: 1000, actorUserId: SINTA,
+    })).rejects.toThrow('MONTH_CLOSED')
+    await expect(removeDeduction(existing.id, ORG)).rejects.toThrow('MONTH_CLOSED')
+    // The list still matches the payslip, which is why the trigger exists even
+    // though the recap reads a snapshot.
+    expect(await listDeductions(ORG, MONTH)).toHaveLength(1)
+  })
+
+  it('leaves the NEXT month open, which is where a correction goes', async () => {
+    await close()
+    await expect(addDeduction({
+      organizationId: ORG, userId: SINTA, month: NEXT, amount: 25000,
+      note: 'Koreksi September', actorUserId: SINTA,
+    })).resolves.toBeUndefined()
+    expect((await recap(NEXT))[SINTA].deductions).toBe(25000)
+  })
+
+  it('refuses closing the same month twice', async () => {
+    await close()
+    await expect(close()).rejects.toThrow('ALREADY_CLOSED')
+  })
+
+  it('does not block deleting the salon itself', async () => {
+    // The carve-out: a cascade must not be refused by a rule about the rows it
+    // is cascading into. Without it this suite's own afterAll fails.
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ('pay_temp', 'Temp', 'pay-temp', now())`)
+    await pool.query(`
+      insert into payroll_runs (id, organization_id, month, closed_by)
+      values ('pay_temp_run', 'pay_temp', $1::date, null)`, [MONTH])
+    await expect(pool.query(`delete from organizations where id = 'pay_temp'`))
+      .resolves.toBeTruthy()
+  })
+
+  it('does NOT reopen', async () => {
+    await close()
+    const run = (await payrollRun(ORG, MONTH))!
+    await expect(pool.query(`delete from payroll_runs where id = $1`, [run.id]))
+      .rejects.toThrow(/cannot be reopened/)
+    await expect(pool.query(
+      `update payroll_runs set closed_by = null where id = $1`, [run.id]))
+      .rejects.toThrow(/cannot be reopened/)
+  })
+
+  it('closes one salon\'s month without touching another\'s', async () => {
+    await close()
+    expect(await payrollRun(ORG2, MONTH)).toBeNull()
+    await expect(addDeduction({
+      organizationId: ORG, userId: SINTA, month: MONTH, amount: 1, actorUserId: SINTA,
+    })).rejects.toThrow('MONTH_CLOSED')
   })
 })

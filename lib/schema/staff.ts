@@ -47,3 +47,40 @@ export const payrollDeductions = pgTable('payroll_deductions', {
   actorUserId: text('actor_user_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('payroll_deductions_month_idx').on(t.organizationId, t.month)])
+
+/**
+ * A closed payroll month.
+ *
+ * The recap was computed on read, so a deduction edited after payday silently
+ * rewrote a month somebody was already paid for. Closing snapshots the figures
+ * and freezes the inputs; from then on the recap reads these rows.
+ *
+ * No reopening. A correction belongs in the NEXT month, where it is visible as
+ * a correction, rather than silently altering a period that has been paid.
+ */
+export const payrollRuns = pgTable('payroll_runs', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  month: date('month').notNull(),
+  closedBy: text('closed_by'),
+  closedAt: timestamp('closed_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  // One run per month per salon: closing twice is not a thing, and a unique
+  // constraint says so rather than a check somebody remembers.
+  unique('payroll_runs_org_month').on(t.organizationId, t.month),
+])
+
+/** One staff member's figures AS THEY STOOD when the month closed. */
+export const payrollRunLines = pgTable('payroll_run_lines', {
+  id: text('id').primaryKey(),
+  runId: text('run_id').notNull(),
+  organizationId: text('organization_id').notNull(),
+  userId: text('user_id').notNull(),
+  // Null carries through: "not salaried" stays distinct from "salaried at
+  // nothing" in the snapshot too.
+  baseSalary: bigint('base_salary', { mode: 'number' }),
+  commission: bigint('commission', { mode: 'number' }).notNull(),
+  deductions: bigint('deductions', { mode: 'number' }).notNull(),
+  net: bigint('net', { mode: 'number' }).notNull(),
+}, (t) => [unique('payroll_run_lines_one_per_staff').on(t.runId, t.userId)])

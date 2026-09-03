@@ -46,3 +46,9 @@ next-env.d.ts
 # Playwright MCP scratch (browser console/network logs)
 .playwright-mcp/
 .next-e2e*
+
+# Playwright artifacts: traces, screenshots and .last-run.json, written during
+# every run. A `git add -A` while a run is in flight sweeps in over a thousand
+# of them, which is how they reached a commit once.
+test-results/
+playwright-report/

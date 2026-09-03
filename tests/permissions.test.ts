@@ -24,6 +24,18 @@ describe('the built-in roles', () => {
     }
   })
 
+  it('has no role holding payroll:read WITHOUT payroll:lock', () => {
+    // Closing a month is guarded by payroll:['lock'] on the reading that
+    // reading a recap and ending a pay period are different acts. No built-in
+    // role separates them, so swapping the guards fails nothing end to end --
+    // this is what makes the choice falsifiable.
+    for (const role of ROLES) {
+      if (holds(role, 'payroll', 'read')) {
+        expect(holds(role, 'payroll', 'lock'), `${role} would separate them`).toBe(true)
+      }
+    }
+  })
+
   it('has no role holding staff:update WITHOUT payroll:read', () => {
     // Why this matters: the base-salary guard uses payroll:['read'] on the
     // deliberate reading that what someone is paid is a payroll fact, not a

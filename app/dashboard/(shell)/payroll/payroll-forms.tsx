@@ -1,7 +1,7 @@
 'use client'
 
 import { useActionState } from 'react'
-import { addDeductionAction, removeDeductionAction } from './actions'
+import { addDeductionAction, closePayrollAction, removeDeductionAction } from './actions'
 import type { FormState } from '@/lib/form-state'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -57,6 +57,26 @@ export function RemoveDeductionButton({ id }: { id: string }) {
     <form action={action} className="inline">
       <input type="hidden" name="id" value={id} />
       <Button type="submit" variant="ghost" size="sm" disabled={pending}>Hapus</Button>
+      {state.error && <span className="text-sm text-destructive">{state.error}</span>}
+    </form>
+  )
+}
+
+/**
+ * Closing snapshots the month and freezes its deductions. There is no reopen:
+ * a correction belongs in the next month, where it is visible as a correction.
+ */
+export function ClosePayrollButton({ month }: { month: string }) {
+  const [state, action, pending] = useActionState(closePayrollAction, initial)
+  return (
+    <form action={action} className="flex flex-wrap items-center gap-2">
+      <input type="hidden" name="month" value={month} />
+      <Button type="submit" variant="outline" size="sm" disabled={pending}>
+        {pending ? 'Menutup…' : 'Tutup penggajian bulan ini'}
+      </Button>
+      <span className="text-xs text-muted-foreground">
+        Angka dibekukan dan potongan tidak bisa diubah lagi.
+      </span>
       {state.error && <span className="text-sm text-destructive">{state.error}</span>}
     </form>
   )

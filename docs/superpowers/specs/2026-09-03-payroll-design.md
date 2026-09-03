@@ -21,9 +21,11 @@ either side of them and the screen that puts all three together.
 ### Out of scope
 
 - **Attendance and leave.** §5.9 excludes them by name.
-- **A payroll RUN.** `payroll: ['run', 'lock']` exist in `lib/permissions.ts`
-  and stay unused — see §2.4, which says what they are for and why the MVP
-  does not need them.
+- **A separate payroll RUN step.** Closing a month snapshots and freezes it in
+  one action (§2.5b), guarded by `payroll:['lock']`. `payroll:['run']` stays
+  unused: a run earns its place when there are payslips to produce and review
+  before payment, and with nothing to produce it would be the same button with
+  two names.
 - **Payslip documents.** The recap is a screen; a PDF per staff member is
   post-MVP, and the receipt's print stylesheet is the pattern when it lands.
 - **Proration.** Someone who joins mid-month gets the whole base. Real
@@ -56,7 +58,7 @@ Rp 50.000" has an answer.
 a text month sorts correctly by luck, cannot be compared with a range, and
 puts the parsing in every query that touches it.
 
-### 2.4 There is no payroll RUN, and that is a real limitation
+### 2.4 Closing a month freezes it — the limitation below, closed
 
 The recap is computed on read: base + the month's commissions − the month's
 deductions.
@@ -72,12 +74,30 @@ correction be a new adjustment rather than an edit — which is what
 asks for a recap, and a run without a payslip to produce is machinery with no
 output.
 
-**ponytail: recap computed on read; a deduction edited after payday silently
-rewrites history. Upgrade path: a payroll_runs table snapshotting base,
-commission and deductions per staff per month, with `lock` freezing it.**
+**This was left open and is now fixed** (§2.7). Recorded as written, because
+the reasoning is why the fix looks the way it does.
 
-Said plainly here rather than discovered by whoever reconciles a payslip
-against the screen.
+### 2.5b Closing a month snapshots it and freezes its inputs
+
+One action, `payroll:['lock']`: it writes a `payroll_runs` row with a line per
+staff member — base, commission, deductions and net **as they stood** — and
+from then on the recap for that month reads the snapshot rather than
+recomputing.
+
+`payroll:['run']` stays unused, and that is deliberate rather than an
+oversight. A separate "run" step earns its place when there are payslips to
+produce and review before payment; with nothing to produce, run and lock would
+be the same button with two names.
+
+**Deductions for a closed month are refused by a trigger**, not by the action:
+the recap reads a snapshot so an edit would no longer change the number, but it
+would still change what `listDeductions` shows beside it, and a stylist
+querying a payslip would find the screen disagreeing with the paper.
+
+**A closed month does not reopen.** That is the accounting answer, not
+laziness: a correction belongs in the next month, where it is visible as a
+correction, rather than silently altering a period that has been paid and
+reported. Reopening is refused with the same trigger.
 
 ## 3. Data model
 
@@ -128,6 +148,10 @@ Playwright:
 9. Setting a base salary on a staff member shows it in the recap.
 10. Adding a deduction lowers the net; removing it restores.
 11. Front desk and stylists are refused the page entirely.
+12. Closing freezes the figures: a base salary changed afterwards does not
+    move them, and neither the deduction form nor the remove button is offered.
+13. The deduction endpoint refuses a closed month even when the form's fields
+    are posted from before the close — the stale-tab case.
 
 ### 5b. What the breaks caught
 

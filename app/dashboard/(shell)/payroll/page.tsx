@@ -1,5 +1,5 @@
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { listDeductions, payrollRecap } from '@/lib/payroll'
+import { listDeductions, payrollRecap, payrollRun } from '@/lib/payroll'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
 import { buttonVariants } from '@/components/ui/button'
 import {
@@ -8,7 +8,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { DeductionForm, RemoveDeductionButton } from './payroll-forms'
+import { ClosePayrollButton, DeductionForm, RemoveDeductionButton } from './payroll-forms'
 
 const thisMonth = () => {
   const d = new Date()
@@ -29,9 +29,10 @@ export default async function PayrollPage({
   const { month: raw } = await searchParams
   const month = /^\d{4}-\d{2}-01$/.test(raw ?? '') ? raw! : thisMonth()
 
-  const [rows, deductions] = await Promise.all([
+  const [rows, deductions, closed] = await Promise.all([
     payrollRecap(organizationId, month),
     listDeductions(organizationId, month),
+    payrollRun(organizationId, month),
   ])
   const currency = (rows[0]?.currency ?? 'IDR') as CurrencyCode
   const total = rows.reduce((n, r) => n + r.net, 0)
@@ -53,6 +54,15 @@ export default async function PayrollPage({
         Total dibayarkan bulan ini:{' '}
         <span className="font-medium text-foreground">{formatMoney(total, currency)}</span>
       </p>
+
+      {closed ? (
+        <p className="rounded-md border p-3 text-sm" data-testid="payroll-closed">
+          Ditutup {closed.closedAt}. Angka di bawah ini adalah snapshot saat penutupan
+          dan tidak berubah lagi.
+        </p>
+      ) : (
+        <ClosePayrollButton month={month} />
+      )}
 
       <Table>
         <TableHeader>
@@ -102,15 +112,23 @@ export default async function PayrollPage({
                     {d.note && <span className="text-muted-foreground"> — {d.note}</span>}
                   </span>
                   <span>{formatMoney(d.amount, currency)}</span>
-                  <RemoveDeductionButton id={d.id} />
+                  {/* A closed month refuses the write anyway; not offering the
+                      button keeps it from reading as a broken app. */}
+                  {!closed && <RemoveDeductionButton id={d.id} />}
                 </li>
               ))}
             </ul>
           )}
-          <DeductionForm
-            month={month}
-            staff={rows.map((r) => ({ userId: r.userId, name: r.name }))}
-          />
+          {closed ? (
+            <p className="text-sm text-muted-foreground">
+              Bulan ini sudah ditutup. Catat koreksi di bulan berikutnya.
+            </p>
+          ) : (
+            <DeductionForm
+              month={month}
+              staff={rows.map((r) => ({ userId: r.userId, name: r.name }))}
+            />
+          )}
         </CardContent>
       </Card>
     </div>

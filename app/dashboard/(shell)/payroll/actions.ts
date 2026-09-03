@@ -2,7 +2,9 @@
 
 import { revalidatePath } from 'next/cache'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
-import { addDeduction, removeDeduction, setBaseSalary } from '@/lib/payroll'
+import {
+  addDeduction, closePayrollMonth, removeDeduction, setBaseSalary,
+} from '@/lib/payroll'
 import { parseMoney } from '@/lib/money'
 import { salonSettings } from '@/lib/service'
 import { type FormState } from '@/lib/form-state'
@@ -11,6 +13,11 @@ const failed = (e: unknown, fallback: string) => {
   const code = e instanceof Error ? e.message : ''
   if (code === 'NOT_FOUND') return { error: 'Data tidak ditemukan.' }
   if (code === 'BAD_AMOUNT') return { error: 'Jumlah tidak valid.' }
+  if (code === 'MONTH_CLOSED') {
+    return { error: 'Penggajian bulan ini sudah ditutup. Catat koreksinya di bulan berikutnya.' }
+  }
+  if (code === 'ALREADY_CLOSED') return { error: 'Bulan ini sudah ditutup.' }
+  if (code === 'NOTHING_TO_CLOSE') return { error: 'Belum ada staf untuk ditutup.' }
   return { error: fallback }
 }
 
@@ -79,6 +86,29 @@ export async function setBaseSalaryAction(
     await setBaseSalary(String(formData.get('userId') ?? ''), organizationId, baseSalary)
   } catch (e) {
     return failed(e, 'Gaji pokok gagal disimpan.')
+  }
+  revalidatePath('/dashboard/payroll')
+  return { done: true }
+}
+
+/**
+ * Close the month: snapshot every figure and freeze the inputs.
+ *
+ * payroll:['lock'], not ['read'] -- reading a recap and ending a pay period
+ * are different acts, and this one cannot be undone. Owner and admin hold
+ * both today, so no role separates them yet; tests/permissions.test.ts pins
+ * that fact so the choice becomes falsifiable the day one does.
+ */
+export async function closePayrollAction(
+  _prev: FormState, formData: FormData,
+): Promise<FormState> {
+  const session = await requirePagePermission({ payroll: ['lock'] })
+  const { organizationId } = await requirePageOrg()
+  try {
+    await closePayrollMonth(
+      organizationId, String(formData.get('month') ?? ''), session.user.id)
+  } catch (e) {
+    return failed(e, 'Gagal menutup penggajian.')
   }
   revalidatePath('/dashboard/payroll')
   return { done: true }
