@@ -1,5 +1,5 @@
 import {
-  bigint, boolean, char, index, pgTable, smallint, text, timestamp, unique,
+  bigint, boolean, char, index, integer, pgTable, smallint, text, timestamp, unique,
 } from 'drizzle-orm/pg-core'
 import { organizations } from './auth'
 
@@ -19,6 +19,10 @@ export const salonProfiles = pgTable('salon_profiles', {
   logoKey: text('logo_key'),
   logoUpdatedAt: timestamp('logo_updated_at', { withTimezone: true }),
   brandColor: text('brand_color'),
+  // The receipt counter. Bumped by `update ... returning` at completion, which
+  // is one statement and therefore serialises per salon without an explicit
+  // lock -- two sales cannot be handed the same number.
+  nextInvoiceNo: integer('next_invoice_no').notNull().default(1),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })

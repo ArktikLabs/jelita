@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
+import { checkout, closeShift, currentShift, voidSale } from '../lib/pos'
 
 /**
  * The POS ledger's guarantees, asserted against real Postgres.
@@ -73,6 +74,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // TRUNCATE first: deleting the organization cascades into settled
+  // transactions, which the immutability trigger refuses -- correctly.
+  await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
   await pool.query(`delete from organizations where id = any($1)`, [[ORG, ORG2]])
   await pool.end()
 })
@@ -276,5 +280,236 @@ describe('one booking, one sale', () => {
   it('refuses another salon\'s booking', async () => {
     await expect(openSale({ bookingId: crypto.randomUUID() }))
       .rejects.toThrow(/transactions_booking_fk/)
+  })
+})
+
+describe('checkout', () => {
+  const STAFF = 'pos_stylist'
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+    await pool.query(`update salon_profiles set next_invoice_no = 1 where organization_id = $1`, [ORG])
+    await pool.query(`delete from service_branch_overrides where service_id = $1`, [SERVICE])
+    await pool.query(`update services set price = 150000 where id = $1`, [SERVICE])
+  })
+
+  const sale = (over: Partial<Parameters<typeof checkout>[0]> = {}) => checkout({
+    organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
+    items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }], ...over,
+  })
+
+  const readSale = async (id: string) => (await pool.query(
+    `select status, subtotal, discount, total, invoice_no, shift_id, currency
+       from transactions where id = $1`, [id])).rows[0]
+
+  it('writes a completed sale, its line and its payment, and numbers it', async () => {
+    const { id, invoiceNo } = await sale()
+    expect(invoiceNo).toBe(1)
+    expect(await readSale(id)).toMatchObject({
+      status: 'completed', subtotal: '150000', discount: '0', total: '150000',
+      invoice_no: 1, currency: 'IDR',
+    })
+    const lines = await pool.query(
+      `select name, unit_price, quantity from transaction_lines where transaction_id = $1`, [id])
+    expect(lines.rows[0]).toMatchObject({ name: 'Potong', unit_price: '150000', quantity: 1 })
+    const paid = await pool.query(
+      `select method, amount, provider, status from transaction_payments
+        where transaction_id = $1`, [id])
+    expect(paid.rows[0]).toMatchObject({
+      method: 'cash', amount: '150000', provider: 'manual', status: 'settled',
+    })
+  })
+
+  it('never leaves an OPEN row behind -- the cart is not a row', async () => {
+    await sale()
+    const { rows } = await pool.query(
+      `select count(*)::int n from transactions where status = 'open'`)
+    expect(rows[0].n, 'an abandoned open cart would block its booking forever').toBe(0)
+  })
+
+  it('numbers sales consecutively, per salon', async () => {
+    expect((await sale()).invoiceNo).toBe(1)
+    expect((await sale()).invoiceNo).toBe(2)
+    expect((await sale()).invoiceNo).toBe(3)
+  })
+
+  it('hands two concurrent sales different numbers', async () => {
+    // One `update ... returning` per allocation, so this serialises per salon
+    // without an explicit lock. A read-then-write would hand out duplicates.
+    const results = await Promise.all([sale(), sale(), sale()])
+    const numbers = results.map((r) => r.invoiceNo).sort()
+    expect(new Set(numbers).size).toBe(3)
+  })
+
+  it('prices from the branch, ignoring anything a caller might post', async () => {
+    await pool.query(`
+      insert into service_branch_overrides (service_id, team_id, organization_id, price, offered)
+      values ($1, $2, $3, 99000, true)`, [SERVICE, TEAM, ORG])
+    const { id } = await sale()
+    expect(await readSale(id)).toMatchObject({ subtotal: '99000', total: '99000' })
+  })
+
+  it('applies line and order discounts as amounts', async () => {
+    const { id } = await sale({
+      items: [{ serviceId: SERVICE, quantity: 2, discount: 10000 }],
+      discount: 5000,
+    })
+    expect(await readSale(id)).toMatchObject({
+      subtotal: '300000', discount: '15000', total: '285000',
+    })
+  })
+
+  it('refuses a discount larger than the sale', async () => {
+    await expect(sale({ discount: 200000 })).rejects.toThrow('BAD_DISCOUNT')
+    await expect(sale({ items: [{ serviceId: SERVICE, quantity: 1, discount: 200000 }] }))
+      .rejects.toThrow('BAD_DISCOUNT')
+    const { rows } = await pool.query(`select count(*)::int n from transactions`)
+    expect(rows[0].n, 'and writes nothing').toBe(0)
+  })
+
+  it('refuses a service the branch does not offer, whole', async () => {
+    await pool.query(`
+      insert into service_branch_overrides (service_id, team_id, organization_id, offered)
+      values ($1, $2, $3, false)`, [SERVICE, TEAM, ORG])
+    await expect(sale()).rejects.toThrow('NOT_OFFERED')
+  })
+
+  it('refuses an empty cart', async () => {
+    await expect(sale({ items: [] })).rejects.toThrow('EMPTY_CART')
+  })
+
+  it('opens a shift on the first sale and reuses it after', async () => {
+    const a = await sale()
+    const b = await sale()
+    const { rows } = await pool.query(
+      `select count(*)::int n from shifts where team_id = $1 and closed_at is null`, [TEAM])
+    expect(rows[0].n, 'one open shift, not one per sale').toBe(1)
+    const shifts = await pool.query(
+      `select distinct shift_id from transactions where id = any($1)`, [[a.id, b.id]])
+    expect(shifts.rows).toHaveLength(1)
+  })
+
+  it('allows only one open shift per branch, even concurrently', async () => {
+    await Promise.all([
+      currentShift(ORG, TEAM, STAFF), currentShift(ORG, TEAM, STAFF),
+      currentShift(ORG, TEAM, STAFF),
+    ])
+    const { rows } = await pool.query(
+      `select count(*)::int n from shifts where team_id = $1 and closed_at is null`, [TEAM])
+    expect(rows[0].n).toBe(1)
+  })
+})
+
+describe('voiding within the shift window', () => {
+  const STAFF = 'pos_stylist'
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+    await pool.query(`update salon_profiles set next_invoice_no = 1 where organization_id = $1`, [ORG])
+    await pool.query(`delete from service_branch_overrides where service_id = $1`, [SERVICE])
+  })
+
+  const sale = () => checkout({
+    organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
+    items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+  })
+
+  it('mirrors the sale, and the ledger nets to zero', async () => {
+    const { id } = await sale()
+    const { invoiceNo } = await voidSale(id, ORG)
+    expect(invoiceNo, 'a void is a document too').toBe(2)
+    const { rows } = await pool.query(
+      `select coalesce(sum(total), 0)::bigint revenue from transactions
+        where organization_id = $1 and status <> 'open'`, [ORG])
+    expect(Number(rows[0].revenue)).toBe(0)
+    const lines = await pool.query(
+      `select sum(unit_price * quantity)::bigint gross from transaction_lines l
+         join transactions t on t.id = l.transaction_id
+        where t.organization_id = $1`, [ORG])
+    expect(Number(lines.rows[0].gross), 'the lines mirror too').toBe(0)
+  })
+
+  it('is REFUSED once the shift has closed', async () => {
+    const { id } = await sale()
+    const { rows } = await pool.query(
+      `select id from shifts where team_id = $1 and closed_at is null`, [TEAM])
+    await closeShift(rows[0].id, ORG, STAFF)
+    await expect(voidSale(id, ORG)).rejects.toThrow('SHIFT_CLOSED')
+  })
+
+  it('refuses a second close of the same shift', async () => {
+    await sale()
+    const { rows } = await pool.query(
+      `select id from shifts where team_id = $1 and closed_at is null`, [TEAM])
+    await closeShift(rows[0].id, ORG, STAFF)
+    await expect(closeShift(rows[0].id, ORG, STAFF)).rejects.toThrow('SHIFT_NOT_OPEN')
+  })
+
+  it('opens a fresh shift after one closes, and sales there are voidable again', async () => {
+    const first = await sale()
+    const { rows } = await pool.query(
+      `select id from shifts where team_id = $1 and closed_at is null`, [TEAM])
+    await closeShift(rows[0].id, ORG, STAFF)
+    const second = await sale()
+    await expect(voidSale(first.id, ORG)).rejects.toThrow('SHIFT_CLOSED')
+    await expect(voidSale(second.id, ORG)).resolves.toBeTruthy()
+  })
+
+  it('cannot reach another salon\'s sale', async () => {
+    const { id } = await sale()
+    await expect(voidSale(id, ORG2)).rejects.toThrow('NOT_FOUND')
+  })
+})
+
+describe('checkout completes the booking behind it', () => {
+  const STAFF = 'pos_stylist'
+  let bookingId: string
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+    await pool.query(`delete from bookings where organization_id = $1`, [ORG])
+    bookingId = crypto.randomUUID()
+    await pool.query(
+      `insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                             service_id, starts_at, ends_at, status,
+                             duration_minutes, price, currency)
+       values ($1, $2, $3, 'pos_stylist', $4, $5, '2027-07-14 10:00', '2027-07-14 11:00',
+               'pending', 60, 150000, 'IDR')`,
+      [bookingId, ORG, TEAM, CUSTOMER, SERVICE])
+  })
+
+  it('completes a PENDING booking -- money beats a front-desk click', async () => {
+    // setBookingStatus refuses pending -> completed on purpose. Checkout
+    // widens it deliberately (spec 2.5): someone who paid showed up.
+    await checkout({
+      organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'qris',
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+      bookingId, customerId: CUSTOMER,
+    })
+    const { rows } = await pool.query(`select status from bookings where id = $1`, [bookingId])
+    expect(rows[0].status).toBe('completed')
+  })
+
+  it('refuses to charge the same booking twice', async () => {
+    const args = {
+      organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash' as const,
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+      bookingId, customerId: CUSTOMER,
+    }
+    await checkout(args)
+    await expect(checkout(args)).rejects.toThrow('ALREADY_CHARGED')
+  })
+
+  it('a sale with no booking and no customer is fine', async () => {
+    const { id } = await checkout({
+      organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+    })
+    const { rows } = await pool.query(
+      `select customer_id, booking_id from transactions where id = $1`, [id])
+    expect(rows[0]).toEqual({ customer_id: null, booking_id: null })
   })
 })

@@ -88,6 +88,30 @@ Name, unit price, quantity and discount are copied onto the line, exactly as
 `bookings` snapshots duration and price (booking spec §2.5). A receipt reprinted
 next month must say what was charged, not what the price list says today.
 
+### 2.4b The cart is a form, not a row
+
+`transactions_one_per_booking` counts **open** rows. A durable cart abandoned
+against a booking would therefore block that booking from ever being charged,
+with the customer standing at the counter — and no amount of cleanup logic
+makes that a good design.
+
+So the cart lives in the page, and `open` exists only **inside the write
+transaction**: insert, add lines, take payment, complete, commit. Nobody ever
+observes an open row, the triggers keep the semantics they were built with,
+and there is nothing to abandon, resume or expire.
+
+§5.2 asks for checkout in ≤5 clicks, which is one screen. A durable cart would
+be machinery for a multi-session flow the PRD does not ask for.
+
+### 2.4c Prices are never posted
+
+The caller names services, quantities and discount **amounts**. The server
+resolves the price from `service_branch_pricing` itself, inside the same
+transaction, so a branch override applies and a posted price cannot.
+
+The same class of hole as the posted `teamId` found in the booking action —
+except the field is money.
+
 ### 2.5 Checkout completes a booking that is still `pending`
 
 `lib/booking.ts`'s lifecycle is `pending → confirmed → completed`, and refuses
@@ -96,6 +120,46 @@ and money is better proof of attendance than a front-desk click.
 
 Recorded here because it is a deliberate widening of a table that otherwise
 exists to refuse exactly this.
+
+### 2.7 Voiding is bounded by the shift
+
+A void is allowed while the sale's till session is open, and refused after.
+The boundary has to be declared by somebody, so `shifts` is a row per branch:
+opened, closed, by whom.
+
+**Enforced by a trigger**, because a void is an *insert* of a reversal — the
+immutability trigger guards updates and does not cover it, and "the window has
+shut" is exactly the rule a report or a fix-it script would not think to check.
+
+**No open shift at checkout opens one.** A till that refuses to sell because
+somebody forgot a button is the worst failure a POS can have. Closing stays
+explicit: closing is the act that locks the takings, and it is where a Z-report
+will go. No cash counting in the MVP — this is a boundary, not a drawer.
+
+`unique (team_id) where closed_at is null` means one open shift per branch, so
+two concurrent first-sales cannot split the day across two windows that both
+look current.
+
+**A reversal is built `open` and settled at the end**, exactly as a sale is.
+Not written straight to `reversal`: the line trigger refuses writes whose
+parent is past `open`, so a reversal born settled could never be given its own
+lines. Weakening that trigger to admit reversals would open a door on every
+future path; giving the void the same lifecycle keeps the rule absolute. Its
+amounts start positive for the same reason — `transactions_total_sign` permits
+a negative total only on a reversal — and are negated by the one statement that
+settles it.
+
+### 2.8 Receipts carry a running number
+
+A per-salon integer, allocated by `update ... returning` at completion. One
+statement, so it serialises per salon without an explicit lock and cannot hand
+two sales the same number; `unique (organization_id, invoice_no)` makes a
+duplicate unrepresentable regardless. A void gets its own number, because a
+void is a document someone receives.
+
+Not year-prefixed with an annual reset: that needs a reset rule and a stored
+year, and if Indonesian tax invoicing ever matters it will impose its own
+format.
 
 ### 2.6 Branding goes to S3-compatible object storage
 
@@ -276,6 +340,17 @@ Playwright:
 15. Front desk may check out and discount but is refused void; owner may void.
 16. The receipt renders the logo and brand colour.
 17. Voiding shows the reversal and leaves the original readable.
+
+### 7b. What the breaks caught here
+
+- **`pgMentions` walking `cause`.** Drizzle wraps driver errors, so matching a
+  constraint name on the top-level error never fires. This had already cost
+  the booking engine a dead retry path; `lib/pg-error.ts` now exists so the
+  next caller finds it instead of re-deriving it, and `lib/booking.ts` reads
+  through it too.
+- **Invoice allocation.** Replacing `update ... returning` with a read then a
+  write fails only the concurrency assertion — which is the one that matters,
+  and the one a single-threaded test would never have shown.
 
 **Every load-bearing assertion gets break-and-restore evidence.** Ten
 assertions in this project have passed for the wrong reason; every one was

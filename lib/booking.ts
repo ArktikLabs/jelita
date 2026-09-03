@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
+import { pgCode } from './pg-error'
 
 /**
  * The single authority every booking path routes through -- the internal form
@@ -47,15 +48,12 @@ const nowLocal = (): SlotTime => {
 /**
  * Postgres exclusion_violation -- bookings_no_overlap rejecting an overlap.
  *
- * Checked on `cause` as well as the error itself: drizzle wraps a driver error
- * in a DrizzleQueryError carrying the original underneath, so reading `.code`
- * off the top level alone never matches and the retry below can never fire.
+ * Read through pgCode, which walks `cause`: drizzle wraps a driver error in a
+ * DrizzleQueryError carrying the original underneath, so reading `.code` off
+ * the top level alone never matches and the retry below can never fire. That
+ * was a real bug here once.
  */
-const isSlotTaken = (e: unknown): boolean => {
-  if (typeof e !== 'object' || e === null) return false
-  if ((e as { code?: string }).code === '23P01') return true
-  return 'cause' in e && isSlotTaken((e as { cause?: unknown }).cause)
-}
+const isSlotTaken = (e: unknown) => pgCode(e) === '23P01'
 
 type SlotQuery = {
   organizationId: string

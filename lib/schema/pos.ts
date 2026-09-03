@@ -24,6 +24,12 @@ export const transactions = pgTable('transactions', {
   // Nullable: a direct sale has no appointment behind it.
   bookingId: text('booking_id'),
   status: text('status').notNull().default('open'),
+  // The till session this sale belongs to. Voiding is allowed while it is
+  // open and refused after (spec 2.7).
+  shiftId: text('shift_id'),
+  // Per-salon running number, allocated atomically at completion. A UUID is
+  // unusable over WhatsApp; this is what a customer quotes.
+  invoiceNo: integer('invoice_no'),
   // The transaction this one reverses. Unique, so a sale can be voided at
   // most once -- a constraint rather than a check somebody remembers.
   reversesId: text('reverses_id'),
@@ -39,6 +45,7 @@ export const transactions = pgTable('transactions', {
 }, (t) => [
   unique('transactions_org_id').on(t.organizationId, t.id),
   unique('transactions_reverses').on(t.reversesId),
+  unique('transactions_invoice_no').on(t.organizationId, t.invoiceNo),
   index('transactions_day_idx').on(t.organizationId, t.teamId, t.completedAt),
 ])
 
@@ -82,3 +89,29 @@ export const transactionPayments = pgTable('transaction_payments', {
   status: text('status').notNull().default('settled'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index('transaction_payments_txn_idx').on(t.transactionId)])
+
+/**
+ * A till session. The boundary a void lives inside: a sale can be reversed
+ * while its shift is open, and not after (spec 2.7).
+ *
+ * Opened automatically by the first sale of a session -- a till that refuses
+ * to sell because somebody forgot a button is the worst failure a POS can
+ * have. Closing is explicit, because closing is the act that locks the
+ * takings.
+ *
+ * No cash counting in the MVP: this is a boundary, not a drawer. An opening
+ * float and a closing count are what it grows into.
+ */
+export const shifts = pgTable('shifts', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull()
+    .references(() => organizations.id, { onDelete: 'cascade' }),
+  teamId: text('team_id').notNull(),
+  openedBy: text('opened_by').notNull(),
+  openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
+  closedBy: text('closed_by'),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+}, (t) => [
+  unique('shifts_org_id').on(t.organizationId, t.id),
+  index('shifts_open_idx').on(t.organizationId, t.teamId, t.closedAt),
+])
