@@ -183,6 +183,13 @@
       "when": 1788428450742,
       "tag": "0025_last_owner_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1788428451742,
+      "tag": "0026_seat_quota_guard",
+      "breakpoints": true
     }
   ]
 }

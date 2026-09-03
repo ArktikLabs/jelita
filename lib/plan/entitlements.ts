@@ -149,12 +149,25 @@ export async function requireQuota(resource: CappedResource, organizationId?: st
   const used = await countResource(orgId, resource)
   if (used === null) return // not countable yet; see countResource
 
-  // ponytail: check-then-act, no unique constraint behind it — two concurrent
-  // creates at used = cap - 1 both pass and the tenant lands one seat over.
-  // Ceiling: an off-by-one overshoot per race, self-healing for branches (the
-  // view recomputes lock state) but not for seats. Upgrade path: a
-  // `members`-counting exclusion/trigger constraint, or serialize seat creation
-  // per organization (advisory lock on organization_id) if it ever matters.
+  // This check is the FRIENDLY half. For STAFF the guarantee lives in the
+  // database: `members_within_seat_cap` (migration 0026) refuses an insert
+  // that would put a salon over its cap, counting seats exactly as
+  // countResource does above.
+  //
+  // It had to go there for the same reason the ownerless guard did:
+  // better-auth's addMember writes the members row through its own adapter, so
+  // no application transaction covers both this count and that write. The
+  // trigger takes `for update` on the organization row first -- without it two
+  // concurrent inserts each count a snapshot excluding the other and both pass.
+  //
+  // This clause stays because a constraint error is not a message anyone
+  // should read: it turns the common case into a PlanError carrying the cap
+  // and the plan name, which is what the upgrade prompt renders.
+  //
+  // ponytail: BRANCHES and SERVICES still race here. A branch overshoot is
+  // self-healing (branch_entitlement recomputes which are within cap, so the
+  // extra one is simply locked); a service overshoot is a stale count until
+  // someone retires one. Same fix shape as 0026 when either matters.
   if (used >= cap) {
     throw new PlanError('QUOTA_EXCEEDED', {
       resource, cap, used,

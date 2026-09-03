@@ -55,6 +55,13 @@ beforeAll(async () => {
   // A fixture without one is a state the product cannot reach, and since
   // migration 0025 the database says so -- deactivating anybody in an
   // ownerless salon is refused as "would be left with no active owner".
+  // Business: this fixture has more staff than the free plan's three seats,
+  // and since migration 0026 the database enforces that cap rather than
+  // trusting requireQuota to have been called. A salon with five people is
+  // not on the free tier.
+  await pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = any($1)`, [[ORG, ORG2]])
   for (const [org, id] of [[ORG, 'bkg_fixture_owner'], [ORG2, 'bkg_fixture_owner2']] as const) {
     await pool.query(`
       insert into users (id, name, email, email_verified, created_at, updated_at)
