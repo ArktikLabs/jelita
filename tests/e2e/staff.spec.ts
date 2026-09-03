@@ -1,7 +1,7 @@
 import { expect, request, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
-import { createSalon } from './fixtures'
+import { createSalon, BASE_URL } from './fixtures'
 
 /**
  * Guards, redirects, form posts, provisioning (the JSON API and both Server
@@ -20,7 +20,7 @@ import { createSalon } from './fixtures'
  */
 const DOMAIN = 'staffcheck.local'
 const PW = 'demo12345'
-const BASE_URL = 'http://localhost:3100'
+
 
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 

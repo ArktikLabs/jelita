@@ -3,7 +3,15 @@ import { randomUUID } from 'node:crypto'
 import { request } from '@playwright/test'
 import type { Pool } from 'pg'
 
-export const BASE_URL = 'http://localhost:3100'
+/**
+ * The e2e server's origin.
+ *
+ * Overridable via E2E_PORT so a stale dev server from a killed run does not
+ * block the next one, and defined ONCE: seven spec files each hardcoding
+ * `localhost:3100` is seven places for an override to miss.
+ */
+export const E2E_PORT = Number(process.env.E2E_PORT ?? 3100)
+export const BASE_URL = `http://localhost:${E2E_PORT}`
 
 /**
  * A request context with its own cookie jar that never follows redirects --

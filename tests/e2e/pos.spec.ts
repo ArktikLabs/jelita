@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
-import { createSalon, signIn } from './fixtures'
+import { createSalon, E2E_PORT, signIn } from './fixtures'
 
 /**
  * Checkout, the receipt, voiding, and the branding that rides on both.
@@ -84,8 +84,11 @@ test.beforeEach(async () => {
   await pool.query(`update salon_profiles set next_invoice_no = 1 where organization_id = $1`, [orgId])
 
   const { rows: [customer] } = await pool.query(
+    // phone_key is what normalizePhone(phone) actually produces -- written by
+    // hand once and one digit short, which made the POS search find nothing
+    // and looked like a broken search rather than a broken fixture.
     `insert into customers (id, organization_id, name, phone, phone_key)
-     values ($1, $2, 'Ibu Kasir', '081277770001', '628127777001')
+     values ($1, $2, 'Ibu Kasir', '081277770001', '6281277770001')
      on conflict (organization_id, phone_key) where phone_key is not null
      do update set name = excluded.name returning id`, [crypto.randomUUID(), orgId])
   bookingId = crypto.randomUUID()
@@ -348,6 +351,70 @@ test.describe.serial('retail and stock', () => {
   })
 })
 
+test.describe.serial('the member profile', () => {
+  test('the customer page shows spend, visits and what was bought', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    const { rows } = await pool.query(
+      `select customer_id from transactions where organization_id = $1`, [orgId])
+    await page.goto(`/dashboard/customers/${rows[0].customer_id}`)
+    // Scoped to the stat tile: the same figure also appears on the visit row
+    // below, and an unscoped match is a strict-mode violation rather than an
+    // assertion.
+    // By test id: the same figure appears on the visit row below, so an
+    // unscoped text match is a strict-mode violation rather than an assertion.
+    await expect(page.getByTestId('stat-Total belanja')).toContainText('150.000')
+    await expect(page.getByTestId('stat-Kunjungan')).toHaveText('1')
+    await expect(page.getByRole('cell', { name: 'Creambath' })).toBeVisible()
+  })
+
+  test('the POS finds a customer by number and carries them into the sale', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/pos?q=081277770001')
+    await page.getByRole('link', { name: /Ibu Kasir/ }).click()
+    await expect(page.locator('#phone')).toHaveValue('081277770001')
+
+    await page.locator('#add').selectOption(serviceId)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    const { rows } = await pool.query(
+      `select c.name from transactions t join customers c on c.id = t.customer_id
+        where t.organization_id = $1`, [orgId])
+    expect(rows[0].name, 'the sale attached to the customer that was picked')
+      .toBe('Ibu Kasir')
+  })
+
+  test('carries a customer who has NO phone, where the id is the only link', async ({ page }) => {
+    // With a phone on file the id is redundant: checkoutAction falls back to
+    // findOrCreateByPhone and lands on the same person either way, so dropping
+    // it fails nothing. A walk-in recorded by name only is where it matters.
+    const nameless = crypto.randomUUID()
+    await pool.query(
+      `insert into customers (id, organization_id, name) values ($1, $2, 'Bu Tanpa Nomor')`,
+      [nameless, orgId])
+
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/pos?customer=${nameless}`)
+    await page.locator('#add').selectOption(serviceId)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    const { rows } = await pool.query(
+      `select customer_id from transactions where organization_id = $1`, [orgId])
+    expect(rows[0].customer_id).toBe(nameless)
+  })
+
+  test('a search that matches nothing says so rather than looking broken', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/pos?q=tidakada')
+    await expect(page.getByText('Tidak ada yang cocok.', { exact: false })).toBeVisible()
+  })
+})
+
 test.describe.serial('branding', () => {
   test('an SVG is refused, and a PNG is accepted and served', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
@@ -390,7 +457,7 @@ test.describe.serial('branding', () => {
     await page.waitForURL('**/dashboard/transactions/**')
     await expect(page.locator('img[src*="/api/salon/logo"]')).toBeVisible()
 
-    await page.goto('http://poscheck.localhost:3100/book')
+    await page.goto(`http://poscheck.localhost:${E2E_PORT}/book`)
     await expect(page.locator('img[src*="/api/salon/logo"]')).toBeVisible()
   })
 })

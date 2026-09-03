@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
-import { client, createLogin } from './fixtures'
+import { client, createLogin, BASE_URL } from './fixtures'
 import { clearMail, waitForMail } from './mail'
 
 /**
@@ -257,7 +257,7 @@ test.describe.serial('sign-up, sessions, roles, permissions and staff provisioni
   test('forgot/reset password: round trip, and the token cannot be reused', async () => {
     clearMail()
     const fp = await (await client()).post('/api/auth/request-password-reset',
-      { data: { email: `sinta@${DOMAIN}`, redirectTo: 'http://localhost:3100/reset-password' } })
+      { data: { email: `sinta@${DOMAIN}`, redirectTo: `${BASE_URL}/reset-password` } })
     expect(fp.status(), await fp.text()).toBe(200)
 
     const token = await waitForMail(/token=([A-Za-z0-9._-]+)/)

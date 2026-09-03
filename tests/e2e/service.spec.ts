@@ -1,7 +1,7 @@
 import { expect, request, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
-import { createLogin, createSalon, signIn } from './fixtures'
+import { createLogin, createSalon, signIn, BASE_URL } from './fixtures'
 import { formatMoney } from '../../lib/money'
 
 /**
@@ -19,7 +19,7 @@ import { formatMoney } from '../../lib/money'
  */
 const DOMAIN = 'svccheck.local'
 const PW = 'demo12345'
-const BASE_URL = 'http://localhost:3100'
+
 
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 

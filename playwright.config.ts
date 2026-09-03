@@ -1,7 +1,16 @@
 import { defineConfig } from '@playwright/test'
 import { TEST_DATABASE_URL } from './tests/db'
 
-const PORT = 3100
+// Overridable so a stale dev server from a killed run does not block the next
+// one: `E2E_PORT=3101 pnpm test:e2e`. Specs that need the port read the same
+// variable with the same default (tests/e2e/public-booking.spec.ts), so the
+// host rewrite and the subdomain URLs stay in step.
+const PORT = Number(process.env.E2E_PORT ?? 3100)
+// The output directory follows the port. Next's dev lock is scoped to distDir,
+// NOT to the port -- so a stale server from a killed run holds `.next-e2e` and
+// refuses the next one with "run kill <pid>", which is exactly the situation
+// an override needs to escape.
+const DIST_DIR = `.next-e2e-${PORT}`
 const BASE_URL = `http://localhost:${PORT}`
 
 /**
@@ -38,7 +47,7 @@ export default defineConfig({
     // The cost, stated plainly: e2e no longer exercises the production build.
     // The shell suites it replaces never did either, so this is not a
     // regression -- but a production-mode run belongs in CI eventually.
-    command: `NEXT_DIST_DIR=.next-e2e pnpm dev --port ${PORT}`,
+    command: `NEXT_DIST_DIR=${DIST_DIR} pnpm dev --port ${PORT}`,
     url: BASE_URL,
     // Never reuse a server across runs. Global setup drops and rebuilds the
     // schema, and a server left over from a previous run still holds warm
@@ -52,7 +61,7 @@ export default defineConfig({
       DATABASE_URL: TEST_DATABASE_URL,
       DIRECT_URL: TEST_DATABASE_URL,
       BETTER_AUTH_URL: BASE_URL,
-      NEXT_DIST_DIR: '.next-e2e',
+      NEXT_DIST_DIR: DIST_DIR,
       // The apex a salon's subdomain hangs off, so the host rewrite in
       // next.config.ts matches `<slug>.localhost:3100`. Subdomains of
       // localhost resolve without a hosts-file entry in Chrome and Firefox,

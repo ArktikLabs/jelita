@@ -1,11 +1,13 @@
+import Link from 'next/link'
 import { headers } from 'next/headers'
 import { requireBranch, requirePagePermission, requirePageOrg } from '@/lib/session'
 import { auth } from '@/lib/auth'
 import { bookableServices, getBooking } from '@/lib/booking'
-import { getCustomer } from '@/lib/customer'
+import { getCustomer, listCustomers } from '@/lib/customer'
 import { salonSettings } from '@/lib/service'
 import { listStaff } from '@/lib/staff'
 import { sellableProducts } from '@/lib/inventory'
+import { buttonVariants } from '@/components/ui/button'
 import { Cart } from './cart'
 
 /**
@@ -18,12 +20,12 @@ import { Cart } from './cart'
 export default async function PosPage({
   searchParams,
 }: {
-  searchParams: Promise<{ bookingId?: string }>
+  searchParams: Promise<{ bookingId?: string; customer?: string; q?: string }>
 }) {
   await requirePagePermission({ pos: ['checkout'] })
   const { organizationId } = await requirePageOrg()
   const { branchId } = await requireBranch()
-  const { bookingId } = await searchParams
+  const { bookingId, customer: customerId, q } = await searchParams
 
   const [services, retail, { currency }, staff] = await Promise.all([
     bookableServices(organizationId, branchId),
@@ -56,9 +58,14 @@ export default async function PosPage({
   })
 
   const booking = bookingId ? await getBooking(bookingId, organizationId) : null
+  // §5.7: "search by name/number from POS for fast lookup at checkout". A GET
+  // param rather than a client fetch -- the same two-phase shape the booking
+  // form uses, so the result is bookmarkable and there is no second code path.
+  const matches = q?.trim() ? await listCustomers(organizationId, { search: q }) : []
+  const chosen = customerId ? await getCustomer(customerId, organizationId) : null
   const bookingCustomer = booking
     ? await getCustomer(booking.customerId, organizationId)
-    : null
+    : chosen
 
   const prefill = booking
     ? {
@@ -78,7 +85,12 @@ export default async function PosPage({
       phone: bookingCustomer?.phone ?? '',
       customerId: bookingCustomer?.id ?? null,
     }
-    : { items: [], name: '', phone: '', customerId: null }
+    : {
+      items: [],
+      name: chosen?.name ?? '',
+      phone: chosen?.phone ?? '',
+      customerId: chosen?.id ?? null,
+    }
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -90,6 +102,48 @@ export default async function PosPage({
           </p>
         )}
       </div>
+      {!booking && (
+        <div className="space-y-2 rounded-md border p-3">
+          <form className="flex flex-wrap items-end gap-2">
+            <div className="space-y-2">
+              <label htmlFor="q" className="text-sm font-medium">Cari pelanggan</label>
+              <input
+                id="q"
+                name="q"
+                defaultValue={q ?? ''}
+                placeholder="Nama atau nomor"
+                className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
+              />
+            </div>
+            <button type="submit" className={buttonVariants({ variant: 'outline' })}>
+              Cari
+            </button>
+          </form>
+          {q?.trim() && (
+            matches.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Tidak ada yang cocok. Isi nama dan nomor di bawah untuk pelanggan baru.
+              </p>
+            ) : (
+              <ul className="flex flex-wrap gap-2">
+                {matches.slice(0, 8).map((c) => (
+                  <li key={c.id}>
+                    <Link
+                      href={`/dashboard/pos?customer=${c.id}`}
+                      className={buttonVariants({
+                        variant: c.id === chosen?.id ? 'default' : 'outline', size: 'sm',
+                      })}
+                    >
+                      {c.name}{c.phone ? ` · ${c.phone}` : ''}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )
+          )}
+        </div>
+      )}
+
       <Cart
         offers={offers}
         performers={performers}

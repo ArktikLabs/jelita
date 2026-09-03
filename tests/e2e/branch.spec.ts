@@ -4,6 +4,7 @@ import { expect, request, test } from '@playwright/test'
 import type { BrowserContext, Page } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
+import { BASE_URL } from './fixtures'
 
 /**
  * Guards, redirects, form posts, the header switcher's rendered output and
@@ -18,7 +19,7 @@ import { TEST_DATABASE_URL } from '../db'
  */
 const DOMAIN = 'branchcheck.local'
 const PW = 'demo12345'
-const BASE_URL = 'http://localhost:3100'
+
 
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 

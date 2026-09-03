@@ -88,3 +88,89 @@ export async function findOrCreateByPhone(
   if (!row) throw new Error('CUSTOMER_CREATE_FAILED')
   return row
 }
+
+export type CustomerVisit = {
+  id: string
+  invoiceNo: number | null
+  at: string
+  total: number
+  currency: string
+  items: string
+  reversal: boolean
+}
+
+export type CustomerBooking = {
+  id: string
+  startsAt: string
+  serviceName: string
+  staffName: string
+  status: string
+}
+
+/**
+ * PRD §5.7's profile: visit history and total spend.
+ *
+ * `spend` sums SIGNED totals over every non-open transaction, so a voided sale
+ * corrects itself -- the same ledger property revenue and commission have, and
+ * the reason there is no "exclude reversals" clause here for the next person to
+ * forget.
+ */
+export async function customerProfile(customerId: string, organizationId: string) {
+  const { rows: summary } = await db.execute(sql`
+    select coalesce(sum(t.total), 0)::bigint as spend,
+           count(*) filter (where t.reverses_id is null)::int as visits,
+           to_char(max(t.completed_at), 'YYYY-MM-DD') as last_visit,
+           max(t.currency) as currency
+      from transactions t
+     where t.organization_id = ${organizationId} and t.customer_id = ${customerId}
+       and t.status <> 'open'`)
+  const s = summary[0] as Record<string, unknown>
+
+  const { rows: visitRows } = await db.execute(sql`
+    select t.id, t.invoice_no, t.total, t.currency, t.reverses_id,
+           to_char(t.completed_at, 'YYYY-MM-DD HH24:MI') as at,
+           string_agg(l.name, ', ' order by l.id) as items
+      from transactions t
+      left join transaction_lines l on l.transaction_id = t.id
+     where t.organization_id = ${organizationId} and t.customer_id = ${customerId}
+       and t.status <> 'open'
+     group by t.id
+     order by t.completed_at desc
+     limit 20`)
+
+  const { rows: bookingRows } = await db.execute(sql`
+    select b.id, b.status, s.name as service_name, u.name as staff_name,
+           to_char(b.starts_at, 'YYYY-MM-DD"T"HH24:MI') as starts_at
+      from bookings b
+      join services s on s.id = b.service_id
+      join users u on u.id = b.staff_user_id
+     where b.organization_id = ${organizationId} and b.customer_id = ${customerId}
+       and b.starts_at >= current_date
+     order by b.starts_at
+     limit 10`)
+
+  return {
+    spend: Number(s.spend),
+    // Reversals are excluded from the COUNT but not from the sum: a voided
+    // sale was not a visit, yet its money must still come back off the total.
+    visits: Number(s.visits),
+    lastVisit: (s.last_visit as string) ?? null,
+    currency: (s.currency as string) ?? 'IDR',
+    visitHistory: (visitRows as Record<string, unknown>[]).map((r) => ({
+      id: r.id as string,
+      invoiceNo: r.invoice_no === null ? null : Number(r.invoice_no),
+      at: r.at as string,
+      total: Number(r.total),
+      currency: r.currency as string,
+      items: (r.items as string) ?? '—',
+      reversal: r.reverses_id !== null,
+    })) satisfies CustomerVisit[],
+    upcoming: (bookingRows as Record<string, unknown>[]).map((r) => ({
+      id: r.id as string,
+      startsAt: r.starts_at as string,
+      serviceName: r.service_name as string,
+      staffName: r.staff_name as string,
+      status: r.status as string,
+    })) satisfies CustomerBooking[],
+  }
+}

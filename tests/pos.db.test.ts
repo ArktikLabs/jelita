@@ -3,6 +3,7 @@ import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { checkout, closeShift, currentShift, voidSale } from '../lib/pos'
 import { commissionFor, commissionRecap } from '../lib/commission'
+import { customerProfile } from '../lib/customer'
 
 /**
  * The POS ledger's guarantees, asserted against real Postgres.
@@ -788,5 +789,77 @@ describe('automatic shift close', () => {
     await expect(pool.query(
       `update shifts set closed_by = $2 where id = $1`, [open.id, STAFF]))
       .rejects.toThrow(/shifts_closer_needs_close/)
+  })
+})
+
+describe('the member profile (PRD 5.7)', () => {
+  const STAFF = 'pos_stylist'
+
+  const sell = (completedAt?: string) => checkout({
+    organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
+    items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+    customerId: CUSTOMER, completedAt,
+  })
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+    await pool.query(`delete from bookings where organization_id = $1`, [ORG])
+    await pool.query(`update salon_profiles set commission_kind = null,
+                       commission_value = null, auto_close_shift = false
+                       where organization_id = $1`, [ORG])
+    await pool.query(`update services set price = 150000 where id = $1`, [SERVICE])
+    await pool.query(`delete from service_branch_overrides where service_id = $1`, [SERVICE])
+  })
+
+  it('totals what they have spent, and counts their visits', async () => {
+    await sell('2027-03-01 10:00')
+    await sell('2027-03-08 11:00')
+    const p = await customerProfile(CUSTOMER, ORG)
+    expect(p.spend).toBe(300000)
+    expect(p.visits).toBe(2)
+    expect(p.lastVisit).toBe('2027-03-08')
+  })
+
+  it('takes a voided sale back off the total, but does not count it as a visit', async () => {
+    const { id } = await sell('2027-03-01 10:00')
+    await sell('2027-03-08 11:00')
+    await voidSale(id, ORG, STAFF)
+    const p = await customerProfile(CUSTOMER, ORG)
+    // The reversal is summed (so the money comes back) and excluded from the
+    // count (because it was not a visit). Both halves matter, and a single
+    // "exclude reversals" clause would get one of them wrong.
+    expect(p.spend).toBe(150000)
+    expect(p.visits).toBe(2)
+    expect(p.visitHistory.filter((v) => v.reversal)).toHaveLength(1)
+  })
+
+  it('lists what was bought, not just the totals', async () => {
+    await sell('2027-03-01 10:00')
+    const p = await customerProfile(CUSTOMER, ORG)
+    expect(p.visitHistory[0].items).toContain('Potong')
+  })
+
+  it('shows only UPCOMING bookings, not the whole history', async () => {
+    const past = crypto.randomUUID()
+    const future = crypto.randomUUID()
+    for (const [id, at] of [[past, '2020-01-01'], [future, '2099-01-01']] as const) {
+      await pool.query(
+        `insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                               service_id, starts_at, ends_at, status,
+                               duration_minutes, price, currency)
+         values ($1, $2, $3, $4, $5, $6, $7::timestamp, $8::timestamp, 'confirmed',
+                 60, 150000, 'IDR')`,
+        [id, ORG, TEAM, STAFF, CUSTOMER, SERVICE, `${at} 10:00`, `${at} 11:00`])
+    }
+    const p = await customerProfile(CUSTOMER, ORG)
+    expect(p.upcoming.map((b) => b.id)).toEqual([future])
+  })
+
+  it('cannot see another salon\'s customer at all', async () => {
+    await sell('2027-03-01 10:00')
+    const p = await customerProfile(CUSTOMER, ORG2)
+    expect(p.spend).toBe(0)
+    expect(p.visitHistory).toEqual([])
   })
 })

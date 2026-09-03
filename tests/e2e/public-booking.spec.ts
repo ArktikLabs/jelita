@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
-import { createSalon } from './fixtures'
+import { createSalon, E2E_PORT } from './fixtures'
 
 /**
  * The public booking page, driven on a REAL tenant hostname.
@@ -13,7 +13,9 @@ import { createSalon } from './fixtures'
  */
 const DOMAIN = 'pubcheck.local'
 const PW = 'demo12345'
-const PORT = 3100
+// From fixtures, so the subdomain URLs and the host rewrite stay in step with
+// whatever port the run is on.
+const PORT = E2E_PORT
 
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 

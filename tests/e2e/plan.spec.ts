@@ -1,6 +1,7 @@
 import { expect, request, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
+import { BASE_URL } from './fixtures'
 
 /**
  * Entitlement resolution and quota enforcement, driven over HTTP against the
@@ -14,7 +15,7 @@ import { TEST_DATABASE_URL } from '../db'
  */
 const DOMAIN = 'planflow.local'
 const PW = 'demo12345'
-const BASE_URL = 'http://localhost:3100'
+
 
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 

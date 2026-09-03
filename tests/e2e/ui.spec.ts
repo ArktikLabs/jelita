@@ -1,6 +1,7 @@
 import { expect, request, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
+import { BASE_URL } from './fixtures'
 import { clearMail, waitForMail } from './mail'
 
 const DOMAIN = 'uicheck.local'
@@ -10,7 +11,7 @@ const NEW_PW = 'newpass12345'
 
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 
-const BASE_URL = 'http://localhost:3100'
+
 
 /**
  * A cookie jar of its own, never following redirects -- the redirect itself is

@@ -1,6 +1,7 @@
 import { expect, request, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
+import { BASE_URL } from './fixtures'
 
 /**
  * Search, cross-tenant scoping, permissions and the duplicate-number 409,
@@ -15,7 +16,7 @@ import { TEST_DATABASE_URL } from '../db'
  */
 const DOMAIN = 'customercheck.local'
 const PW = 'demo12345'
-const BASE_URL = 'http://localhost:3100'
+
 const DUPLICATE_COPY = 'Nomor ini sudah terdaftar untuk pelanggan lain.'
 
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
