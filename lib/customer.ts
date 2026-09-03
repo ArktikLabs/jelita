@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm'
 import { db } from './db'
 import { normalizePhone } from './phone'
 import { roundHalfUp } from './commission'
+import { parseMoney, type CurrencyCode } from './money'
 
 export type CustomerRow = {
   id: string
@@ -152,12 +153,12 @@ export async function customerProfile(customerId: string, organizationId: string
 
   const points = await pointsBalance(customerId, organizationId)
   const { rows: rate } = await db.execute(sql`
-    select points_per_unit from salon_profiles where organization_id = ${organizationId}`)
+    select points_kind from salon_profiles where organization_id = ${organizationId}`)
 
   return {
     // Null when the salon runs no loyalty scheme, so the profile can leave
     // points out entirely rather than showing a zero balance.
-    points: (rate[0] as { points_per_unit: number | null })?.points_per_unit === null
+    points: (rate[0] as { points_kind: string | null })?.points_kind === null
       ? null
       : points,
     spend: Number(s.spend),
@@ -185,20 +186,48 @@ export async function customerProfile(customerId: string, organizationId: string
   }
 }
 
+export type PointsRule = { kind: string | null; value: number | null }
+
 /**
- * Points for one sale's total (PRD §5.7).
+ * The stored value for a points rule, from what an owner typed.
  *
- * FLOORED, because part of a point is not a point -- and SYMMETRIC around
- * zero, which is the bit that bites: a reversal's total is negative, and
- * `Math.floor(-15.5)` is -16 while the sale earned 15, so a void would take
- * back one more point than it gave. Sign out, magnitude floored, sign back.
- *
- * The same trap commissionFor's rounding hit, which is why the sign handling
- * lives beside it rather than being re-derived here.
+ * A `spend` value is MONEY and goes through parseMoney; a `visit` value is a
+ * COUNT of points and must not. Running the count through parseMoney would
+ * multiply it by the currency's exponent -- "5 points per visit" becoming 500
+ * in SGD -- which is invisible in IDR, where the exponent is zero. That is
+ * exactly why this is a function with its own test rather than two lines
+ * inside a Server Action.
  */
-export function pointsFor(total: number, perUnit: number | null): number {
-  if (!perUnit || perUnit <= 0) return 0
-  return Math.sign(total) * Math.floor(Math.abs(total) / perUnit)
+export function parsePointsValue(
+  kind: string, raw: string, currency: CurrencyCode,
+): number | null {
+  if (kind === 'spend') return parseMoney(raw, currency)
+  if (kind === 'visit') return /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : null
+  return null
+}
+
+/**
+ * Points for one sale (PRD §5.7).
+ *
+ *   'spend' -- floored, because part of a point is not a point
+ *   'visit' -- a flat award, whatever the sale cost
+ *
+ * `direction` is +1 for a sale and -1 for a reversal, passed in rather than
+ * read off the total. Two reasons, and the second only shows up for `visit`:
+ *
+ *   A reversal's total is negative, and `Math.floor(-15.5)` is -16 while the
+ *   sale earned 15 -- so deriving the sign from the total takes back one point
+ *   too many. Same trap commissionFor's rounding hit.
+ *
+ *   A sale discounted to nothing still HAPPENED. `Math.sign(0)` is 0, so a
+ *   free visit would earn no visit bonus and its void would give none back.
+ */
+export function pointsFor(
+  total: number, rule: PointsRule, direction: 1 | -1 = 1,
+): number {
+  if (!rule.kind || !rule.value || rule.value <= 0) return 0
+  if (rule.kind === 'visit') return direction * rule.value
+  return direction * Math.floor(Math.abs(total) / rule.value)
 }
 
 /**
@@ -214,21 +243,25 @@ export async function writePoints(
   organizationId: string,
   transactionId: string,
 ): Promise<void> {
-  // The SIGN comes from `reverses_id`, not from `total`. A reversal is built
-  // with POSITIVE amounts and negated by the statement that settles it -- so
-  // reading total here, before that statement runs, would have a void ADDING
-  // points instead of giving them back. Same reason moveStockForSale reads the
-  // direction the same way.
+  // DIRECTION comes from `reverses_id`, never from the total's sign. A reversal
+  // is built with POSITIVE amounts and negated by the statement that settles
+  // it, so reading the total here -- before that statement runs -- would have a
+  // void ADDING points. Same reason moveStockForSale reads its direction this
+  // way, and it also keeps a free visit's bonus working (see pointsFor).
   const { rows } = await tx.execute(sql`
-    select t.customer_id, p.points_per_unit,
-           case when t.reverses_id is null then t.total else -t.total end as total
+    select t.customer_id, t.total, p.points_kind, p.points_value,
+           (t.reverses_id is null) as forward
       from transactions t
       join salon_profiles p on p.organization_id = t.organization_id
      where t.id = ${transactionId} and t.customer_id is not null`)
   const r = rows[0] as Record<string, unknown> | undefined
   if (!r) return
 
-  const points = pointsFor(Number(r.total), r.points_per_unit as number | null)
+  const points = pointsFor(
+    Number(r.total),
+    { kind: r.points_kind as string | null, value: r.points_value as number | null },
+    r.forward ? 1 : -1,
+  )
   // A zero-point row records nothing, and the check constraint refuses it.
   if (points === 0) return
 

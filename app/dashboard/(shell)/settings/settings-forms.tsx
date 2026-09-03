@@ -1,8 +1,8 @@
 'use client'
 
-import { useActionState } from 'react'
+import { useActionState, useState } from 'react'
 import {
-  setAutoCloseShiftAction, setBrandingAction, setCurrencyAction, setPointsRateAction,
+  setAutoCloseShiftAction, setBrandingAction, setCurrencyAction, setPointsRuleAction,
   setSlotMinutesAction,
 } from './actions'
 import type { FormState } from '@/lib/form-state'
@@ -268,19 +268,25 @@ export function ShiftCard({ autoCloseShift }: { autoCloseShift: boolean }) {
 }
 
 /**
- * PRD §5.7's points rule. Empty turns it off -- null is "we do not do this",
- * which is a different statement from a zero balance.
+ * PRD §5.7's points rule, in either shape. Empty turns it off -- null is "we
+ * do not do this", which is a different statement from a zero balance.
  */
-export function PointsCard({ pointsPerUnit }: { pointsPerUnit: string }) {
-  const [state, action, pending] = useActionState(setPointsRateAction, initial)
+export function PointsCard({
+  pointsKind, pointsValue,
+}: {
+  pointsKind: string | null
+  pointsValue: string
+}) {
+  const [state, action, pending] = useActionState(setPointsRuleAction, initial)
+  const [kind, setKind] = useState(pointsKind ?? 'spend')
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Poin pelanggan</CardTitle>
         <CardDescription>
-          Setiap belanja sebesar nilai ini menghasilkan satu poin. Kosongkan kalau
-          salon tidak memakai poin.
+          Pilih cara menghitung poin, atau kosongkan nilainya kalau salon tidak
+          memakai poin.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -291,15 +297,32 @@ export function PointsCard({ pointsPerUnit }: { pointsPerUnit: string }) {
           {state.done && (
             <Alert><AlertDescription>Aturan poin disimpan.</AlertDescription></Alert>
           )}
-          <div className="space-y-2">
-            <Label htmlFor="pointsPerUnit">Belanja per 1 poin</Label>
-            <input
-              id="pointsPerUnit"
-              name="pointsPerUnit"
-              defaultValue={pointsPerUnit}
-              placeholder="10.000"
-              className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
-            />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="pointsKind">Cara menghitung</Label>
+              <select
+                id="pointsKind"
+                name="pointsKind"
+                value={kind}
+                onChange={(e) => setKind(e.target.value)}
+                className="flex h-9 w-full rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
+              >
+                <option value="spend">Per belanja</option>
+                <option value="visit">Per transaksi</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="pointsValue">
+                {kind === 'spend' ? 'Belanja per 1 poin' : 'Poin per transaksi'}
+              </Label>
+              <input
+                id="pointsValue"
+                name="pointsValue"
+                defaultValue={pointsValue}
+                placeholder={kind === 'spend' ? '10.000' : '5'}
+                className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
+              />
+            </div>
           </div>
           <Button type="submit" variant="outline" disabled={pending}>
             {pending ? 'Menyimpan…' : 'Simpan aturan poin'}

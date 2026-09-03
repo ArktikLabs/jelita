@@ -3,7 +3,9 @@ import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { checkout, closeShift, currentShift, voidSale } from '../lib/pos'
 import { commissionFor, commissionRecap } from '../lib/commission'
-import { customerProfile, pointsBalance, pointsFor } from '../lib/customer'
+import {
+  customerProfile, parsePointsValue, pointsBalance, pointsFor,
+} from '../lib/customer'
 
 /**
  * The POS ledger's guarantees, asserted against real Postgres.
@@ -867,9 +869,11 @@ describe('the member profile (PRD 5.7)', () => {
 describe('member points (PRD 5.7)', () => {
   const STAFF = 'pos_stylist'
 
-  const setRate = (perUnit: number | null) => pool.query(
-    `update salon_profiles set points_per_unit = $2 where organization_id = $1`,
-    [ORG, perUnit])
+  const setRule = (kind: string | null, value: number | null) => pool.query(
+    `update salon_profiles set points_kind = $2, points_value = $3
+      where organization_id = $1`, [ORG, kind, value])
+  const setRate = (value: number | null) =>
+    setRule(value === null ? null : 'spend', value)
 
   const sell = (discount = 0, customerId: string | null = CUSTOMER) => checkout({
     organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
@@ -883,7 +887,8 @@ describe('member points (PRD 5.7)', () => {
     await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
     await pool.query(`delete from shifts where organization_id = $1`, [ORG])
     await pool.query(`update salon_profiles set commission_kind = null,
-                       commission_value = null, points_per_unit = null
+                       commission_value = null, points_kind = null,
+                       points_value = null
                        where organization_id = $1`, [ORG])
     await pool.query(`update services set price = 150000 where id = $1`, [SERVICE])
     await pool.query(`delete from service_branch_overrides where service_id = $1`, [SERVICE])
@@ -943,11 +948,47 @@ describe('member points (PRD 5.7)', () => {
       .rejects.toThrow(/settled; its lines cannot change/)
   })
 
-  it('refuses a rate of zero or less', async () => {
-    for (const bad of [0, -1]) {
-      await expect(setRate(bad), String(bad))
-        .rejects.toThrow(/salon_profiles_points_per_unit/)
+  it('refuses a value of zero or less, in either kind', async () => {
+    for (const kind of ['spend', 'visit']) {
+      for (const bad of [0, -1]) {
+        await expect(setRule(kind, bad), `${kind} ${bad}`)
+          .rejects.toThrow(/salon_profiles_points/)
+      }
     }
+  })
+
+  it('refuses a kind with no value, or a value with no kind', async () => {
+    // Both-or-neither. A half-configured rule would silently earn nothing,
+    // and the independent reads in writePoints only work because of this.
+    await expect(setRule('spend', null)).rejects.toThrow(/salon_profiles_points/)
+    await expect(setRule(null, 10000)).rejects.toThrow(/salon_profiles_points/)
+  })
+
+  it('refuses a kind it does not know', async () => {
+    await expect(setRule('birthday', 5)).rejects.toThrow(/salon_profiles_points/)
+  })
+
+  it('awards a flat number of points PER TRANSACTION when configured that way', async () => {
+    await setRule('visit', 5)
+    await sell()
+    expect(await balance()).toBe(5)
+    await sell()
+    expect(await balance(), 'the amount spent does not matter').toBe(10)
+  })
+
+  it('gives a per-transaction award back on a void', async () => {
+    await setRule('visit', 5)
+    const { id } = await sell()
+    await voidSale(id, ORG, STAFF)
+    expect(await balance()).toBe(0)
+  })
+
+  it('awards a per-transaction point even for a sale discounted to nothing', async () => {
+    // Math.sign(0) is 0, so deriving the direction from the total would earn
+    // nothing here -- and a free visit still happened.
+    await setRule('visit', 5)
+    await sell(150000)
+    expect(await balance()).toBe(5)
   })
 
   it('never counts another salon\'s balance', async () => {
@@ -958,16 +999,45 @@ describe('member points (PRD 5.7)', () => {
 })
 
 describe('pointsFor', () => {
+  const spend = { kind: 'spend', value: 10000 }
+  const visit = { kind: 'visit', value: 5 }
+
   it('is symmetric, so a void returns exactly what the sale gave', () => {
-    // floor(-15.5) is -16 in JavaScript; taking the sign out first is what
-    // keeps the pair at zero. Same trap commissionFor's rounding hit.
-    expect(pointsFor(155000, 10000)).toBe(15)
-    expect(pointsFor(-155000, 10000)).toBe(-15)
-    expect(pointsFor(155000, 10000) + pointsFor(-155000, 10000)).toBe(0)
+    // floor(-15.5) is -16 in JavaScript; passing the direction in rather than
+    // reading the total's sign is what keeps the pair at zero. Same trap
+    // commissionFor's rounding hit.
+    expect(pointsFor(155000, spend, 1)).toBe(15)
+    expect(pointsFor(155000, spend, -1)).toBe(-15)
+    expect(pointsFor(155000, spend, 1) + pointsFor(155000, spend, -1)).toBe(0)
   })
 
-  it('earns nothing without a rate', () => {
-    expect(pointsFor(150000, null)).toBe(0)
-    expect(pointsFor(150000, 0)).toBe(0)
+  it('ignores the amount for a per-transaction award, including zero', () => {
+    expect(pointsFor(150000, visit, 1)).toBe(5)
+    expect(pointsFor(1, visit, 1)).toBe(5)
+    // A free visit still happened. Math.sign(0) is 0, which is why direction
+    // is a parameter rather than read off the total.
+    expect(pointsFor(0, visit, 1)).toBe(5)
+    expect(pointsFor(0, visit, -1)).toBe(-5)
+  })
+
+  it('parses a visit COUNT without the currency exponent', () => {
+    // The bug this guards is invisible in IDR, where the exponent is zero:
+    // running a count through parseMoney turns "5 points per visit" into 500
+    // in a two-decimal currency. A spend value IS money and must be scaled.
+    expect(parsePointsValue('visit', '5', 'SGD')).toBe(5)
+    expect(parsePointsValue('spend', '5', 'SGD')).toBe(500)
+    expect(parsePointsValue('visit', '5', 'IDR')).toBe(5)
+    expect(parsePointsValue('spend', '10.000', 'IDR')).toBe(10000)
+  })
+
+  it('refuses a fractional or non-numeric visit count', () => {
+    expect(parsePointsValue('visit', '2.5', 'IDR')).toBeNull()
+    expect(parsePointsValue('visit', 'lima', 'IDR')).toBeNull()
+    expect(parsePointsValue('birthday', '5', 'IDR')).toBeNull()
+  })
+
+  it('earns nothing without a rule', () => {
+    expect(pointsFor(150000, { kind: null, value: null })).toBe(0)
+    expect(pointsFor(150000, { kind: 'spend', value: 0 })).toBe(0)
   })
 })

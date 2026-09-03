@@ -417,7 +417,7 @@ test.describe.serial('the member profile', () => {
 
 test.describe.serial('member points', () => {
   test.beforeEach(async () => {
-    await pool.query(`update salon_profiles set points_per_unit = null
+    await pool.query(`update salon_profiles set points_kind = null, points_value = null
                        where organization_id = $1`, [orgId])
   })
 
@@ -435,7 +435,8 @@ test.describe.serial('member points', () => {
     await expect(page.getByTestId('stat-Poin')).toHaveCount(0)
 
     await page.goto('/dashboard/settings')
-    await page.locator('#pointsPerUnit').fill('10.000')
+    await page.locator('#pointsKind').selectOption('spend')
+    await page.locator('#pointsValue').fill('10.000')
     await page.getByRole('button', { name: 'Simpan aturan poin' }).click()
     await expect(page.getByText('Aturan poin disimpan.')).toBeVisible()
 
@@ -446,7 +447,7 @@ test.describe.serial('member points', () => {
   })
 
   test('a sale earns them, the receipt shows them, and a void gives them back', async ({ page }) => {
-    await pool.query(`update salon_profiles set points_per_unit = 10000
+    await pool.query(`update salon_profiles set points_kind = 'spend', points_value = 10000
                        where organization_id = $1`, [orgId])
     await page.context().addCookies(await ownerCookies())
     await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
@@ -470,12 +471,44 @@ test.describe.serial('member points', () => {
       'the void returns exactly what the sale gave').toHaveText('0')
   })
 
-  test('refuses a rate of zero', async ({ page }) => {
+  test('refuses a value of zero', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard/settings')
-    await page.locator('#pointsPerUnit').fill('0')
+    await page.locator('#pointsKind').selectOption('spend')
+    await page.locator('#pointsValue').fill('0')
     await page.getByRole('button', { name: 'Simpan aturan poin' }).click()
-    await expect(page.getByText('Nilai per poin harus lebih dari nol.')).toBeVisible()
+    await expect(page.getByText('Nilai belanja per poin harus lebih dari nol.')).toBeVisible()
+  })
+
+  test('awards a flat number per transaction when set that way', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/settings')
+    await page.locator('#pointsKind').selectOption('visit')
+    await page.locator('#pointsValue').fill('5')
+    await page.getByRole('button', { name: 'Simpan aturan poin' }).click()
+    await expect(page.getByText('Aturan poin disimpan.')).toBeVisible()
+    // Stored as 5, not scaled by the currency -- the label changed with the
+    // kind, and so did how the value is read.
+    const { rows: rule } = await pool.query(
+      `select points_kind, points_value from salon_profiles where organization_id = $1`,
+      [orgId])
+    expect(rule[0]).toEqual({ points_kind: 'visit', points_value: 5 })
+
+    await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+    await expect(page.getByTestId('receipt-points'),
+      'five per transaction, not fifteen for the amount').toContainText('5')
+  })
+
+  test('refuses a fractional number of points per transaction', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/settings')
+    await page.locator('#pointsKind').selectOption('visit')
+    await page.locator('#pointsValue').fill('2,5')
+    await page.getByRole('button', { name: 'Simpan aturan poin' }).click()
+    await expect(page.getByText('Jumlah poin harus bilangan bulat lebih dari nol.'))
+      .toBeVisible()
   })
 })
 

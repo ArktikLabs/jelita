@@ -30,9 +30,14 @@ export default async function SettingsPage() {
       <SlotGridCard slotMinutes={slotMinutes} />
       <ShiftCard autoCloseShift={salon.autoCloseShift} />
       <PointsCard
-        pointsPerUnit={salon.pointsPerUnit === null
+        pointsKind={salon.pointsKind}
+        // A spend value is money and renders through the currency's minor
+        // units; a visit value is a plain count of points.
+        pointsValue={salon.pointsValue === null
           ? ''
-          : toAmountInput(salon.pointsPerUnit, currency)}
+          : salon.pointsKind === 'spend'
+            ? toAmountInput(salon.pointsValue, currency)
+            : String(salon.pointsValue)}
       />
       <BrandingCard
         slug={slug}

@@ -26,18 +26,35 @@ programme nobody asked for.
 
 ## 2. Decisions
 
-### 2.1 The rate is "rupiah per point", and null means OFF
+### 2.1 One rule with a KIND, and null means OFF
 
-`points_per_unit` on `salon_profiles`: `10000` means every Rp 10.000 spent
-earns one point.
+`points_kind` and `points_value` on `salon_profiles`:
+
+| kind | value means |
+|---|---|
+| `spend` | this much spending earns one point — §5.7's own wording |
+| `visit` | this many points per transaction, whatever it cost |
+
+**One kind, not two nullable rates.** Two would admit both being set, and then
+every reader has to decide a precedence — which is how two readers pick
+differently. Same shape as the commission rule, with both-or-neither enforced
+by a check, and that constraint is what makes the independent reads in
+`writePoints` safe.
 
 **Nullable, and null is the default.** A salon not running a loyalty scheme
 should see no points anywhere — not a zero balance, which reads as "you have
 earned nothing" rather than "we do not do this". The same distinction base
 salary makes between null and zero.
 
-Stored as the divisor rather than a points-per-rupiah fraction, because §5.7
-phrases it that way and because an integer divisor needs no float anywhere.
+A `spend` value is stored as the divisor rather than a points-per-rupiah
+fraction, because §5.7 phrases it that way and because an integer divisor needs
+no float anywhere.
+
+**A `visit` value is a COUNT and must not go through `parseMoney`** — that
+would scale it by the currency's exponent, turning "5 points per visit" into
+500 in SGD. Invisible in IDR, where the exponent is zero, which is exactly why
+`parsePointsValue` is a function in `lib/customer.ts` with its own test rather
+than two lines inside a Server Action.
 
 ### 2.2 Points are a LEDGER
 
@@ -55,17 +72,22 @@ materialized balance refreshed by trigger — the ledger stays authoritative.
 
 ### 2.3 Earned on what was PAID, floored, and symmetric
 
+*(`spend` only — a `visit` award ignores the amount by definition.)*
+
 The total after discount, not the subtotal: "Rp X spent" is what the customer
 actually handed over.
 
 Floor, because part of a point is not a point.
 
-**Symmetric around zero**, and this is the bit that bites. A reversal's total
-is negative, and `floor(-15.5)` is `-16` while the sale earned `15` — so a
-void would take back one more point than it gave. Sign is taken out, the
-magnitude floored, and the sign restored. Exactly the trap
-`commissionFor`'s rounding hit, which is why that helper is reused rather than
-re-derived.
+**The direction is passed in, not read off the total**, and this is the bit
+that bites — twice.
+
+A reversal's total is negative, and `floor(-15.5)` is `-16` while the sale
+earned `15`, so deriving the sign from the total takes back one point too many.
+Exactly the trap `commissionFor`'s rounding hit.
+
+And `Math.sign(0)` is `0`, so a sale discounted to nothing would earn no
+**visit** bonus and its void would give none back. A free visit still happened.
 
 ### 2.4 Earned at checkout, immutable after
 
@@ -102,7 +124,14 @@ Composite foreign keys, as everywhere else.
 Vitest against real Postgres:
 
 1. No rate configured earns nothing at all.
-2. A rate of 10.000 on a 150.000 sale earns 15.
+2. A `spend` rate of 10.000 on a 150.000 sale earns 15.
+2b. A `visit` rule of 5 earns 5 whatever the sale cost, including a sale
+    discounted to nothing, and gives 5 back on a void.
+2c. A `visit` count is stored unscaled; a `spend` value is scaled by the
+    currency. Asserted in SGD, because IDR's zero exponent hides the
+    difference.
+2d. A kind with no value, a value with no kind, and an unknown kind are all
+    refused.
 3. Points are earned on the total AFTER discount.
 4. Partial points are floored, not rounded.
 5. A void gives back EXACTLY what the sale earned — the asymmetric-floor case.

@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { isCurrencyCode, parseMoney } from '@/lib/money'
+import { parsePointsValue } from '@/lib/customer'
 import { imageType, logoKey, putObject } from '@/lib/storage'
 import { salonSettings } from '@/lib/service'
 import { type FormState } from '@/lib/form-state'
@@ -90,27 +91,48 @@ export async function setAutoCloseShiftAction(
 }
 
 /**
- * PRD §5.7's "Rp X spent = 1 point (configurable)".
+ * PRD §5.7's points rule, in either shape:
  *
- * An EMPTY field turns points off, rather than storing zero: a salon not
+ *   'spend' -- this much spending earns one point (§5.7's own wording)
+ *   'visit' -- this many points per transaction, whatever it cost
+ *
+ * An EMPTY value turns points off, rather than storing zero: a salon not
  * running a loyalty scheme should see no points at all, and zero would read as
  * "you have earned nothing".
  */
-export async function setPointsRateAction(
+export async function setPointsRuleAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
   await requirePagePermission({ settings: ['update'] })
   const { organizationId } = await requirePageOrg()
   const { currency } = await salonSettings(organizationId)
 
-  const raw = String(formData.get('pointsPerUnit') ?? '').trim()
-  const perUnit = raw === '' ? null : parseMoney(raw, currency)
-  if (raw !== '' && (perUnit === null || perUnit <= 0)) {
-    return { error: 'Nilai per poin harus lebih dari nol.' }
+  const kind = String(formData.get('pointsKind') ?? '')
+  const raw = String(formData.get('pointsValue') ?? '').trim()
+
+  if (raw === '') {
+    await db.execute(sql`
+      update salon_profiles set points_kind = null, points_value = null, updated_at = now()
+       where organization_id = ${organizationId}`)
+    revalidatePath('/dashboard/settings')
+    return { done: true }
+  }
+  if (kind !== 'spend' && kind !== 'visit') return { error: 'Jenis poin tidak dikenali.' }
+
+  // In lib/customer.ts with its own test: a visit COUNT must not go through
+  // parseMoney, and that mistake is invisible in IDR.
+  const value = parsePointsValue(kind, raw, currency)
+  if (value === null || value <= 0) {
+    return {
+      error: kind === 'spend'
+        ? 'Nilai belanja per poin harus lebih dari nol.'
+        : 'Jumlah poin harus bilangan bulat lebih dari nol.',
+    }
   }
 
   await db.execute(sql`
-    update salon_profiles set points_per_unit = ${perUnit}, updated_at = now()
+    update salon_profiles set points_kind = ${kind}, points_value = ${value},
+      updated_at = now()
      where organization_id = ${organizationId}`)
   revalidatePath('/dashboard/settings')
   return { done: true }
