@@ -83,12 +83,13 @@ for no reason, too long and every run pays the worst case.
 
 **An assertion nobody has watched fail is not yet evidence.**
 
-Nine assertions in this project have passed for the wrong reason — a fixture
+Eleven assertions in this project have passed for the wrong reason — a fixture
 whose subject was missing a row the query joined on, a test whose own
 `FormData` normalised the input under test, a currency check where every
 fixture used the default, a concurrency test whose two calls never actually
 collided, a "does not block deactivation" test that re-typed the query it was
-supposed to be checking. None were caught by review; all were caught by
+supposed to be checking, a rounding test whose numbers rounded the same way in
+both directions, an ownerless-salon race that serialised by luck of timing. None were caught by review; all were caught by
 breaking the production code and watching.
 
 So for anything load-bearing: break it, watch that specific assertion fail,
@@ -97,7 +98,7 @@ restore, watch it pass.
 **The break has to compile.** An edit that fails the build fails the run
 without exercising the assertion at all, and proves nothing.
 
-## Two assertions carry no break-and-restore evidence
+## One assertion carries no break-and-restore evidence
 
 Both were migrated from the retired `staff-check.mjs`, and the sandbox's tool
 classifier refuses edits that weaken a security or concurrency guard — so
@@ -112,23 +113,20 @@ shape: it checks the **member row count**, not merely that an error came back,
 because code can refuse a response after already writing the row. But nobody
 has watched it fail.
 
-**The ownerless-salon lock** (`for update of s, m` in `deactivateStaffAction`).
-Locking only `staff_profiles` leaves a demote-versus-deactivate race that
-reaches zero active owners, because owner-ness is read from `members.role`. It
-was proven with a mechanically-derived copy of the real statement plus a
-negative control, which is weaker than breaking the real one.
+**Closed:** the ownerless-salon guarantee moved into the database (migration
+0025, `refuse_ownerless_salon`) and now has four breaks of its own in
+`tests/owner-guard.db.test.ts` — removing the trigger, making it non-deferred,
+dropping the `staff_profiles` half, and dropping the organization-existence
+check each fail a distinct assertion. `deactivateStaffAction`'s
+`for update of s, m` lock is now the friendly half rather than the guarantee.
 
-Both guards were verified by literal break-and-restore when they were written;
-it is the *migrated* assertions that lack fresh proof. To close this, allow
-temporary edits to `app/dashboard/(shell)/staff/actions.ts` and run the two breaks —
-neutering the allow-list should fail the escalation assertion on the row
-count, and reducing the lock to `for update of s` should let the demote race
-reach zero owners.
-
-**Related, and separate:** demote-versus-demote is genuinely unguarded. Two
-owners demoting each other in the same instant still reach zero active owners.
-That is a known, accepted gap recorded as a `ponytail:` comment in
-`app/dashboard/(shell)/staff/actions.ts`, not something the tests are missing.
+**Also closed:** demote-versus-demote, which was a known accepted gap. The same
+trigger refuses it. Worth reading if you ever write one: **deferring the check
+was not enough.** A deferred trigger takes its snapshot while the transaction
+is committing, so two commits at the same instant each still saw the other's
+owner and both passed. The trigger takes `for update` on the organization row
+first, which gives them something to contend on. The version without the lock
+fails the race assertion on every run.
 
 
 ## One guard is redundant, and its test asserts the coupling instead

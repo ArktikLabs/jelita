@@ -48,6 +48,21 @@ beforeAll(async () => {
     insert into organizations (id, name, slug, created_at)
     values ($1, 'Sched', 'sched', now()), ($2, 'Sched Two', 'sched-two', now())`,
     [ORG, ORG2])
+
+  // Every organization has an owner, because in production every one does:
+  // onboarding creates the salon and the creator's owner membership together.
+  // A fixture without one is a state the product cannot reach, and since
+  // migration 0025 the database says so -- deactivating anybody in an
+  // ownerless salon is refused as "would be left with no active owner".
+  for (const [org, id] of [[ORG, 'sched_fixture_owner'], [ORG2, 'sched_fixture_owner2']] as const) {
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, $1, $1 || '@fixture.local', true, now(), now())
+      on conflict (id) do nothing`, [id])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1 || '_owner_m', $1, $2, 'owner', now())`, [id, org])
+  }
   await pool.query(`
     insert into teams (id, name, organization_id, created_at)
     values ($1, 'Cabang Sched', $2, now())`, [TEAM, ORG])

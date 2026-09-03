@@ -283,13 +283,23 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
      where s.organization_id = $1 and s.active
        and (string_to_array(m.role, ',') && array['owner'])`, [OWNERS_ORG])).rows[0].n
 
-  const resetTwoActiveOwners = () => pool.query(`
-    update staff_profiles set active = true, deactivated_at = null
-     where organization_id = $1`, [OWNERS_ORG])
-    .then(() => pool.query(`
+  /**
+   * ROLES FIRST, then reactivate.
+   *
+   * The order is load-bearing now. Reactivating a demoted owner leaves the
+   * salon with no active owner at that instant, and since migration 0025 the
+   * database refuses that -- so the old order (active, then roles) fails on
+   * its own tidying-up.
+   */
+  const resetTwoActiveOwners = async () => {
+    await pool.query(`
       update members set role = 'owner'
        where organization_id = $1 and user_id in ($2, $3)`,
-      [OWNERS_ORG, 'vt_staff_owner1', 'vt_staff_owner2']))
+      [OWNERS_ORG, 'vt_staff_owner1', 'vt_staff_owner2'])
+    await pool.query(`
+      update staff_profiles set active = true, deactivated_at = null
+       where organization_id = $1`, [OWNERS_ORG])
+  }
 
   beforeAll(async () => {
     await pool.query(`
@@ -321,7 +331,16 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
   // narrowed back to what a `for update of s` alone would have been. Same
   // SQL, same two real Postgres connections, same race as the passing test
   // right below it -- the only variable is the lock set.
-  it('BREAK: with the lock narrowed to `of s` alone, the same demote-vs-deactivate race reaches zero active owners', async () => {
+  it('with the lock narrowed to `of s`, the DATABASE still refuses the race', async () => {
+    // This test used to prove that weakening the lock reached zero active
+    // owners. It no longer can, and that is the point: migration 0025 moved
+    // the guarantee into a deferrable constraint trigger, so the lock is now
+    // the friendly half -- it turns the common case into Indonesian copy
+    // rather than a constraint error -- and the database is what is actually
+    // true.
+    //
+    // Still a real assertion: remove the trigger and this fails, because the
+    // weakened lock lets both transactions through.
     expect(deactivateSql).toContain('for update of s, m') // guards the substitution below
     const weakenedSql = deactivateSql.replace('for update of s, m', 'for update of s')
 
@@ -338,14 +357,12 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
       // members row at all -- it proceeds immediately, uncommitted, still
       // counting owner2 as an owner (its own snapshot predates d1's write).
       const raceB = await d2.query(weakenedSql, [OWNERS_ORG, 'vt_staff_owner1'])
-      await d1.query('commit')
-      await d2.query('commit')
+      expect(raceB.rows, 'the weakened statement itself still matches').toHaveLength(1)
 
-      // Both succeeded: the demotion committed AND the "last owner" was
-      // deactivated, because d2 never saw d1 coming. Zero active owners --
-      // the exact failure the real `of s, m` clause (proven below) prevents.
-      expect(raceB.rows).toHaveLength(1)
-      expect(await activeOwners()).toBe(0)
+      const results = await Promise.allSettled([d1.query('commit'), d2.query('commit')])
+      expect(results.filter((r) => r.status === 'rejected'),
+        'one of them is refused at commit').toHaveLength(1)
+      expect(await activeOwners(), 'and the salon keeps an owner').toBe(1)
     } finally {
       d1.release()
       d2.release()
@@ -443,14 +460,21 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
   // test documents the gap as it exists today; it is NOT asserting the guard
   // works, and must not be read as such. If this test ever starts failing
   // because the gap was closed, delete it and update the ponytail comment.
-  it('DOCUMENTED GAP: demote-one-owner || demote-the-other is not guarded and can reach zero active owners', async () => {
+  it('CLOSED: demote-one-owner || demote-the-other is refused, and the salon keeps an owner', async () => {
+    // This test used to assert the OPPOSITE -- that the race reached zero
+    // active owners -- and it was right: neither connection touches the
+    // other's row, so there was no lock for either to block on, and the
+    // application could not fix it because better-auth writes the members row
+    // on its own connection.
+    //
+    // Migration 0025 closes it in the database: a DEFERRABLE constraint
+    // trigger that fires at COMMIT with a fresh snapshot, so whichever
+    // transaction commits second sees the first's demote and is refused.
     const e1 = await pool.connect()
     const e2 = await pool.connect()
     try {
       await e1.query('begin')
       await e2.query('begin')
-      // Neither connection touches the other's row -- there is no lock for
-      // either to block on, unlike the two races proven above.
       const p1 = e1.query(`
         update members set role = 'admin'
          where user_id = 'vt_staff_owner1' and organization_id = $1`, [OWNERS_ORG])
@@ -458,10 +482,11 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
         update members set role = 'admin'
          where user_id = 'vt_staff_owner2' and organization_id = $1`, [OWNERS_ORG])
       await Promise.all([p1, p2])
-      await e1.query('commit')
-      await e2.query('commit')
 
-      expect(await activeOwners()).toBe(0)
+      const results = await Promise.allSettled([e1.query('commit'), e2.query('commit')])
+      expect(results.filter((r) => r.status === 'fulfilled'),
+        'exactly one demotion survives').toHaveLength(1)
+      expect(await activeOwners(), 'and the salon is never ownerless').toBe(1)
     } finally {
       e1.release()
       e2.release()

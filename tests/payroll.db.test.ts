@@ -38,6 +38,21 @@ beforeAll(async () => {
   await pool.query(`
     insert into organizations (id, name, slug, created_at)
     values ($1, 'Pay', 'pay-one', now()), ($2, 'Pay Two', 'pay-two', now())`, [ORG, ORG2])
+
+  // Every organization has an owner, because in production every one does:
+  // onboarding creates the salon and the creator's owner membership together.
+  // A fixture without one is a state the product cannot reach, and since
+  // migration 0025 the database says so -- deactivating anybody in an
+  // ownerless salon is refused as "would be left with no active owner".
+  for (const [org, id] of [[ORG, 'pay_fixture_owner'], [ORG2, 'pay_fixture_owner2']] as const) {
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, $1, $1 || '@fixture.local', true, now(), now())
+      on conflict (id) do nothing`, [id])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1 || '_owner_m', $1, $2, 'owner', now())`, [id, org])
+  }
   await pool.query(`
     insert into teams (id, name, organization_id, created_at)
     values ($1, 'Cabang Pay', $2, now()), ($3, 'Cabang Pay2', $4, now())`,
@@ -169,13 +184,20 @@ describe('the recap', () => {
 
   it('never shows another salon\'s staff', async () => {
     const r = await recap()
-    expect(Object.keys(r).sort()).toEqual([RINA, SINTA].sort())
+    // Named rather than an exact set: the fixture salon also has an owner, as
+    // every real one does, and asserting the whole roster would break the next
+    // time anybody is added for an unrelated reason.
+    expect(r[SINTA]).toBeDefined()
+    expect(r[RINA]).toBeDefined()
+    expect(r[OUTSIDER], 'the other salon\'s stylist').toBeUndefined()
   })
 
   it('leaves out deactivated staff', async () => {
     await pool.query(`update staff_profiles set active = false
                        where user_id = $1 and organization_id = $2`, [RINA, ORG])
-    expect(Object.keys(await recap())).toEqual([SINTA])
+    const r = await recap()
+    expect(r[RINA], 'someone who has left is not on the payroll').toBeUndefined()
+    expect(r[SINTA], 'and everyone else still is').toBeDefined()
     await pool.query(`update staff_profiles set active = true
                        where user_id = $1 and organization_id = $2`, [RINA, ORG])
   })

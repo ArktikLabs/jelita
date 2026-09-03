@@ -436,15 +436,21 @@ export async function updateStaffRoleAction(
   // sequence -- deactivate co-owner B -- left B permanently un-demotable,
   // refused with a message that is not even true of them.
   //
-  // ponytail: sequential check-then-act. Guarded: the single-actor case.
-  // Serialised elsewhere: demote || DEACTIVATE, by deactivateStaffAction's
-  // materialized `for update of s, m` lock set (staff-check §9k). NOT guarded:
-  // demote || DEMOTE -- two owners demoting each other in the same instant
-  // touch no shared lock (better-auth's updateMemberRole writes its own
-  // members row on its own connection, and its own guard fires only on
-  // self-demotion), so both succeed and the salon ends ownerless. Fix shape
-  // when it is picked up: re-check activeOwnerCount AFTER updateMemberRole and
-  // restore the role if it hit zero.
+  // This check is now the FRIENDLY half. The guarantee lives in the database:
+  // `members_keep_an_owner`, a deferrable constraint trigger (migration 0025)
+  // that refuses any commit leaving a salon with no active owner.
+  //
+  // It had to go there. The demote-versus-demote race could not be closed in
+  // application code at all: better-auth's updateMemberRole writes the members
+  // row on its OWN connection, so no application transaction covers both this
+  // check and that write, and the two callers share no lock to contend on.
+  // Deferred means the trigger fires at COMMIT with a fresh snapshot, so
+  // whichever transaction commits second sees the first's demote and is
+  // refused.
+  //
+  // This clause stays because a constraint error is not a message anyone
+  // should read: it turns the common single-actor case into Indonesian copy
+  // and leaves the trigger as the thing that is actually true.
   if (target.role.split(',').includes('owner') && target.active
       && (await activeOwnerCount(organizationId)) <= 1) {
     return { error: LAST_OWNER_MSG }
