@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm'
 import { db } from './db'
 import { ManualPayment, type PaymentMethod } from './payment'
 import { pgMentions } from './pg-error'
+import { writeCommissions } from './commission'
 
 /**
  * The sale.
@@ -171,6 +172,11 @@ async function ring(
                 ${item.discount})`)
     }
 
+    // Written while the transaction is still `open`, so the immutability
+    // trigger permits it and a voided sale's commissions can be written the
+    // same way.
+    await writeCommissions(tx, input.organizationId, id)
+
     const result = await ManualPayment.record({ method: input.method, amount: total, currency })
     await tx.execute(sql`
       insert into transaction_payments (id, transaction_id, organization_id, method,
@@ -192,9 +198,8 @@ async function ring(
            and status in ('pending', 'confirmed')`)
     }
 
-    // Seams, named rather than stubbed: stock deduction (PRD 5.4), commission
-    // records (5.3), member points (5.7). Each needs a table that does not
-    // exist yet; the line's staff_user_id is what commissions will read.
+    // Remaining seams, named rather than stubbed: stock deduction (PRD 5.4)
+    // and member points (5.7), each needing a table that does not exist yet.
 
     return { id, invoiceNo }
   })
@@ -264,6 +269,10 @@ async function reverse(
       select gen_random_uuid()::text, ${id}, l.organization_id, l.service_id,
              l.staff_user_id, l.name, -l.unit_price, l.quantity, -l.discount
         from transaction_lines l where l.transaction_id = ${transactionId}`)
+
+    // From the mirrored (negative) lines, so the earnings come back off the
+    // month without anything having to know it is a void.
+    await writeCommissions(tx, organizationId, id)
 
     await tx.execute(sql`
       update transactions

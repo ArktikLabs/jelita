@@ -115,3 +115,33 @@ export const shifts = pgTable('shifts', {
   unique('shifts_org_id').on(t.organizationId, t.id),
   index('shifts_open_idx').on(t.organizationId, t.teamId, t.closedAt),
 ])
+
+/**
+ * What one line earned, written at checkout and never derived on read.
+ *
+ * Two reasons, the second load-bearing: a stylist promoted to 20% must not
+ * retroactively earn 20% on last month's work, and payroll pays on this
+ * number -- one recomputed at every read can quietly differ from the one
+ * somebody was paid.
+ *
+ * A reversal's lines are negative, so its commissions are too. That makes
+ * sum(amount) per staff per month simply what they earned, with nothing
+ * anywhere having to remember which rows to subtract.
+ */
+export const commissions = pgTable('commissions', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull(),
+  transactionId: text('transaction_id').notNull(),
+  transactionLineId: text('transaction_line_id').notNull(),
+  staffUserId: text('staff_user_id').notNull(),
+  // The rule as applied, so a recap can always explain itself.
+  kind: text('kind').notNull(),
+  value: integer('value').notNull(),
+  amount: bigint('amount', { mode: 'number' }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  // One line earns one commission -- a constraint, not a check somebody
+  // remembers to write.
+  unique('commissions_one_per_line').on(t.transactionLineId),
+  index('commissions_recap_idx').on(t.organizationId, t.staffUserId),
+])

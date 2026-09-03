@@ -18,6 +18,7 @@ export const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dasbor' },
   { href: '/dashboard/bookings', label: 'Janji temu', require: { resource: 'booking', action: 'read' } },
   { href: '/dashboard/transactions', label: 'Transaksi', require: { resource: 'pos', action: 'checkout' } },
+  { href: '/dashboard/commissions', label: 'Komisi', require: { resource: 'commission', action: 'read:own' } },
   { href: '/dashboard/customers', label: 'Pelanggan', require: { resource: 'customer', action: 'read' } },
   { href: '/dashboard/services', label: 'Layanan', require: { resource: 'service', action: 'update' } },
   { href: '/dashboard/staff', label: 'Staf', require: { resource: 'staff', action: 'read' } },

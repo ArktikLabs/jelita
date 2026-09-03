@@ -23,6 +23,13 @@ export const salonProfiles = pgTable('salon_profiles', {
   // is one statement and therefore serialises per salon without an explicit
   // lock -- two sales cannot be handed the same number.
   nextInvoiceNo: integer('next_invoice_no').notNull().default(1),
+  // Commission (PRD 5.3). Resolved salon -> service -> service_staff by the
+  // commission_rule view, the same coalesce shape service_branch_pricing uses
+  // for price. `percent` is BASIS POINTS so 12.5% is exact and there is one
+  // rounding site, not one per read; `flat` is minor units.
+  commissionKind: text('commission_kind'),
+  commissionValue: integer('commission_value'),
+
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 })
@@ -47,6 +54,9 @@ export const services = pgTable('services', {
   // the whole rupiah figure in this column.
   price: bigint('price', { mode: 'number' }).notNull(),
   active: boolean('active').notNull().default(true),
+  /** Overrides the salon default for this service. */
+  commissionKind: text('commission_kind'),
+  commissionValue: integer('commission_value'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -70,5 +80,8 @@ export const serviceStaff = pgTable('service_staff', {
   serviceId: text('service_id').notNull(),
   userId: text('user_id').notNull(),
   organizationId: text('organization_id').notNull(),
+  /** Overrides both the service and the salon default, for this pair. */
+  commissionKind: text('commission_kind'),
+  commissionValue: integer('commission_value'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })

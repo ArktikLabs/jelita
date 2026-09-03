@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { checkout, closeShift, currentShift, voidSale } from '../lib/pos'
+import { commissionFor, commissionRecap } from '../lib/commission'
 
 /**
  * The POS ledger's guarantees, asserted against real Postgres.
@@ -265,16 +266,23 @@ describe('one booking, one sale', () => {
   })
 
   it('still allows the REVERSAL of that sale to name the same booking', async () => {
-    // The index is partial for this reason: a void must be able to point at
-    // the booking it reverses without reading as a second charge.
-    const id = await openSale({ bookingId })
-    await complete(id)
-    const reversal = newId()
-    await expect(pool.query(
-      `insert into transactions (id, organization_id, team_id, customer_id, booking_id,
-                                 status, reverses_id, subtotal, discount, total, currency)
-       values ($1, $2, $3, $4, $5, 'reversal', $6, -150000, 0, -150000, 'IDR')`,
-      [reversal, ORG, TEAM, CUSTOMER, bookingId, id])).resolves.toBeTruthy()
+    // Driven through voidSale, NOT a hand-written row with status 'reversal'.
+    // The hand-written version passed while the real path was broken: a void
+    // builds its reversal as `open` first, and the index used to key on
+    // status, so the open reversal collided with the sale it was reversing.
+    // Asserting the shape the application actually writes is what caught it.
+    await pool.query(`update salon_profiles set commission_kind = null,
+                       commission_value = null where organization_id = $1`, [ORG])
+    await pool.query(`delete from service_staff where service_id = $1`, [SERVICE])
+    await pool.query(
+      `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)`,
+      [SERVICE, 'pos_stylist', ORG])
+    const { id } = await checkout({
+      organizationId: ORG, teamId: TEAM, userId: 'pos_stylist', method: 'cash',
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+      bookingId, customerId: CUSTOMER,
+    })
+    await expect(voidSale(id, ORG)).resolves.toBeTruthy()
   })
 
   it('refuses another salon\'s booking', async () => {
@@ -511,5 +519,172 @@ describe('checkout completes the booking behind it', () => {
     const { rows } = await pool.query(
       `select customer_id, booking_id from transactions where id = $1`, [id])
     expect(rows[0]).toEqual({ customer_id: null, booking_id: null })
+  })
+})
+
+describe('commission rules', () => {
+  const STAFF = 'pos_stylist'
+  const MONTH = '2027-01-01'
+
+  const setRule = async (level: 'salon' | 'service' | 'pair', kind: string | null, value: number | null) => {
+    if (level === 'salon') {
+      await pool.query(`update salon_profiles set commission_kind = $2, commission_value = $3
+                         where organization_id = $1`, [ORG, kind, value])
+    } else if (level === 'service') {
+      await pool.query(`update services set commission_kind = $2, commission_value = $3
+                         where id = $1`, [SERVICE, kind, value])
+    } else {
+      await pool.query(`update service_staff set commission_kind = $3, commission_value = $4
+                         where service_id = $1 and user_id = $2`, [SERVICE, STAFF, kind, value])
+    }
+  }
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+    await pool.query(`delete from service_staff where service_id = $1`, [SERVICE])
+    await pool.query(
+      `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)`,
+      [SERVICE, STAFF, ORG])
+    await setRule('salon', null, null)
+    await setRule('service', null, null)
+    await pool.query(`update services set price = 150000 where id = $1`, [SERVICE])
+  })
+
+  const sell = (staffUserId: string | null = STAFF, quantity = 1, discount = 0) => checkout({
+    organizationId: ORG, teamId: TEAM, userId: STAFF, method: 'cash',
+    items: [{ serviceId: SERVICE, quantity, discount, staffUserId }],
+  })
+
+  const earned = async () => (await pool.query(
+    `select kind, value, amount from commissions where organization_id = $1`, [ORG])).rows
+
+  it('resolves salon -> service -> pair, most specific winning', async () => {
+    await setRule('salon', 'percent', 1000)
+    await sell()
+    expect(await earned()).toMatchObject([{ kind: 'percent', value: 1000, amount: '15000' }])
+
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await setRule('service', 'percent', 1500)
+    await sell()
+    expect(await earned()).toMatchObject([{ value: 1500, amount: '22500' }])
+
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await setRule('pair', 'percent', 2000)
+    await sell()
+    expect(await earned()).toMatchObject([{ value: 2000, amount: '30000' }])
+  })
+
+  it('takes kind and value from the SAME level, which the both-or-neither check guarantees', async () => {
+    // kind and value are coalesced independently in the view. That is only
+    // safe because each level must set both or neither -- otherwise 'flat'
+    // could pair with a basis-point number.
+    await setRule('salon', 'percent', 1000)
+    await expect(pool.query(
+      `update services set commission_kind = 'flat' where id = $1`, [SERVICE]))
+      .rejects.toThrow(/services_commission/)
+  })
+
+  it('pays a flat rule per unit performed, ignoring price', async () => {
+    await setRule('salon', 'flat', 20000)
+    await sell(STAFF, 3)
+    expect(await earned()).toMatchObject([{ kind: 'flat', amount: '60000' }])
+  })
+
+  it('rounds a percentage half-up, once', async () => {
+    // 150000 * 1 unit, 12.5% = 18750 exactly; with an odd net it must not
+    // drift. 99999 at 12.5% is 12499.875 -> 12500.
+    await setRule('salon', 'percent', 1250)
+    await pool.query(`update services set price = 99999 where id = $1`, [SERVICE])
+    await sell()
+    expect(await earned()).toMatchObject([{ amount: '12500' }])
+  })
+
+  it('writes nothing at all for a line with no stylist', async () => {
+    await setRule('salon', 'percent', 1000)
+    await sell(null)
+    expect(await earned(), 'absence, not a zero row').toEqual([])
+  })
+
+  it('writes nothing when no level configures a rule', async () => {
+    await sell()
+    expect(await earned()).toEqual([])
+  })
+
+  it('refuses a percentage above 100%', async () => {
+    await expect(setRule('salon', 'percent', 10001)).rejects.toThrow(/salon_profiles_commission/)
+    await setRule('salon', 'percent', 10000)
+    const { rows } = await pool.query(
+      `select commission_value from salon_profiles where organization_id = $1`, [ORG])
+    expect(rows[0].commission_value, 'exactly 100% is allowed').toBe(10000)
+  })
+
+  it('cannot earn two commissions for one line', async () => {
+    // Built by hand and left OPEN: once a sale is settled the immutability
+    // trigger refuses a second insert before the unique constraint is even
+    // consulted, so a test driven through checkout would prove the trigger
+    // twice and this constraint never.
+    const txn = 'pos_open_txn'
+    const line = 'pos_open_line'
+    await pool.query(
+      `insert into transactions (id, organization_id, team_id, status, subtotal,
+                                 discount, total, currency)
+       values ($1, $2, $3, 'open', 150000, 0, 150000, 'IDR')`, [txn, ORG, TEAM])
+    await pool.query(
+      `insert into transaction_lines (id, transaction_id, organization_id, service_id,
+                                      staff_user_id, name, unit_price, quantity, discount)
+       values ($1, $2, $3, $4, $5, 'Potong', 150000, 1, 0)`,
+      [line, txn, ORG, SERVICE, STAFF])
+    const insert = () => pool.query(
+      `insert into commissions (id, organization_id, transaction_id, transaction_line_id,
+                                staff_user_id, kind, value, amount)
+       values ($1, $2, $3, $4, $5, 'percent', 1000, 15000)`,
+      [crypto.randomUUID(), ORG, txn, line, STAFF])
+    await insert()
+    await expect(insert()).rejects.toThrow(/commissions_one_per_line/)
+  })
+
+  it('refuses to change a settled sale\'s commissions', async () => {
+    await setRule('salon', 'percent', 1000)
+    const { id } = await sell()
+    await expect(pool.query(
+      `update commissions set amount = 999 where transaction_id = $1`, [id]))
+      .rejects.toThrow(/settled; its lines cannot change/)
+  })
+
+  it('gives the earnings back when the sale is voided, netting the month to zero', async () => {
+    await setRule('salon', 'percent', 1000)
+    const { id } = await sell()
+    await voidSale(id, ORG)
+    const { rows } = await pool.query(
+      `select coalesce(sum(amount), 0)::bigint total from commissions where organization_id = $1`,
+      [ORG])
+    expect(Number(rows[0].total), 'a void must not pay a stylist for a sale that did not happen')
+      .toBe(0)
+  })
+
+  it('does not change what was already earned when the rule changes', async () => {
+    await setRule('salon', 'percent', 1000)
+    await sell()
+    await setRule('salon', 'percent', 5000)
+    expect(await earned(), 'a promotion is not retroactive')
+      .toMatchObject([{ value: 1000, amount: '15000' }])
+  })
+})
+
+describe('commissionFor', () => {
+  it('rounds symmetrically, so a void gives back exactly what the sale paid', () => {
+    // An EXACT half is the only case that separates the two roundings:
+    // Math.round(0.5) is 1 but Math.round(-0.5) is -0, because it rounds
+    // toward +Infinity. 1 unit at 50% is 0.5 on the nose. A test using 12.5%
+    // of 99999 proves nothing -- .875 rounds the same way in both directions,
+    // which is exactly what it did until this case replaced it.
+    const rule = { kind: 'percent', value: 5000 }
+    const paid = commissionFor({ unitPrice: 1, quantity: 1, discount: 0 }, rule)
+    const back = commissionFor({ unitPrice: -1, quantity: 1, discount: 0 }, rule)
+    expect(paid).toBe(1)
+    expect(back).toBe(-1)
+    expect(paid + back, 'a rupiah adrift per voided line is a rupiah nobody can explain')
+      .toBe(0)
   })
 })

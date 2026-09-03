@@ -215,6 +215,63 @@ test.describe.serial('the shift window', () => {
   })
 })
 
+test.describe.serial('commissions', () => {
+  let stylistCtx: Awaited<ReturnType<typeof signIn>>
+
+  test.beforeAll(async () => {
+    stylistCtx = await signIn(`stylist@${DOMAIN}`, PW)
+    await pool.query(
+      `update salon_profiles set commission_kind = 'percent', commission_value = 1000
+        where organization_id = $1`, [orgId])
+  })
+
+  test('a sale attributed to a stylist shows in that month\'s recap', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    // From the booking, so the stylist is defaulted -- making the desk re-pick
+    // them is how commissions end up unattributed.
+    await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    await page.goto(`/dashboard/commissions?month=${monthOf(todayIso())}`)
+    await expect(page.getByRole('cell', { name: 'Pos Stylist' })).toBeVisible()
+    // 10% of 150.000
+    await expect(page.getByRole('cell', { name: '15.000', exact: false })).toBeVisible()
+  })
+
+  test('a stylist sees only their own row; an owner sees the liability total', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    const asOwner = await (await owner.get(`/dashboard/commissions?month=${monthOf(todayIso())}`)).text()
+    expect(asOwner).toContain('Total komisi bulan ini')
+
+    const asStylist = await (await stylistCtx.get(
+      `/dashboard/commissions?month=${monthOf(todayIso())}`)).text()
+    expect(asStylist, 'a stylist holds read:own, not read').toContain('Pendapatan saya')
+    expect(asStylist, 'and must not be shown the salon-wide liability')
+      .not.toContain('Total komisi bulan ini')
+  })
+
+  test('voiding takes the earnings back out of the recap', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/pos?bookingId=${bookingId}`)
+    await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
+    await page.waitForURL('**/dashboard/transactions/**')
+
+    await page.goto(`/dashboard/transactions?date=${todayIso()}`)
+    await page.getByRole('button', { name: 'Batalkan' }).click()
+    await expect(page.getByText('Pembatalan')).toBeVisible()
+
+    const { rows } = await pool.query(
+      `select coalesce(sum(amount), 0)::bigint total from commissions
+        where organization_id = $1`, [orgId])
+    expect(Number(rows[0].total), 'a void must not pay for a sale that did not happen').toBe(0)
+  })
+})
+
 test.describe.serial('branding', () => {
   test('an SVG is refused, and a PNG is accepted and served', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
@@ -267,6 +324,8 @@ const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
 )
+
+const monthOf = (iso: string) => `${iso.slice(0, 7)}-01`
 
 function todayIso() {
   const d = new Date()

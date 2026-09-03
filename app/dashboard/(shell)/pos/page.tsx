@@ -4,6 +4,7 @@ import { auth } from '@/lib/auth'
 import { bookableServices, getBooking } from '@/lib/booking'
 import { getCustomer } from '@/lib/customer'
 import { salonSettings } from '@/lib/service'
+import { listStaff } from '@/lib/staff'
 import { Cart } from './cart'
 
 /**
@@ -23,10 +24,16 @@ export default async function PosPage({
   const { branchId } = await requireBranch()
   const { bookingId } = await searchParams
 
-  const [offers, { currency }] = await Promise.all([
+  const [offers, { currency }, staff] = await Promise.all([
     bookableServices(organizationId, branchId),
     salonSettings(organizationId),
+    listStaff(organizationId),
   ])
+  // Who a line can be attributed to: active staff at this branch. A line with
+  // nobody named earns no commission, which is legitimate.
+  const performers = staff
+    .filter((s) => s.active && s.teamId === branchId)
+    .map((s) => ({ userId: s.userId, name: s.name }))
 
   // Discount is a separate statement from checkout, so a role may ring up a
   // sale without being able to change what it costs. The action re-checks --
@@ -49,6 +56,10 @@ export default async function PosPage({
         price: offers.find((o) => o.serviceId === booking.serviceId)?.price ?? 0,
         quantity: 1,
         discount: 0,
+        // Defaulted from the booking: the stylist who did the work is already
+        // known, and making the desk re-pick them is how commissions end up
+        // unattributed.
+        staffUserId: booking.staffUserId,
       }],
       name: bookingCustomer?.name ?? booking.customerName,
       phone: bookingCustomer?.phone ?? '',
@@ -68,6 +79,7 @@ export default async function PosPage({
       </div>
       <Cart
         offers={offers}
+        performers={performers}
         currency={currency}
         bookingId={booking?.id ?? null}
         prefill={prefill}

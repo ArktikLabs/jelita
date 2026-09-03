@@ -141,6 +141,20 @@
       "when": 1788406377759,
       "tag": "0019_shifts",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788418138731,
+      "tag": "0020_commissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788418139731,
+      "tag": "0021_one_sale_per_booking",
+      "breakpoints": true
     }
   ]
 }

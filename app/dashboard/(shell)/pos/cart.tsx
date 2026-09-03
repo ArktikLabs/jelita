@@ -13,7 +13,13 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 const initial: FormState = {}
 
 type Offer = { serviceId: string; name: string; price: number; currency: string }
-type Item = { serviceId: string; name: string; price: number; quantity: number; discount: number }
+type Performer = { userId: string; name: string }
+type Item = {
+  serviceId: string; name: string; price: number; quantity: number; discount: number
+  /** Who performed it. Drives the commission record; empty earns nothing,
+   *  which is legitimate for a sale nobody worked on. */
+  staffUserId: string
+}
 
 const METHOD_LABEL: Record<string, string> = {
   cash: 'Tunai', transfer: 'Transfer', qris: 'QRIS', debit: 'Debit', credit: 'Kredit',
@@ -29,9 +35,10 @@ const METHOD_LABEL: Record<string, string> = {
  * money that arrives from this component is trusted.
  */
 export function Cart({
-  offers, currency, bookingId, prefill, canDiscount,
+  offers, performers, currency, bookingId, prefill, canDiscount,
 }: {
   offers: Offer[]
+  performers: Performer[]
   currency: CurrencyCode
   bookingId: string | null
   prefill: { items: Item[]; name: string; phone: string; customerId: string | null }
@@ -47,7 +54,9 @@ export function Cart({
     setItems((cur) => {
       const at = cur.findIndex((i) => i.serviceId === serviceId)
       if (at < 0) {
-        return [...cur, { serviceId, name: o.name, price: o.price, quantity: 1, discount: 0 }]
+        return [...cur, {
+          serviceId, name: o.name, price: o.price, quantity: 1, discount: 0, staffUserId: '',
+        }]
       }
       return cur.map((i, n) => (n === at ? { ...i, quantity: i.quantity + 1 } : i))
     })
@@ -70,6 +79,7 @@ export function Cart({
         name="items"
         value={JSON.stringify(items.map((i) => ({
           serviceId: i.serviceId, quantity: i.quantity, discount: i.discount,
+          staffUserId: i.staffUserId || null,
         })))}
       />
       <input type="hidden" name="discount" value={discount} />
@@ -104,6 +114,18 @@ export function Cart({
           {items.map((i, n) => (
             <li key={i.serviceId} className="flex flex-wrap items-center gap-2 p-2 text-sm">
               <span className="flex-1 font-medium">{i.name}</span>
+              <select
+                aria-label={`Staf ${i.name}`}
+                value={i.staffUserId}
+                onChange={(e) => setItems((cur) => cur.map((x, m) =>
+                  (m === n ? { ...x, staffUserId: e.target.value } : x)))}
+                className="h-8 rounded-md border bg-transparent px-2"
+              >
+                <option value="">Tanpa staf</option>
+                {performers.map((p) => (
+                  <option key={p.userId} value={p.userId}>{p.name}</option>
+                ))}
+              </select>
               <input
                 type="number"
                 min={1}
