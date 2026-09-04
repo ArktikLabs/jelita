@@ -196,3 +196,19 @@ and the patch should assert it actually changed the file.
 `'use client'` module, so the server component got a client reference rather
 than the object and the event column rendered blank for every row. tsc, the
 build and 390 unit tests all passed. Only looking at the page found it.
+
+### Break-and-restore: commit first, always
+
+The trap in the notifications section bit twice more during the email slice,
+in two new disguises:
+
+- `git checkout HEAD -- <file>` restored a file whose feature was **not yet
+  committed**, so "restore" silently deleted the code under test and the next
+  run failed identically to the break. The break looked confirmed twice over.
+- The same command cannot restore an **untracked** file at all. Breaking a
+  brand-new route left it broken with no error.
+
+The rule that removes both: **commit the work, then break it.** The restore is
+then `git checkout HEAD -- <file>` plus `git status --short <file>` printing
+nothing. If the restore leaves the file dirty, or a re-run still fails, the
+baseline was wrong -- not the code.

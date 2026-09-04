@@ -31,12 +31,38 @@ const logTransport: Transport = async (m) => {
   return `log:${crypto.randomUUID()}`
 }
 
-// One transport today. Wiring a real channel is: write the transport, swap the
-// entry below. Nothing above this line changes. Deliberately no registry and no
-// env branching — nothing registers anything, and a key check guarding a
-// transport that does not exist is a branch guarding nothing.
+/**
+ * Real email, when a key exists.
+ *
+ * Resend because it needs an API key and nothing else -- no domain
+ * verification to get started, no SMTP credentials to store.
+ */
+const resendTransport: Transport = async (m) => {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: process.env.MAIL_FROM ?? 'Jelita <onboarding@resend.dev>',
+      to: m.to,
+      subject: m.subject ?? 'Jelita',
+      text: m.body,
+    }),
+  })
+  if (!res.ok) throw new Error(`resend ${res.status}: ${await res.text()}`)
+  return `resend:${((await res.json()) as { id?: string }).id ?? 'unknown'}`
+}
+
+// The log transport is the DEFAULT, not the leftover: tests/e2e/mail.ts reads
+// .mail.log to drive the auth flows, so every test run needs it. A real key
+// swaps email over and nothing else changes -- which is the whole claim the
+// adapter is making.
+const emailTransport = process.env.RESEND_API_KEY ? resendTransport : logTransport
+
 const transports: Record<Channel, Transport> = {
-  email: logTransport,
+  email: emailTransport,
   whatsapp: logTransport,
   telegram: logTransport,
 }
@@ -54,6 +80,25 @@ import { db } from './db'
 
 export type NotificationKind =
   | 'booking_confirmed' | 'reminder_day_before' | 'reminder_2h' | 'thank_you'
+  | 'password_reset' | 'email_verification' | 'invitation'
+
+/**
+ * Wording for a message with NO salon behind it -- a signup verification,
+ * or a reset for someone who does not work anywhere yet. There is no
+ * organization whose template could apply, so these are the fallback.
+ *
+ * Kept in step with the seeding trigger in db/migrations/0031 by hand. The
+ * duplication is real; the alternative is a template row keyed on a null
+ * organization, which the primary key cannot express.
+ */
+const DEFAULT_TEMPLATES: Partial<Record<NotificationKind, string>> = {
+  password_reset:
+    'Halo {{name}}, klik tautan berikut untuk mengatur ulang kata sandi Anda: {{link}}',
+  email_verification:
+    'Halo {{name}}, klik tautan berikut untuk memverifikasi email Anda: {{link}}',
+  invitation:
+    '{{inviter}} mengundang Anda bergabung di {{salon}}. Klik untuk menerima: {{link}}',
+}
 
 /** Minimal shape of the db handle, so this works inside a caller's transaction. */
 type Executor = { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: unknown[] }> }
@@ -210,9 +255,14 @@ export type NotificationRow = {
  * Ordered DUE first, then the rest of the queue, then what has already gone.
  * The due ones are the only rows anybody can act on, so they are the ones that
  * must not be below the fold.
+ *
+ * `status` narrows it, and the demo salon is why it has to exist: a hundred
+ * queued reminders sit ahead of every sent message, so with a flat limit the
+ * sent half -- auth email included -- was unreachable. A filter beats a bigger
+ * limit; the page a person wants is small, it is just not the first hundred.
  */
 export async function listNotifications(
-  organizationId: string, teamId: string | null,
+  organizationId: string, teamId: string | null, status: string | null = null,
 ): Promise<NotificationRow[]> {
   const { rows } = await db.execute(sql`
     select n.id, n.kind, n.status, n."to", n.body, c.name as customer_name,
@@ -222,7 +272,8 @@ export async function listNotifications(
       from notifications n
       left join customers c on c.id = n.customer_id
      where n.organization_id = ${organizationId}
-       ${teamId ? sql`and n.team_id = ${teamId}` : sql``}
+       ${teamId ? sql`and (n.team_id = ${teamId} or n.team_id is null)` : sql``}
+       ${status ? sql`and n.status = ${status}` : sql``}
      order by due desc,
               case n.status when 'queued' then 0 when 'failed' then 1
                             when 'sent' then 2 else 3 end,
@@ -266,4 +317,76 @@ export async function setTemplate(
      where organization_id = ${organizationId} and kind = ${kind}
     returning kind`)
   if (rows.length === 0) throw new Error('UNKNOWN_TEMPLATE')
+}
+
+/**
+ * Send a transactional message NOW, and record what was sent.
+ *
+ * Auth email is not scheduled. A password reset that waits up to fifteen
+ * minutes for the cron is broken, so these are dispatched in the call that
+ * creates them and land as `sent`, never `queued`.
+ *
+ * ## The one rule this function exists to enforce
+ *
+ * `secret` is substituted into the message that GOES OUT and never into the
+ * message that is STORED. The Notification Center displays the stored body,
+ * and notification:['read'] reaches front desk -- so a stored reset URL would
+ * let any front-desk login take the owner's account.
+ *
+ * That is why callers pass two maps instead of rendering the body themselves:
+ * the split is not a convention anybody has to remember, it is the only shape
+ * this function accepts. The stored copy keeps `{{link}}` written out, which
+ * `render` leaves visible for exactly this reason.
+ *
+ * Dispatch happens BEFORE the row is written. The other order would leave a
+ * `queued` row behind on a transport failure, and the cron would then send it
+ * again -- a second reset link for a mail that already went.
+ */
+export async function sendNow(opts: {
+  organizationId: string | null
+  kind: NotificationKind
+  to: string
+  subject: string
+  /** Substituted in both copies. */
+  vars: Record<string, string>
+  /** Substituted ONLY in the message that is sent. */
+  secret: Record<string, string>
+}): Promise<void> {
+  let body = DEFAULT_TEMPLATES[opts.kind] ?? ''
+  if (opts.organizationId) {
+    const { rows } = await db.execute(sql`
+      select body from notification_templates
+       where organization_id = ${opts.organizationId} and kind = ${opts.kind}`)
+    body = (rows[0] as { body?: string } | undefined)?.body ?? body
+  }
+
+  const stored = render(body, opts.vars)
+  const sent = render(body, { ...opts.vars, ...opts.secret })
+
+  const ref = await notify({
+    channel: 'email', to: opts.to, subject: opts.subject, body: sent,
+  })
+
+  await db.execute(sql`
+    insert into notifications
+      (id, organization_id, team_id, kind, channel, "to", body,
+       status, send_at, sent_at, provider, provider_ref)
+    values (${crypto.randomUUID()}, ${opts.organizationId}, null, ${opts.kind},
+            'email', ${opts.to}, ${stored}, 'sent', localtimestamp, now(),
+            ${process.env.RESEND_API_KEY ? 'resend' : 'log'}, ${ref})`)
+}
+
+/**
+ * The salon a person belongs to, or null.
+ *
+ * A password reset for someone who already works at a salon should appear in
+ * that salon's Notification Center; a reset for a brand-new signup belongs to
+ * nobody. `limit 1` because a member of two salons is not a case this product
+ * has -- and picking the older membership is a better guess than failing.
+ */
+export async function organizationOf(userId: string): Promise<string | null> {
+  const { rows } = await db.execute(sql`
+    select organization_id from members
+     where user_id = ${userId} order by created_at limit 1`)
+  return (rows[0] as { organization_id?: string } | undefined)?.organization_id ?? null
 }

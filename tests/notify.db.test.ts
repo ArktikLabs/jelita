@@ -3,7 +3,7 @@ import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { db } from '../lib/db'
 import {
-  cancelForBooking, processDue, queueForBooking, render,
+  cancelForBooking, listNotifications, processDue, queueForBooking, render, sendNow,
 } from '../lib/notify'
 
 /**
@@ -299,5 +299,87 @@ describe('a sent message is immutable', () => {
     await processDue(ORG)
     await expect(pool.query(`delete from notifications where booking_id = 'ntf_i2'`))
       .rejects.toThrow(/cannot be deleted/)
+  })
+})
+
+/**
+ * Auth email (the email half of PRD §5.5).
+ *
+ * The load-bearing assertion is that the LINK never reaches the stored body:
+ * the Notification Center displays it and notification:['read'] reaches front
+ * desk, so a stored reset URL is account takeover.
+ */
+describe('sendNow', () => {
+  const authRows = async () => (await pool.query(
+    `select kind, status, body, "to", organization_id, team_id, sent_at, provider_ref
+       from notifications where channel = 'email' order by created_at`)).rows
+
+  beforeEach(async () => {
+    await purge(`delete from notifications where channel = 'email'`)
+  })
+
+  it('sends immediately -- sent, never queued', async () => {
+    await sendNow({
+      organizationId: ORG, kind: 'password_reset', to: 'budi@ntf.local',
+      subject: 'Reset', vars: { name: 'Budi', salon: 'Salon Ntf' },
+      secret: { link: 'https://app.example/reset?token=SECRET123' },
+    })
+    const [row] = await authRows()
+    expect(row.status).toBe('sent')
+    expect(row.sent_at).not.toBeNull()
+  })
+
+  it('NEVER stores the link', async () => {
+    await sendNow({
+      organizationId: ORG, kind: 'password_reset', to: 'budi@ntf.local',
+      subject: 'Reset', vars: { name: 'Budi', salon: 'Salon Ntf' },
+      secret: { link: 'https://app.example/reset?token=SECRET123' },
+    })
+    const [row] = await authRows()
+    expect(row.body).not.toContain('SECRET123')
+    expect(row.body).not.toContain('https://')
+    // The wording IS stored, with the placeholder written out, so the Center
+    // still shows what the message says.
+    expect(row.body).toContain('Budi')
+    expect(row.body).toContain('{{link}}')
+  })
+
+  it('the cron never picks one up, because nothing was left queued', async () => {
+    await sendNow({
+      organizationId: ORG, kind: 'password_reset', to: 'budi@ntf.local',
+      subject: 'Reset', vars: { name: 'Budi' },
+      secret: { link: 'https://app.example/reset?token=SECRET123' },
+    })
+    expect(await processDue()).toBe(0)
+  })
+
+  it('uses the salon"s template, and the built-in default without one', async () => {
+    await pool.query(
+      `update notification_templates set body = 'KHUSUS {{name}} — {{link}}'
+        where organization_id = $1 and kind = 'password_reset'`, [ORG])
+    await sendNow({
+      organizationId: ORG, kind: 'password_reset', to: 'a@ntf.local',
+      subject: 'x', vars: { name: 'Budi' }, secret: { link: 'https://x/1' },
+    })
+    await sendNow({
+      organizationId: null, kind: 'password_reset', to: 'b@ntf.local',
+      subject: 'x', vars: { name: 'Citra' }, secret: { link: 'https://x/2' },
+    })
+    const [salon, orgless] = await authRows()
+    expect(salon.body).toBe('KHUSUS Budi — {{link}}')
+    expect(orgless.body).toContain('Citra')
+    expect(orgless.organization_id).toBeNull()
+  })
+
+  it('carries no branch, so a branch-scoped Center still shows it', async () => {
+    await sendNow({
+      organizationId: ORG, kind: 'invitation', to: 'c@ntf.local',
+      subject: 'x', vars: { inviter: 'Ibu', salon: 'Salon Ntf' },
+      secret: { link: 'https://x/3' },
+    })
+    const [row] = await authRows()
+    expect(row.team_id).toBeNull()
+    const listed = await listNotifications(ORG, TEAM)
+    expect(listed.some((r) => r.kind === 'invitation')).toBe(true)
   })
 })

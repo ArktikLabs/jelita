@@ -1,8 +1,10 @@
+import Link from 'next/link'
 import { headers } from 'next/headers'
 import { auth } from '@/lib/auth'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { listNotifications, listTemplates } from '@/lib/notify'
 import { Badge } from '@/components/ui/badge'
+import { buttonVariants } from '@/components/ui/button'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -28,10 +30,21 @@ const STATUS: Record<string, { label: string; variant: 'default' | 'secondary' |
  * notification:['template:update'], so front desk can work the queue without
  * rewriting what the salon says.
  */
-export default async function NotificationsPage() {
+const FILTERS = [
+  ['', 'Semua'], ['queued', 'Antre'], ['sent', 'Terkirim'], ['cancelled', 'Dibatalkan'],
+] as const
+
+export default async function NotificationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ status?: string }>
+}) {
   await requirePagePermission({ notification: ['read'] })
   const session = await requirePageOrg()
   const teamId = session.session.activeTeamId ?? null
+  const { status: rawStatus } = await searchParams
+  // Allow-list, not the raw value: it goes into a query.
+  const status = FILTERS.some(([v]) => v === rawStatus && v !== '') ? rawStatus! : null
 
   const { success: canEditTemplates } = await auth.api.hasPermission({
     headers: await headers(),
@@ -39,7 +52,7 @@ export default async function NotificationsPage() {
   })
 
   const [rows, templates] = await Promise.all([
-    listNotifications(session.organizationId, teamId),
+    listNotifications(session.organizationId, teamId, status),
     canEditTemplates ? listTemplates(session.organizationId) : Promise.resolve([]),
   ])
   const due = rows.filter((r) => r.due).length
@@ -56,6 +69,23 @@ export default async function NotificationsPage() {
         tempo. Pengiriman masih simulasi — menyambungkan provider sungguhan
         hanya soal kredensial, alurnya sudah yang ini.
       </p>
+
+      {/* Same control the dashboard's date presets use, via buttonVariants --
+          hand-rolled chip classes rendered as unstyled text, and a filter you
+          cannot see the state of is worse than no filter. */}
+      <div className="flex flex-wrap gap-2">
+        {FILTERS.map(([value, label]) => (
+          <Link
+            key={value}
+            href={value ? `/dashboard/notifications?status=${value}` : '/dashboard/notifications'}
+            className={buttonVariants({
+              variant: (value || null) === status ? 'default' : 'outline', size: 'sm',
+            })}
+          >
+            {label}
+          </Link>
+        ))}
+      </div>
 
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">Belum ada pesan.</p>

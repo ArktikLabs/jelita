@@ -31,9 +31,13 @@ export const notificationTemplates = pgTable('notification_templates', {
  */
 export const notifications = pgTable('notifications', {
   id: text('id').primaryKey(),
-  organizationId: text('organization_id').notNull()
+  // NULLABLE, both of them. A verification email at signup has neither: the
+  // account exists, the salon does not. Where an organization CAN be resolved
+  // -- a password reset for someone who already works at a salon -- it is set,
+  // and the message appears in that salon's Center.
+  organizationId: text('organization_id')
     .references(() => organizations.id, { onDelete: 'cascade' }),
-  teamId: text('team_id').notNull(),
+  teamId: text('team_id'),
   bookingId: text('booking_id'),
   customerId: text('customer_id'),
   kind: text('kind').notNull(),
