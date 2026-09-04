@@ -61,4 +61,7 @@ sees this same dashboard scoped to themselves.
 
 - WhatsApp is **simulated** (PRD §5.5). The pipeline is real; going live is a
   credentials swap.
-- Reminders fire on a cron in production; in the demo, press the button.
+- Reminders fire on a cron in production. On the current hosting plan that cron
+  runs once a day (23:00 Jakarta), which is enough for the day-before reminder
+  and the thank-you but not for "two hours before" -- so in the demo, press
+  **Kirim yang jatuh tempo**. A paid plan changes one line in `vercel.json`.
