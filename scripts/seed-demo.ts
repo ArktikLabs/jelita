@@ -345,6 +345,25 @@ async function main() {
     }
   }
 
+  // The three weeks of history queued notifications too, and every one of
+  // them is now overdue -- a demo that opens the Notification Center on 849
+  // pending WhatsApps is showing a backlog, not a pipeline. In a real salon
+  // those went out on the day, so record them as having gone out. Only the
+  // upcoming bookings' reminders stay queued, which is the state a demo
+  // should open on.
+  //
+  // Keyed on whether the APPOINTMENT has happened, not on send_at: a
+  // confirmation's send_at is the moment it was queued, which for backdated
+  // bookings is when this script ran, so a send_at cut marks today's 232
+  // confirmations due for visits that finished three weeks ago.
+  const { rowCount: backdated } = await pool.query(
+    `update notifications n
+        set status = 'sent', sent_at = send_at, provider = 'log',
+            provider_ref = 'log:' || gen_random_uuid()
+      where n.organization_id = $1 and n.status = 'queued'
+        and exists (select 1 from bookings b
+                     where b.id = n.booking_id and b.ends_at < localtimestamp)`, [orgId])
+
   const { rows: [totals] } = await pool.query(
     `select coalesce(sum(total), 0)::bigint revenue from transactions
       where organization_id = $1 and status <> 'open'`, [orgId])
@@ -355,6 +374,7 @@ async function main() {
   console.log(`  seeded     ${STAFF.length + 1} staff, ${SERVICES.length} services,` +
     ` ${customerIds.length} customers`)
   console.log(`             ${sales} sales, ${upcoming} upcoming bookings`)
+  console.log(`             ${backdated} notifications already sent`)
   console.log(`  revenue    Rp ${Number(totals.revenue).toLocaleString('id-ID')}`)
   await pool.end()
   process.exit(0)

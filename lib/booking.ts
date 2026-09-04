@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
+import { cancelForBooking, queueForBooking } from './notify'
 import { pgCode } from './pg-error'
 
 /**
@@ -125,21 +126,31 @@ async function insertBooking(input: {
   status?: 'pending' | 'confirmed'
 }) {
   const id = crypto.randomUUID()
-  const { rows } = await db.execute(sql`
-    insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
-                          service_id, starts_at, ends_at, status,
-                          duration_minutes, price, currency, note)
-    select ${id}, ${input.organizationId}, ${input.teamId}, ${input.staffUserId},
-           ${input.customerId}, ${input.serviceId},
-           ${input.startsAt}::timestamp,
-           ${input.startsAt}::timestamp + make_interval(mins => p.duration_minutes),
-           ${input.status ?? 'pending'}, p.duration_minutes, p.price, p.currency,
-           ${input.note ?? null}
-      from service_branch_pricing p
-     where p.service_id = ${input.serviceId} and p.team_id = ${input.teamId}
-       and p.organization_id = ${input.organizationId} and p.offered
-    returning id`)
-  return (rows[0] as { id?: string } | undefined)?.id ?? null
+  return db.transaction(async (tx) => {
+    const { rows } = await tx.execute(sql`
+      insert into bookings (id, organization_id, team_id, staff_user_id, customer_id,
+                            service_id, starts_at, ends_at, status,
+                            duration_minutes, price, currency, note)
+      select ${id}, ${input.organizationId}, ${input.teamId}, ${input.staffUserId},
+             ${input.customerId}, ${input.serviceId},
+             ${input.startsAt}::timestamp,
+             ${input.startsAt}::timestamp + make_interval(mins => p.duration_minutes),
+             ${input.status ?? 'pending'}, p.duration_minutes, p.price, p.currency,
+             ${input.note ?? null}
+        from service_branch_pricing p
+       where p.service_id = ${input.serviceId} and p.team_id = ${input.teamId}
+         and p.organization_id = ${input.organizationId} and p.offered
+      returning id`)
+    const bookingId = (rows[0] as { id?: string } | undefined)?.id ?? null
+
+    // The messages are written with the booking, not after it (PRD §5.5).
+    // Same call the sale already makes for its commission, its stock movement
+    // and its points: no external I/O happens here -- sending is processDue's
+    // job -- so a failure here is structural, and a booking whose reminders
+    // silently did not queue is the failure nobody sees until a customer does.
+    if (bookingId) await queueForBooking(tx, input.organizationId, bookingId)
+    return bookingId
+  })
 }
 
 /**
@@ -367,12 +378,21 @@ export async function setBookingStatus(
 ): Promise<void> {
   const from = Object.keys(NEXT).filter((s) => NEXT[s].includes(status))
   if (from.length === 0) throw new Error('BAD_STATUS')
-  const { rows } = await db.execute(sql`
-    update bookings set status = ${status}, updated_at = now()
-     where id = ${bookingId} and organization_id = ${organizationId}
-       and status in ${sql`(${sql.join(from.map((s) => sql`${s}`), sql`, `)})`}
-    returning id`)
-  if (rows.length === 0) throw new Error('BAD_TRANSITION')
+  await db.transaction(async (tx) => {
+    const { rows } = await tx.execute(sql`
+      update bookings set status = ${status}, updated_at = now()
+       where id = ${bookingId} and organization_id = ${organizationId}
+         and status in ${sql`(${sql.join(from.map((s) => sql`${s}`), sql`, `)})`}
+      returning id`)
+    if (rows.length === 0) throw new Error('BAD_TRANSITION')
+
+    // An appointment that is not happening must not still say "see you
+    // tomorrow". Only the UNSENT ones: the messages already delivered are
+    // history, premature or not (notifications spec §2.3).
+    if (status === 'cancelled' || status === 'no_show') {
+      await cancelForBooking(tx, organizationId, bookingId)
+    }
+  })
 }
 
 /**

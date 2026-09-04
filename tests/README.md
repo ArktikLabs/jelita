@@ -166,3 +166,33 @@ starts being the thing keeping strangers out of a closed branch.
 The general shape, worth reusing: when a guard is unfalsifiable because
 something upstream subsumes it, assert the upstream guarantee rather than
 deleting the guard or claiming coverage for it.
+
+---
+
+## Notifications (PRD §5.5)
+
+Eleven breaks across the slice, each watched failing its own assertion:
+blanking an unknown placeholder, rendering at read time, queuing three events,
+cancelling sent messages, ignoring `send_at`, dropping the salon scope, queuing
+for a customer with no number, dropping the one-per-event guard, never queuing
+on booking, cancelling on completion, and forgetting `no_show`.
+
+Two things worth carrying forward.
+
+**`every` on an empty array is true.** `expect(rows.every(r => r.status ===
+'cancelled')).toBe(true)` passed just as well when nothing had been queued at
+all — so a break that deleted the queue call was caught by two tests instead of
+four. The length is asserted first now. Any `every`/`some` assertion over rows
+a fixture produced has this shape; assert the count in the same test.
+
+**Three breaks that all fail the same test are a warning, not a result.** A
+`brk` helper re-captured its "original" copy from a file that already had the
+first break applied, so every restore silently re-applied it and all three
+breaks reported identical failures. Identical failure sets from breaks aimed at
+different code is the signal. Break-and-restore should restore from **git**,
+and the patch should assert it actually changed the file.
+
+**Screenshotting is not optional for a page.** `KIND_LABEL` was exported from a
+`'use client'` module, so the server component got a client reference rather
+than the object and the event column rendered blank for every row. tsc, the
+build and 390 unit tests all passed. Only looking at the page found it.
