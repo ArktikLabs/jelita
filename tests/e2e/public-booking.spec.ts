@@ -120,6 +120,14 @@ test.describe.serial('the public booking page', () => {
     expect(await page.content()).not.toContain('Pub Check')
   })
 
+  test('carries no analytics unless a container id is configured', async ({ page }) => {
+    await page.goto(at(SLUG, `/book?serviceId=${serviceId}&date=${DAY}`))
+    // PRD §7 puts GTM on this page, but only when NEXT_PUBLIC_GTM_ID is set.
+    // Asserted because the failure mode is a hardcoded container that ships
+    // to every deployment and silently tracks dev and CI traffic.
+    expect(await page.content()).not.toContain('googletagmanager.com')
+  })
+
   test('books a slot with no account at all, landing pending', async ({ page }) => {
     await page.goto(at(SLUG, `/book?serviceId=${serviceId}&date=${DAY}`))
     await page.locator('input[name="startsAt"][value$="T10:00"]').check()
