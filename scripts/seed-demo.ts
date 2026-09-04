@@ -205,9 +205,13 @@ async function main() {
      values ($1, $2, $3, 'owner', now())`, [crypto.randomUUID(), owner.id, orgId])
   await pool.query(`update subscriptions set plan_id = (select id from plans where key = 'business')
                      where organization_id = $1`, [orgId])
+  // The loyalty rule has to be set BEFORE any sale: checkout writes points as
+  // it goes, so a rule configured afterwards leaves three weeks of history
+  // earning nothing and §5.7 invisible in the demo. Rp 10.000 spent = 1 point.
   await pool.query(
     `update salon_profiles set currency = 'IDR', slot_minutes = 30,
-       commission_kind = 'percent', commission_value = 1000, brand_color = '#7c3aed'
+       commission_kind = 'percent', commission_value = 1000, brand_color = '#7c3aed',
+       points_kind = 'spend', points_value = 10000
      where organization_id = $1`, [orgId])
 
   const teamIds: string[] = []
