@@ -81,6 +81,18 @@ and not inside the Server Action.
 
 Said plainly here so nobody demos it as automatic.
 
+**Built, then constrained by the hosting plan.** The cron exists
+(`/api/cron/notifications`) but Vercel's Hobby plan runs a cron ONCE A DAY, so
+`vercel.json` says `0 16 * * *` — 23:00 Jakarta, late in the salon's day, so a
+day-before reminder for tomorrow's 14:00 appointment (due at 14:00 today) still
+goes out the day before. A morning run would not reach it until the day of.
+
+At that cadence `reminder_2h` cannot be honoured at all — "two hours before"
+needs a cadence finer than the gap it is aiming at — and a booking confirmation
+waits up to a day instead of going immediately. Neither is a code problem:
+`*/15 * * * *` on a paid plan fixes both and touches nothing else. Until then
+the button is how a confirmation actually goes out.
+
 ### 2.5 One message per booking per event
 
 `unique (booking_id, kind)`. Queuing twice is not a thing, and a constraint
