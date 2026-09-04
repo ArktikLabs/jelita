@@ -7,6 +7,16 @@ seeded demo.
 **Sign in:** `owner@ovarya.demo` / `demo12345` (owner)
 · `dewi@ovarya.demo` / `demo12345` (front desk, Kemang)
 
+These are published in a public repository, so treat them as a shared demo
+account, not a private one. To drive the demo from your own address instead:
+
+```
+pnpm exec tsx --env-file=.env.local scripts/grant-owner.ts you@example.com 'a-password'
+```
+
+Re-run it after `pnpm seed:demo` — seeding deletes the salon and every
+membership with it.
+
 ---
 
 ## Flow A — a customer books online (do this on a phone)
