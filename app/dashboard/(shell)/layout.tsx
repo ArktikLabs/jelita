@@ -52,11 +52,11 @@ export default async function AppLayout({
   return (
     <div className="flex min-h-full flex-col">
       <header className="flex items-center justify-between border-b px-6 py-3">
-        <div className="flex items-center gap-6">
+        <div className="flex min-w-0 items-center gap-6 overflow-x-auto">
           <Link href="/dashboard" className="font-medium">Jelita</Link>
           <MainNav items={navItems} />
         </div>
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex shrink-0 items-center gap-4 text-sm">
           {canSwitch ? (
             <BranchSwitcher branches={branchOptions} activeTeamId={activeTeamId} />
           ) : (
@@ -64,7 +64,9 @@ export default async function AppLayout({
               {branches[0] ? branchLabel(branches[0]) : '—'}
             </span>
           )}
-          <Link href="/dashboard/profile" className="underline">{session.user.name}</Link>
+          <Link href="/dashboard/profile" className="whitespace-nowrap underline">
+            {session.user.name}
+          </Link>
           {/* The (auth) layout bounces a signed-in user away from /login, so
               this is the only reachable way out of the app. */}
           <form action={signOutAction}>

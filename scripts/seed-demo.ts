@@ -200,6 +200,16 @@ async function main() {
   // gap the staff model was changed to allow.
   await pool.query(`update staff_profiles set team_id = $1
                      where user_id = $2 and organization_id = $3`, [teamId, owner.id, orgId])
+  // AND a team_members row, which is what lib/auth.ts's session hook reads to
+  // set activeTeamId. Without it the owner signs in with no active branch and
+  // every branch-scoped screen -- the dashboard included -- shows nothing.
+  //
+  // Found by screenshotting the seeded dashboard, not by any test: the e2e
+  // suites build their salons through createSalon, which goes via better-auth
+  // and gets this row for free. A seed that writes the rows itself does not.
+  await pool.query(
+    `insert into team_members (id, team_id, user_id, created_at)
+     values ($1, $2, $3, now())`, [crypto.randomUUID(), teamId, owner.id])
   stylists.push(owner.id)
 
   console.log('services…')

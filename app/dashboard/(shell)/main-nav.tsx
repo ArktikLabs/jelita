@@ -24,7 +24,10 @@ export function MainNav({ items }: { items: { href: string; label: string }[] })
             href={item.href}
             aria-current={active ? 'page' : undefined}
             className={[
-              'rounded-md px-3 py-1.5 text-sm transition-colors',
+              // whitespace-nowrap: with ten items the bar is tight, and
+              // "Janji temu" wrapped to two lines -- which reads as a broken
+              // layout on the first screen after signing in.
+              'rounded-md px-3 py-1.5 text-sm whitespace-nowrap transition-colors',
               active
                 ? 'bg-accent text-accent-foreground font-medium'
                 : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',

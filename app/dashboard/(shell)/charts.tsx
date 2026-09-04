@@ -41,12 +41,31 @@ const TooltipBox = ({ label, value }: { label: string; value: string }) => (
   </div>
 )
 
+/**
+ * Round tick values, computed rather than left to the library.
+ *
+ * Recharts' automatic ticks on money produce "850rb, 1,7jt, 2,5jt, 3,4jt" --
+ * arithmetically even but meaningless to read. Round steps let someone judge a
+ * bar against the axis without doing division.
+ */
+function roundTicks(max: number): number[] {
+  if (max <= 0) return [0]
+  const rough = max / 4
+  const magnitude = 10 ** Math.floor(Math.log10(rough))
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude)
+    .find((s) => s >= rough) ?? magnitude * 10
+  const ticks: number[] = []
+  for (let v = 0; v <= max + step; v += step) ticks.push(v)
+  return ticks
+}
+
 export function RevenueTrend({
   data, currency,
 }: {
   data: { day: string; revenue: number }[]
   currency: CurrencyCode
 }) {
+  const ticks = roundTicks(Math.max(0, ...data.map((d) => d.revenue)))
   return (
     <div className="h-56 w-full">
       <ResponsiveContainer width="100%" height="100%">
@@ -63,6 +82,8 @@ export function RevenueTrend({
           />
           <YAxis
             tickFormatter={compact}
+            ticks={ticks}
+            domain={[0, ticks[ticks.length - 1]]}
             stroke="var(--viz-axis)"
             tickLine={false}
             axisLine={false}
@@ -80,8 +101,13 @@ export function RevenueTrend({
               />
             ) : null)}
           />
+          {/* LINEAR, not a monotone spline. Daily revenue is a series of
+              discrete totals, and a smoothed curve invents values between them
+              -- it dipped below the real minimum and overshot the real peak on
+              the seeded data, which is a chart lying about numbers it was
+              given. Straight segments say exactly what happened. */}
           <Line
-            type="monotone"
+            type="linear"
             dataKey="revenue"
             stroke="var(--viz-series-1)"
             strokeWidth={2}
