@@ -134,9 +134,13 @@ Composite foreign keys throughout. `to` and `body` are snapshots.
   sent. Each row shows the recipient, the event, the time it is due, and the
   message itself. A "process due" button for anyone holding
   `notification:['send']`.
-- **`/dashboard/settings`** — the four templates, for
-  `notification:['template:update']` (owner and admin; front desk holds
-  `read` and `send` but not this).
+- The four templates, for `notification:['template:update']` (owner and admin;
+  front desk holds `read` and `send` but not this).
+
+  **Built on the notifications page, not in settings** as this section first
+  said: one page instead of two, and the message and the template it came from
+  sit next to each other, which is what an owner is comparing when they edit
+  one. The permission gate is the same either way.
 
 ## 5. Testing
 
@@ -160,3 +164,24 @@ Playwright:
 13. Editing a template changes the NEXT booking's message and not the last.
 
 **Every load-bearing assertion gets break-and-restore evidence.**
+
+## 6. What the build found
+
+**`send_at` is wall clock.** `bookings.starts_at` is `timestamp` without a
+zone by design (booking spec §2.6), and three of the four `send_at` values
+derive from it. A timestamptz here would have compared an appointment's wall
+time against an instant.
+
+**A value exported from a `'use client'` module reaches a server component as
+a client reference, not the object.** `KIND_LABEL` lived in the forms file;
+every lookup returned undefined and the event column rendered blank. Nothing
+caught it -- not tsc, not the build, not a test. Screenshotting did.
+
+**`every` on an empty array is true.** "All four messages are cancelled"
+passed just as well when nothing had been queued. The count is asserted first
+now, and breaking the queue call fails four tests instead of two.
+
+**The seed backdates bookings, so its notifications need backdating too.**
+Left alone, the Center opened on 849 overdue messages. Keyed on whether the
+appointment has passed, not on `send_at` -- a confirmation's `send_at` is when
+it was queued, which for a backdated booking is when the seed ran.
