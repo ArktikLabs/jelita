@@ -141,9 +141,21 @@ A route rather than a Server Action, because an action cannot hand the browser
 a file — and the sandbox in the artifact viewer aside, a `Content-Disposition`
 download is what a spreadsheet-bound owner expects.
 
-Values are quoted and internal quotes doubled. A service named
-`Smoothing, "Premium"` must not become three columns — and the demo seed's
-Indonesian names contain commas often enough that this is not hypothetical.
+**Every** field is quoted, including numbers, and internal quotes are doubled.
+One rule rather than "quote when it contains a comma, a quote, a newline or
+leading whitespace" — that condition is four chances to miss a case, and a
+missed case is not an error but a silently wrong spreadsheet with one row's
+columns shifted.
+
+A BOM, because Excel on Windows otherwise reads a UTF-8 file as the local
+codepage and an Indonesian salon's names come out mangled.
+
+No seeded service name contains a comma today, so the assertion **creates**
+one and sells it rather than assuming the fixture provides it. It has to be
+sold, not renamed afterwards: `transaction_lines.name` is a snapshot, so
+renaming a service does not rewrite past lines — which is right, and is why
+the first version of that test asserted against a report that still said
+"Hair Spa".
 
 ## 3. Data model
 

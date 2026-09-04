@@ -5,6 +5,7 @@ import {
   bookingFunnel, revenueByDay, revenueRange, staffPerformance, topServices,
 } from '../lib/reports'
 import { commissionRecap } from '../lib/commission'
+import { csvFilename, toCsv } from '../lib/csv'
 import { checkout, voidSale } from '../lib/pos'
 
 /**
@@ -315,5 +316,35 @@ describe('the booking funnel', () => {
     expect((await bookingFunnel(scope())).total).toBe(2)
     expect(await bookingFunnel(scope(SINTA))).toMatchObject({ total: 1, noShowRate: 0 })
     expect(await bookingFunnel(scope(RINA))).toMatchObject({ total: 1, noShowRate: 100 })
+  })
+})
+
+describe('CSV', () => {
+  it('quotes every field and doubles internal quotes', () => {
+    const out = toCsv(['name', 'revenue'], [['Smoothing, "Premium"', 450000]])
+    // A comma inside a value must not become a column boundary, and a quote
+    // inside one must not end the field. Either mistake is a silently wrong
+    // spreadsheet rather than an error.
+    expect(out).toContain('"Smoothing, ""Premium"""')
+    expect(out).toContain('"450000"')
+  })
+
+  it('starts with a BOM, so Excel reads UTF-8 rather than the local codepage', () => {
+    expect(toCsv(['a'], [['Sanggul Pesta']]).startsWith('﻿')).toBe(true)
+  })
+
+  it('separates rows with CRLF and ends with one', () => {
+    const out = toCsv(['a'], [['x'], ['y']])
+    expect(out).toBe('﻿"a"\r\n"x"\r\n"y"\r\n')
+  })
+
+  it('writes an empty field for null rather than the word null', () => {
+    expect(toCsv(['a'], [[null]])).toContain('""')
+    expect(toCsv(['a'], [[null]])).not.toContain('null')
+  })
+
+  it('names the file with its section and range', () => {
+    expect(csvFilename('staff', '2027-11-01', '2027-11-30'))
+      .toBe('jelita-staff-2027-11-01-2027-11-30.csv')
   })
 })

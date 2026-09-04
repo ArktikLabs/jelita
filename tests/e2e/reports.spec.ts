@@ -180,6 +180,78 @@ test.describe('the stylist dashboard', () => {
   })
 })
 
+test.describe('CSV export', () => {
+  test('downloads a named file with a header row and the figures', async () => {
+    const res = await owner.get(
+      `/api/reports/csv?section=staff&from=${TODAY}&to=${TODAY}`)
+    expect(res.status()).toBe(200)
+    expect(res.headers()['content-type']).toContain('text/csv')
+    expect(res.headers()['content-disposition'])
+      .toContain(`filename="jelita-staff-${TODAY}-${TODAY}.csv"`)
+
+    const body = await res.text()
+    expect(body.startsWith('﻿'), 'a BOM, so Excel reads UTF-8').toBe(true)
+    expect(body).toContain('"Staf","Omzet","Layanan","Komisi"')
+    expect(body).toContain('"Rep Sinta"')
+    expect(body).toContain('"Rep Rina"')
+  })
+
+  test('quotes a service name containing a comma', async () => {
+    // The comma-bearing name is sold, not renamed afterwards: transaction_lines
+    // snapshots the name at checkout, so renaming a service does NOT rewrite
+    // past lines -- which is the right behaviour and is why the first version
+    // of this test asserted against a report that still said "Hair Spa".
+    //
+    // Created rather than assumed, too: no seeded service has a comma today, so
+    // an assertion relying on one would stop testing the moment the seed
+    // changed.
+    const commaId = crypto.randomUUID()
+    await pool.query(
+      `insert into services (id, organization_id, name, duration_minutes, price)
+       values ($1, $2, 'Smoothing, "Premium"', 60, 500000)`, [commaId, orgId])
+    await pool.query(
+      `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)`,
+      [commaId, sintaId, orgId])
+    const { checkout } = await import('../../lib/pos')
+    await checkout({
+      organizationId: orgId, teamId, userId: sintaId, method: 'cash',
+      items: [{ serviceId: commaId, quantity: 1, discount: 0, staffUserId: sintaId }],
+      customerId, completedAt: `${TODAY} 12:00`,
+    })
+
+    const body = await (await owner.get(
+      `/api/reports/csv?section=services&from=${TODAY}&to=${TODAY}`)).text()
+    expect(body).toContain('"Smoothing, ""Premium"""')
+
+    // The comma inside the value must not become a column boundary: that row
+    // still has exactly three fields, so two separators between them.
+    const row = body.split('\r\n').find((l) => l.includes('Smoothing'))!
+    expect(row.match(/","/g) ?? []).toHaveLength(2)
+  })
+
+  test('refuses a role without report:export, and an unknown section', async () => {
+    const refused = await sinta.get(
+      `/api/reports/csv?section=staff&from=${TODAY}&to=${TODAY}`)
+    expect(refused.status(), 'a stylist holds no report statement at all').toBe(403)
+
+    expect((await owner.get(`/api/reports/csv?section=payroll&from=${TODAY}&to=${TODAY}`))
+      .status(), 'sections are an allow-list').toBe(400)
+    expect((await owner.get('/api/reports/csv?section=staff&from=yesterday&to=today'))
+      .status(), 'and the dates are validated').toBe(400)
+  })
+
+  test('the download link is offered to an owner and not to a stylist', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard?from=${TODAY}&to=${TODAY}`)
+    await expect(page.getByRole('link', { name: 'Unduh CSV' })).toBeVisible()
+
+    await page.context().clearCookies()
+    await page.context().addCookies(await sintaCookies())
+    await page.goto(`/dashboard?from=${TODAY}&to=${TODAY}`)
+    await expect(page.getByRole('link', { name: 'Unduh CSV' })).toHaveCount(0)
+  })
+})
+
 test.describe('the range', () => {
   test('a range with no sales shows zero rather than NaN', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())

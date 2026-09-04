@@ -58,12 +58,16 @@ export default async function DashboardPage({
   const from = isDate(q.from) ? q.from! : shift(-6)
   const to = isDate(q.to) ? q.to! : shift(0)
 
-  const [{ success: seesAll }, { success: seesOwn }] = await Promise.all([
+  const [{ success: seesAll }, { success: seesOwn }, { success: canExport }] =
+    await Promise.all([
     auth.api.hasPermission({
       headers: await headers(), body: { permissions: { report: ['read'] } },
     }),
     auth.api.hasPermission({
       headers: await headers(), body: { permissions: { commission: ['read:own'] } },
+    }),
+    auth.api.hasPermission({
+      headers: await headers(), body: { permissions: { report: ['export'] } },
     }),
   ])
 
@@ -117,6 +121,15 @@ export default async function DashboardPage({
               {label}
             </Link>
           ))}
+          {canExport && (
+            <Link
+              href={`/api/reports/csv?section=staff&from=${from}&to=${to}`}
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+              prefetch={false}
+            >
+              Unduh CSV
+            </Link>
+          )}
           <form className="flex items-end gap-1">
             <input type="date" name="from" defaultValue={from} className={dateInput} />
             <input type="date" name="to" defaultValue={to} className={dateInput} />

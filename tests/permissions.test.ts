@@ -24,6 +24,26 @@ describe('the built-in roles', () => {
     }
   })
 
+  it('has no role holding report:read WITHOUT report:export', () => {
+    // The CSV route is guarded by report:['export'] on the reading that
+    // reading a figure on screen and carrying the whole table out of the
+    // building are different acts. No built-in role separates them, so
+    // swapping the guard for ['read'] fails nothing end to end -- verified by
+    // trying it, as the plan predicted. This is what makes the choice
+    // falsifiable: the day a role holds read alone, it fails.
+    for (const role of ROLES) {
+      if (holds(role, 'report', 'read')) {
+        expect(holds(role, 'report', 'export'), `${role} would separate them`).toBe(true)
+      }
+    }
+  })
+
+  it('gives report to owner and admin, and to nobody else', () => {
+    for (const role of ROLES) {
+      expect(holds(role, 'report', 'read'), role).toBe(role === 'owner' || role === 'admin')
+    }
+  })
+
   it('has no role holding payroll:read WITHOUT payroll:lock', () => {
     // Closing a month is guarded by payroll:['lock'] on the reading that
     // reading a recap and ending a pay period are different acts. No built-in
