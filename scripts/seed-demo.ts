@@ -55,13 +55,35 @@ const SERVICES: [string, number, number, string][] = [
   ['Facial Basic', 60, 145000, 'Perawatan Wajah'],
 ]
 
-const STAFF: [string, string][] = [
-  ['Sinta Dewi', 'stylist'],
-  ['Rina Marlina', 'stylist'],
-  ['Ayu Lestari', 'stylist'],
-  ['Bella Kartika', 'stylist'],
-  ['Dewi Anggraini', 'frontdesk'],
-  ['Putri Handayani', 'admin'],
+/**
+ * Two branches, because §5.8 is a selling point and a one-branch demo shows
+ * none of it: no branch selector worth using, no per-branch revenue split, and
+ * no way to see that a stylist is bound to one salon.
+ *
+ * Senopati is the newer, smaller shop -- see WEIGHT below.
+ */
+const BRANCHES: [string, string, string][] = [
+  ['Ovarya Kemang', 'Jl. Kemang Raya No. 42, Jakarta Selatan', '021-7180042'],
+  ['Ovarya Senopati', 'Jl. Senopati No. 18, Jakarta Selatan', '021-7205511'],
+]
+
+/** Branch B does roughly 60% of A's trade. A dead-even split reads as fake. */
+const WEIGHT = [1, 0.6]
+
+/**
+ * The third field is the branch index, or null for management.
+ *
+ * Every branch needs its OWN front desk: staff_profiles.team_id binds a person
+ * to one salon, so a single cashier could not have rung up both shops.
+ */
+const STAFF: [string, string, number | null][] = [
+  ['Sinta Dewi', 'stylist', 0],
+  ['Rina Marlina', 'stylist', 0],
+  ['Dewi Anggraini', 'frontdesk', 0],
+  ['Ayu Lestari', 'stylist', 1],
+  ['Bella Kartika', 'stylist', 1],
+  ['Sari Wulandari', 'frontdesk', 1],
+  ['Putri Handayani', 'admin', null],
 ]
 
 const FIRST = ['Siti', 'Nur', 'Ratna', 'Indah', 'Fitri', 'Maya', 'Lia', 'Wulan',
@@ -117,25 +139,55 @@ async function main() {
   const pool = new Pool({ connectionString: url })
 
   console.log('clearing any previous demo salon…')
-  // TRUNCATE first: deleting the organization cascades into settled
-  // transactions, which the immutability trigger refuses -- correctly.
+
+  /**
+   * Delete rows an immutability trigger exists to protect.
+   *
+   * Re-seeding is the ONLY legitimate caller. Every one of these triggers is
+   * doing its job -- a settled sale, a stock movement and a sent message are
+   * all records of things that happened -- and wiping a demo salon is the one
+   * operation that is allowed to disagree.
+   */
+  const withoutTriggers = async (
+    pairs: [table: string, trigger: string][], fn: () => Promise<void>,
+  ) => {
+    for (const [t, g] of pairs) await pool.query(`alter table ${t} disable trigger ${g}`)
+    try {
+      await fn()
+    } finally {
+      for (const [t, g] of pairs) await pool.query(`alter table ${t} enable trigger ${g}`)
+    }
+  }
+
   const { rows: prior } = await pool.query(
     `select id from organizations where slug = $1`, [SLUG])
   if (prior[0]) {
-    await pool.query(
-      `delete from transaction_payments where organization_id = $1`, [prior[0].id])
-    await pool.query(`delete from commissions where organization_id = $1`, [prior[0].id])
-    await pool.query(`delete from transaction_lines where organization_id = $1`, [prior[0].id])
-    await pool.query(
-      `alter table transactions disable trigger transactions_settled_immutable`)
-    await pool.query(`delete from transactions where organization_id = $1`, [prior[0].id])
-    await pool.query(
-      `alter table transactions enable trigger transactions_settled_immutable`)
-    await pool.query(`alter table stock_movements disable trigger stock_movements_append_only`)
-    await pool.query(`delete from stock_movements where organization_id = $1`, [prior[0].id])
-    await pool.query(`alter table stock_movements enable trigger stock_movements_append_only`)
+    const org = prior[0].id
+    // ALL of them, off together. Lines and payments follow their parent and
+    // their triggers refuse a delete whenever that parent is settled;
+    // commissions reuse the very same function, which is what re-seeding
+    // actually tripped on. Turning them off one at a time in delete order is
+    // how the previous version missed two of the four.
+    await withoutTriggers([
+      ['transaction_lines', 'transaction_lines_settled_immutable'],
+      ['transaction_payments', 'transaction_payments_settled_immutable'],
+      ['commissions', 'commissions_settled_immutable'],
+      ['transactions', 'transactions_settled_immutable'],
+      ['stock_movements', 'stock_movements_append_only'],
+      ['customer_points', 'customer_points_settled_immutable'],
+    ], async () => {
+      await pool.query(`delete from transaction_payments where organization_id = $1`, [org])
+      await pool.query(`delete from commissions where organization_id = $1`, [org])
+      await pool.query(`delete from transaction_lines where organization_id = $1`, [org])
+      await pool.query(`delete from transactions where organization_id = $1`, [org])
+      await pool.query(`delete from stock_movements where organization_id = $1`, [org])
+    })
   }
-  await pool.query(`delete from organizations where slug = $1`, [SLUG])
+  // The organization cascade reaches notifications, and a SENT one is
+  // immutable too.
+  await withoutTriggers([['notifications', 'notifications_sent_immutable']], async () => {
+    await pool.query(`delete from organizations where slug = $1`, [SLUG])
+  })
   await pool.query(`delete from users where email like $1`, [`%@${DOMAIN}`])
 
   console.log('owner and salon…')
@@ -158,13 +210,19 @@ async function main() {
        commission_kind = 'percent', commission_value = 1000, brand_color = '#7c3aed'
      where organization_id = $1`, [orgId])
 
-  const teamId = crypto.randomUUID()
-  await pool.query(
-    `insert into teams (id, name, organization_id, created_at) values ($1, $2, $3, now())`,
-    [teamId, 'Ovarya Kemang', orgId])
-  await pool.query(
-    `update branch_profiles set address = 'Jl. Kemang Raya No. 42, Jakarta Selatan',
-       phone = '021-7180042' where team_id = $1`, [teamId])
+  const teamIds: string[] = []
+  for (const [name, address, phone] of BRANCHES) {
+    const id = crypto.randomUUID()
+    teamIds.push(id)
+    await pool.query(
+      `insert into teams (id, name, organization_id, created_at) values ($1, $2, $3, now())`,
+      [id, name, orgId])
+    // branch_profiles and branch_hours are seeded by trigger; only the
+    // address and phone are ours to fill in.
+    await pool.query(
+      `update branch_profiles set address = $2, phone = $3 where team_id = $1`,
+      [id, address, phone])
+  }
 
   console.log('staff…')
   // Logins are created the way tests/e2e/fixtures.ts does, NOT through
@@ -177,29 +235,40 @@ async function main() {
   // matters (bookings, sales, commissions, stock) still goes through the real
   // path.
   const staffIds: Record<string, string> = {}
-  for (const [name, role] of STAFF) {
+  const staffBranch: Record<string, number | null> = {}
+  for (const [name, role, branch] of STAFF) {
+    staffBranch[name] = branch
     const email = `${name.split(' ')[0].toLowerCase()}@${DOMAIN}`
     staffIds[name] = await createLogin(pool, ctx, { name, email })
     await pool.query(
       `insert into members (id, user_id, organization_id, role, created_at)
        values ($1, $2, $3, $4, now())`,
       [crypto.randomUUID(), staffIds[name], orgId, role])
-    if (role !== 'admin') {
+    if (branch !== null) {
       // The members insert seeds staff_profiles (and staff_hours) by trigger;
       // the branch assignment is a separate write.
       await pool.query(`update staff_profiles set team_id = $1
                          where user_id = $2 and organization_id = $3`,
-        [teamId, staffIds[name], orgId])
+        [teamIds[branch], staffIds[name], orgId])
       await pool.query(
         `insert into team_members (id, team_id, user_id, created_at)
-         values ($1, $2, $3, now())`, [crypto.randomUUID(), teamId, staffIds[name]])
+         values ($1, $2, $3, now())`,
+        [crypto.randomUUID(), teamIds[branch], staffIds[name]])
     }
   }
-  const stylists = STAFF.filter(([, r]) => r === 'stylist').map(([n]) => staffIds[n])
+  /** One roster per branch: a stylist is bound to one salon and cannot float. */
+  const branches = BRANCHES.map(([name], i) => ({
+    name,
+    teamId: teamIds[i],
+    weight: WEIGHT[i],
+    stylists: STAFF.filter(([, r, b]) => r === 'stylist' && b === i).map(([n]) => staffIds[n]),
+    cashier: staffIds[STAFF.find(([, r, b]) => r === 'frontdesk' && b === i)![0]],
+  }))
   // The owner works the floor -- the common case in a salon this size, and the
   // gap the staff model was changed to allow.
   await pool.query(`update staff_profiles set team_id = $1
-                     where user_id = $2 and organization_id = $3`, [teamId, owner.id, orgId])
+                     where user_id = $2 and organization_id = $3`,
+    [teamIds[0], owner.id, orgId])
   // AND a team_members row, which is what lib/auth.ts's session hook reads to
   // set activeTeamId. Without it the owner signs in with no active branch and
   // every branch-scoped screen -- the dashboard included -- shows nothing.
@@ -209,8 +278,9 @@ async function main() {
   // and gets this row for free. A seed that writes the rows itself does not.
   await pool.query(
     `insert into team_members (id, team_id, user_id, created_at)
-     values ($1, $2, $3, now())`, [crypto.randomUUID(), teamId, owner.id])
-  stylists.push(owner.id)
+     values ($1, $2, $3, now())`, [crypto.randomUUID(), teamIds[0], owner.id])
+  branches[0].stylists.push(owner.id)
+  const stylists = branches.flatMap((b) => b.stylists)
 
   console.log('services…')
   const categories: Record<string, string> = {}
@@ -229,9 +299,13 @@ async function main() {
     await pool.query(
       `insert into services (id, organization_id, category_id, name, duration_minutes, price)
        values ($1, $2, $3, $4, $5, $6)`, [id, orgId, categories[cat], name, minutes, price])
-    // Every stylist can perform everything, except the two long chemical
-    // treatments, which only the two seniors do.
-    const eligible = minutes >= 150 ? stylists.slice(0, 2) : stylists
+    // Every stylist can perform everything, except the long chemical
+    // treatments, which only the senior at each branch does. ONE PER BRANCH,
+    // not the two most senior overall: both of those work at Kemang, and
+    // Senopati would silently never offer a keratin treatment.
+    const eligible = minutes >= 150
+      ? branches.map((b) => b.stylists[0])
+      : stylists
     for (const userId of eligible) {
       await pool.query(
         `insert into service_staff (service_id, user_id, organization_id) values ($1, $2, $3)`,
@@ -247,10 +321,13 @@ async function main() {
     await pool.query(
       `insert into products (id, organization_id, name, kind, price, reorder_level)
        values ($1, $2, $3, $4, $5, $6)`, [id, orgId, name, kind, price, reorder])
-    await recordMovement({
-      organizationId: orgId, teamId, productId: id,
-      quantity: between(12, 30), reason: 'purchase', note: 'Stok awal',
-    })
+    // Stock is BRANCH-scoped: each shop opens with its own shelf.
+    for (const b of branches) {
+      await recordMovement({
+        organizationId: orgId, teamId: b.teamId, productId: id,
+        quantity: between(12, 30), reason: 'purchase', note: 'Stok awal',
+      })
+    }
   }
 
   console.log('customers…')
@@ -272,11 +349,14 @@ async function main() {
     const date = iso(day)
     // Sunday is quiet, Saturday is busy -- a flat line reads as fake.
     const weekday = day.getDay()
-    const count = weekday === 0 ? between(4, 7) : weekday === 6 ? between(14, 20) : between(8, 14)
+    const busy = weekday === 0 ? between(4, 7) : weekday === 6 ? between(14, 20) : between(8, 14)
 
+    for (const branch of branches) {
+    const { teamId } = branch
+    const count = Math.round(busy * branch.weight)
     for (let n = 0; n < count; n++) {
       const serviceId = pick(serviceIds)
-      const staffUserId = pick(stylists)
+      const staffUserId = pick(branch.stylists)
       const customerId = pick(customerIds)
       const hour = between(9, 19)
       const startsAt = `${date}T${String(hour).padStart(2, '0')}:${rnd() < 0.5 ? '00' : '30'}`
@@ -313,11 +393,12 @@ async function main() {
         items.push({ productId: pick(productIds), quantity: 1, discount: 0 })
       }
       await checkout({
-        organizationId: orgId, teamId, userId: staffIds['Dewi Anggraini'],
+        organizationId: orgId, teamId, userId: branch.cashier,
         items, customerId, bookingId, method: pick(['cash', 'qris', 'transfer', 'debit']),
         completedAt: `${date} ${String(hour).padStart(2, '0')}:45`,
       })
       sales++
+    }
     }
   }
 
@@ -325,23 +406,26 @@ async function main() {
   // the transactions page does not claim a shift has been open since the
   // beginning of the demo.
   await pool.query(
-    `update shifts set closed_at = now() where team_id = $1 and closed_at is null`, [teamId])
+    `update shifts set closed_at = now() where team_id = any($1) and closed_at is null`,
+    [teamIds])
 
   console.log('upcoming bookings…')
   let upcoming = 0
   for (let ahead = 0; ahead <= 6; ahead++) {
     const date = iso(daysAgo(-ahead))
-    for (let n = 0; n < between(3, 8); n++) {
-      try {
-        await createBooking({
-          organizationId: orgId, teamId, serviceId: pick(serviceIds),
-          customerId: pick(customerIds), date,
-          startsAt: `${date}T${String(between(9, 18)).padStart(2, '0')}:${rnd() < 0.5 ? '00' : '30'}`,
-          staffUserId: pick(stylists), includePast: true,
-          status: rnd() < 0.6 ? 'confirmed' : 'pending',
-        })
-        upcoming++
-      } catch { /* SLOT_TAKEN -- see above */ }
+    for (const branch of branches) {
+      for (let n = 0; n < Math.round(between(3, 8) * branch.weight); n++) {
+        try {
+          await createBooking({
+            organizationId: orgId, teamId: branch.teamId, serviceId: pick(serviceIds),
+            customerId: pick(customerIds), date,
+            startsAt: `${date}T${String(between(9, 18)).padStart(2, '0')}:${rnd() < 0.5 ? '00' : '30'}`,
+            staffUserId: pick(branch.stylists), includePast: true,
+            status: rnd() < 0.6 ? 'confirmed' : 'pending',
+          })
+          upcoming++
+        } catch { /* SLOT_TAKEN -- see above */ }
+      }
     }
   }
 
@@ -371,6 +455,7 @@ async function main() {
   console.log('')
   console.log(`  salon      Ovarya Salon & Spa  (${SLUG}.<apex>/book)`)
   console.log(`  sign in    ${ownerEmail} / ${PW}`)
+  console.log(`  branches   ${BRANCHES.map(([n]) => n).join(', ')}`)
   console.log(`  seeded     ${STAFF.length + 1} staff, ${SERVICES.length} services,` +
     ` ${customerIds.length} customers`)
   console.log(`             ${sales} sales, ${upcoming} upcoming bookings`)
