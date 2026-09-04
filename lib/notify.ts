@@ -159,19 +159,24 @@ export async function cancelForBooking(
 /**
  * Send everything that has come due.
  *
- * ponytail: due messages are processed by a button, not a scheduler. The
- * ceiling is that nothing sends on its own -- a demo has to press it.
- * Upgrade path: a cron calling this exact function, which is why the work
- * lives here and not inside the Server Action.
+ * Driven by two callers: the Notification Center's button (scoped to one
+ * salon) and the cron at /api/cron/notifications (every salon).
  *
- * `for update skip locked` so two presses cannot send the same message twice.
+ * `for update skip locked` so a press landing on top of a cron run -- or two
+ * cron runs overlapping because one was slow -- cannot send the same message
+ * twice. That is the property that makes running this on a timer safe.
  */
-export async function processDue(organizationId: string): Promise<number> {
+export async function processDue(
+  organizationId: string | null = null,
+): Promise<number> {
   return db.transaction(async (tx) => {
+    // null means EVERY salon -- the cron's case. The Server Action always
+    // passes its caller's organization, so one salon pressing the button can
+    // never dispatch another's messages.
     const { rows } = await tx.execute(sql`
       select id, channel, "to", body from notifications
-       where organization_id = ${organizationId}
-         and status = 'queued' and send_at <= localtimestamp
+       where status = 'queued' and send_at <= localtimestamp
+         ${organizationId ? sql`and organization_id = ${organizationId}` : sql``}
        order by send_at
        for update skip locked`)
 

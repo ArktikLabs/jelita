@@ -245,6 +245,14 @@ describe('processDue', () => {
     expect(await processDue(ORG)).toBe(0)
   })
 
+  it('with no salon named, sends across ALL of them -- the cron"s case', async () => {
+    await makeBooking('ntf_p5', -1)
+    await queueForBooking(db, ORG, 'ntf_p5')
+    // Scoped to ORG2 it must send nothing; unscoped it must send these.
+    expect(await processDue(ORG2)).toBe(0)
+    expect(await processDue()).toBe(4)
+  })
+
   it('does not send another salon"s messages', async () => {
     await makeBooking('ntf_p4', -1)
     await queueForBooking(db, ORG, 'ntf_p4')
