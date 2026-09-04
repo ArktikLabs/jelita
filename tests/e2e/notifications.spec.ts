@@ -186,3 +186,33 @@ test.describe.serial('the notification center', () => {
       .toHaveLength(1)
   })
 })
+
+/**
+ * The scheduler endpoint (PRD §5.5). Its auth is the whole test: an open
+ * endpoint that dispatches messages is worth more to an attacker than to us.
+ */
+test.describe('the cron endpoint', () => {
+  const PATH = '/api/cron/notifications'
+
+  test('refuses a request with no credentials', async () => {
+    const res = await (await import('./fixtures')).client()
+      .then((c) => c.get(PATH))
+    expect(res.status()).toBe(401)
+  })
+
+  test('refuses the wrong secret', async () => {
+    const c = await (await import('./fixtures')).client()
+    const res = await c.get(PATH, { headers: { authorization: 'Bearer wrong' } })
+    expect(res.status()).toBe(401)
+  })
+
+  test('sends what is due when the secret matches', async () => {
+    const c = await (await import('./fixtures')).client()
+    const res = await c.get(PATH, { headers: { authorization: 'Bearer e2e-cron-secret' } })
+    expect(res.status()).toBe(200)
+    // Not asserted as a number: this run shares a database with every other
+    // spec file, so what is due depends on what else has run. That it
+    // dispatched at all, authenticated, is the claim.
+    expect(await res.json()).toHaveProperty('sent')
+  })
+})

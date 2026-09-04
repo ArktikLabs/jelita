@@ -86,6 +86,9 @@ export default defineConfig({
       S3_BUCKET: 'jelita-assets',
       S3_ACCESS_KEY: 'jelita',
       S3_SECRET_KEY: 'jelitajelita',
+      // So the cron route's auth can be exercised at all: unset, it answers
+      // 503 and the 401 path is unreachable.
+      CRON_SECRET: 'e2e-cron-secret',
     },
   },
 })
