@@ -1,7 +1,7 @@
 # Email at Parity with WhatsApp — Design
 
 **Date:** 2026-09-04
-**Status:** draft — one decision needs answering, see §2
+**Status:** built. §2 answered: option (a).
 **Covers:** the email half of PRD §5.5's adapter
 
 ## 1. Goal
@@ -107,3 +107,22 @@ transport by env, not by deleting the old one.
 **Break-and-restore evidence for each**, and #2 is the one that matters: break
 it by substituting `{{link}}` at store time and watch the URL appear in the
 table.
+
+
+## 8. What the build found
+
+**The Center's hundred-row limit hid every sent message.** The demo salon
+carries more queued reminders than the page shows, and auth email is always
+`sent` -- so the entire email half was unreachable the moment it was built. A
+status filter, not a bigger limit.
+
+**`Record<NotificationKind, string>` caught the missing labels.** Adding three
+kinds failed the build on `lib/notification-kinds.ts` until all three had a
+label, which is the type doing the job a runtime lookup would have done
+silently and blankly. Same class of bug as the empty column in the last slice,
+caught for free this time.
+
+**The e2e assertion matched the filter button, not a row.** "no queued row
+survives the sent filter" passed against a page whose *control* is labelled
+`Antre`. Scoped to `tbody` now. A page-wide `not.toContain` on a page that
+contains its own controls is nearly always testing the control.
