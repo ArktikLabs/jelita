@@ -21,6 +21,17 @@ const BASE_URL = `http://localhost:${PORT}`
  * share one database, and better-auth's rate limiting is keyed on the client
  * address, so parallel workers would collect 429s that look like real bugs.
  */
+// The RUNNER's own database connection, not the server's.
+//
+// A spec that imports lib/* (to build a fixture through the real write path
+// rather than re-typing its statements) resolves lib/pg-pool, which reads
+// DATABASE_URL -- and the webServer `env` block below covers the server
+// process only. Without this, `import { checkout }` fails at the first query.
+//
+// FIXTURES ONLY. Assertions still go through the app: a spec that both writes
+// and reads via lib/* has stopped being an end-to-end test.
+process.env.DATABASE_URL ??= TEST_DATABASE_URL
+
 export default defineConfig({
   testDir: './tests/e2e',
   globalSetup: './tests/e2e/global-setup.ts',

@@ -61,6 +61,15 @@
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
+
+  /* Chart tokens (docs/superpowers/specs/2026-09-03-reports-design.md §2.5).
+     Every chart in this product is a SINGLE SERIES, so one sequential hue is
+     the whole palette and no legend is needed -- the title names the series.
+     Both steps pass the palette validator's lightness, chroma and contrast
+     checks against their own surface. */
+  --viz-series-1: #2a78d6;
+  --viz-grid: oklch(0.922 0 0);
+  --viz-axis: oklch(0.556 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -84,6 +93,11 @@
 }
 
 .dark {
+  /* The dark steps are SELECTED for the dark surface, not an automatic flip
+     of the light ones. */
+  --viz-series-1: #3987e5;
+  --viz-grid: oklch(0.269 0 0);
+  --viz-axis: oklch(0.708 0 0);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
