@@ -4,6 +4,7 @@ import { useActionState } from 'react'
 import { processDueAction, setTemplateAction } from './actions'
 import type { FormState } from '@/lib/form-state'
 import type { NotificationKind } from '@/lib/notify'
+import { KIND_LABEL } from '@/lib/notification-kinds'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -12,13 +13,6 @@ import {
 } from '@/components/ui/card'
 
 const initial: FormState = {}
-
-export const KIND_LABEL: Record<NotificationKind, string> = {
-  booking_confirmed: 'Konfirmasi booking',
-  reminder_day_before: 'Pengingat H-1',
-  reminder_2h: 'Pengingat 2 jam sebelum',
-  thank_you: 'Terima kasih setelah kunjungan',
-}
 
 /**
  * The stand-in for a scheduler.

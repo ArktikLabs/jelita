@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-import { KIND_LABEL, ProcessDueButton, TemplateCard } from './notification-forms'
+import { KIND_LABEL } from '@/lib/notification-kinds'
+import { ProcessDueButton, TemplateCard } from './notification-forms'
 
 const STATUS: Record<string, { label: string; variant: 'default' | 'secondary' | 'outline' }> = {
   queued: { label: 'Antre', variant: 'outline' },
@@ -59,6 +60,7 @@ export default async function NotificationsPage() {
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">Belum ada pesan.</p>
       ) : (
+        <div className="overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
@@ -84,8 +86,14 @@ export default async function NotificationsPage() {
                 </TableCell>
                 <TableCell className="align-top text-sm">{KIND_LABEL[r.kind]}</TableCell>
                 {/* The stored text, verbatim: the whole point is that someone
-                    can read what would actually go out. */}
-                <TableCell className="max-w-md align-top text-sm">{r.body}</TableCell>
+                    can read what would actually go out.
+
+                    Width on an inner div, not the cell: a table cell treats
+                    max-width as a suggestion, so the message ran straight
+                    under the status column. */}
+                <TableCell className="align-top text-sm">
+                  <div className="w-[34rem] max-w-full text-pretty">{r.body}</div>
+                </TableCell>
                 <TableCell className="align-top">
                   <Badge variant={STATUS[r.status]?.variant ?? 'outline'}>
                     {STATUS[r.status]?.label ?? r.status}
@@ -95,6 +103,7 @@ export default async function NotificationsPage() {
             ))}
           </TableBody>
         </Table>
+        </div>
       )}
 
       {canEditTemplates && <TemplateCard templates={templates} />}
