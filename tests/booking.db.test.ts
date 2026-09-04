@@ -789,3 +789,75 @@ describe('setBookingStatus', () => {
     await expect(setBookingStatus(id, ORG2, 'confirmed')).rejects.toThrow('BAD_TRANSITION')
   })
 })
+
+/**
+ * Booking a slot queues its messages, and cancelling stops the ones that have
+ * not gone (PRD §5.5). The queue's own behaviour is tests/notify.db.test.ts;
+ * what these assert is that the real booking path is WIRED to it.
+ */
+describe('a booking queues its notifications', () => {
+  // The fixture customer has no phone, so nothing is queued for them -- that
+  // is asserted below rather than left as an accident of the fixture.
+  const PHONED = 'bkg_phoned'
+
+  beforeAll(async () => {
+    await pool.query(`
+      insert into customers (id, organization_id, name, phone, phone_key)
+      values ($1, $2, 'Punya Nomor', '0813222', '62813222')
+      on conflict (id) do nothing`, [PHONED, ORG])
+  })
+
+  const queued = async (bookingId: string) => (await pool.query(
+    `select kind, status from notifications where booking_id = $1 order by kind`,
+    [bookingId])).rows
+
+  it('queues four messages when the booking is made', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: PHONED,
+      date: DAY, startsAt: `${DAY}T13:00`, staffUserId: STYLIST,
+    })
+    const rows = await queued(id)
+    expect(rows.map((r) => r.kind)).toEqual([
+      'booking_confirmed', 'reminder_2h', 'reminder_day_before', 'thank_you',
+    ])
+    expect(rows.every((r) => r.status === 'queued')).toBe(true)
+  })
+
+  it('queues nothing for a customer with no number', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: CUSTOMER,
+      date: DAY, startsAt: `${DAY}T14:00`, staffUserId: STYLIST,
+    })
+    expect(await queued(id)).toHaveLength(0)
+  })
+
+  it('cancelling the booking cancels the messages', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: PHONED,
+      date: DAY, startsAt: `${DAY}T15:00`, staffUserId: STYLIST,
+    })
+    await setBookingStatus(id, ORG, 'cancelled')
+    expect((await queued(id)).every((r) => r.status === 'cancelled')).toBe(true)
+  })
+
+  it('a no-show cancels them too', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: PHONED,
+      date: DAY, startsAt: `${DAY}T16:00`, staffUserId: STYLIST,
+    })
+    await setBookingStatus(id, ORG, 'confirmed')
+    await setBookingStatus(id, ORG, 'no_show')
+    expect((await queued(id)).every((r) => r.status === 'cancelled')).toBe(true)
+  })
+
+  it('completing it does NOT cancel the thank-you', async () => {
+    const id = await createBooking({
+      organizationId: ORG, teamId: TEAM, serviceId: SERVICE, customerId: PHONED,
+      date: DAY, startsAt: `${DAY}T17:00`, staffUserId: STYLIST,
+    })
+    await setBookingStatus(id, ORG, 'confirmed')
+    await setBookingStatus(id, ORG, 'completed')
+    const thanks = (await queued(id)).find((r) => r.kind === 'thank_you')
+    expect(thanks!.status).toBe('queued')
+  })
+})
