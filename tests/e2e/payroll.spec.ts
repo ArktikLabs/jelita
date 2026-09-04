@@ -215,6 +215,40 @@ test.describe.serial('closing the month', () => {
   })
 })
 
+test.describe('the CSV export (§5.9: one screen, one click)', () => {
+  const PATH = `/api/payroll/csv?month=${month()}`
+
+  test('the owner downloads a recap with every staff column', async () => {
+    const res = await owner.get(PATH)
+    expect(res.status()).toBe(200)
+    expect(res.headers()['content-type']).toContain('text/csv')
+    expect(res.headers()['content-disposition']).toContain('penggajian-')
+
+    const body = await res.text()
+    expect(body).toContain('Staf')
+    expect(body).toContain('Gaji pokok')
+    expect(body).toContain('Take-home')
+    // A real row, not just the header -- an export of nothing would pass a
+    // header-only assertion.
+    expect(body.trim().split('\r\n').length).toBeGreaterThan(1)
+  })
+
+  test('front desk and stylists cannot export pay', async () => {
+    for (const [who, ctx] of [['front desk', desk], ['stylist', stylistCtx]] as const) {
+      const res = await ctx.get(PATH)
+      expect(res.status(), `${who} holds no payroll statement`).toBe(403)
+    }
+  })
+
+  test('refuses a month it cannot parse', async () => {
+    // The value reaches a query; an allow-list, not a sanitiser.
+    for (const bad of ['2026-09', 'yesterday', "2026-09-01' or '1'='1"]) {
+      expect((await owner.get(`/api/payroll/csv?month=${encodeURIComponent(bad)}`)).status())
+        .toBe(400)
+    }
+  })
+})
+
 test.describe('who may see pay', () => {
   test('front desk and stylists are refused the page entirely', async () => {
     for (const [who, ctx] of [['front desk', desk], ['stylist', stylistCtx]] as const) {
