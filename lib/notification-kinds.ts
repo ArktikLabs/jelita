@@ -17,4 +17,7 @@ export const KIND_LABEL: Record<NotificationKind, string> = {
   reminder_day_before: 'Pengingat H-1',
   reminder_2h: 'Pengingat 2 jam sebelum',
   thank_you: 'Terima kasih setelah kunjungan',
+  password_reset: 'Reset kata sandi',
+  email_verification: 'Verifikasi email',
+  invitation: 'Undangan staf',
 }

@@ -6,7 +6,7 @@ import { APIError } from 'better-auth/api'
 import { and, asc, eq } from 'drizzle-orm'
 import { db } from './db'
 import { branchProfiles, members, teamMembers, teams } from './schema'
-import { notify } from './notify'
+import { organizationOf, sendNow } from './notify'
 import { ac, roles } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
 import type { CappedResource } from './plan/catalog'
@@ -51,11 +51,16 @@ export const auth = betterAuth({
     // trip before they can work.
     requireEmailVerification: true,
     sendResetPassword: async ({ user, url, token }) => {
-      await notify({
-        channel: 'email',
+      // The URL goes in `secret`, so the copy stored for the Notification
+      // Center keeps `{{link}}` written out rather than a live reset link that
+      // front desk could read. See lib/notify.ts sendNow.
+      await sendNow({
+        organizationId: await organizationOf(user.id),
+        kind: 'password_reset',
         to: user.email,
         subject: 'Reset kata sandi — Jelita Salon',
-        body: `Klik untuk mengatur ulang kata sandi Anda:\n${url}\n\ntoken=${token}`,
+        vars: { name: user.name, salon: 'Jelita' },
+        secret: { link: `${url}\n\ntoken=${token}` },
       })
     },
   },
@@ -70,11 +75,16 @@ export const auth = betterAuth({
     // second login for it is friction that buys nothing.
     autoSignInAfterVerification: true,
     sendVerificationEmail: async ({ user, url, token }) => {
-      await notify({
-        channel: 'email',
+      // Usually NO organization: this fires at signup, when the account exists
+      // and the salon does not. The row is written scoped to no salon and is
+      // therefore invisible in every Center -- see the spec, §4.
+      await sendNow({
+        organizationId: await organizationOf(user.id),
+        kind: 'email_verification',
         to: user.email,
         subject: 'Verifikasi email — Jelita Salon',
-        body: `Klik untuk memverifikasi email Anda:\n${url}\n\ntoken=${token}`,
+        vars: { name: user.name },
+        secret: { link: `${url}\n\ntoken=${token}` },
       })
     },
   },
@@ -151,12 +161,16 @@ export const auth = betterAuth({
       roles,
       creatorRole: 'owner',
       sendInvitationEmail: async ({ email, inviter, organization, id }) => {
-        await notify({
-          channel: 'email',
+        await sendNow({
+          organizationId: organization.id,
+          kind: 'invitation',
           to: email,
           subject: `Undangan bergabung — ${organization.name}`,
-          body: `${inviter.user.name} mengundang Anda bergabung di ${organization.name}.\n`
-            + `${process.env.BETTER_AUTH_URL}/accept-invitation/${id}\n\ninvitationId=${id}`,
+          vars: { inviter: inviter.user.name, salon: organization.name },
+          secret: {
+            link: `${process.env.BETTER_AUTH_URL}/accept-invitation/${id}`
+              + `\n\ninvitationId=${id}`,
+          },
         })
       },
       teams: { enabled: true, maximumTeams: 20 },
