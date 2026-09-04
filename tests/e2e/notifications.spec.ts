@@ -130,6 +130,22 @@ test.describe.serial('the notification center', () => {
       expect(after.find((r) => r.status === 'sent')!.kind).toBe('booking_confirmed')
     })
 
+  test('the status filter narrows the list', async ({ page }) => {
+    // The demo salon has more queued reminders than the page's limit, so
+    // without this the sent half -- auth email included -- is unreachable.
+    //
+    // Asserted on the TABLE BODY, not the page: "Antre" is also a filter
+    // button, so a page-wide check passes on the control it is testing.
+    await page.context().addCookies((await owner.storageState()).cookies)
+    await page.goto('/dashboard/notifications')
+    await expect(page.locator('tbody')).toContainText('Antre')
+
+    await page.goto('/dashboard/notifications?status=sent')
+    await expect(page.locator('tbody')).toContainText('Terkirim')
+    await expect(page.locator('tbody'), 'no queued row survives the sent filter')
+      .not.toContainText('Antre')
+  })
+
   test('front desk may work the queue but not rewrite the templates', async () => {
     const html = await (await desk.get('/dashboard/notifications')).text()
     expect(html).toContain('Notifikasi')

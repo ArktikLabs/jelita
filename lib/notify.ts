@@ -255,9 +255,14 @@ export type NotificationRow = {
  * Ordered DUE first, then the rest of the queue, then what has already gone.
  * The due ones are the only rows anybody can act on, so they are the ones that
  * must not be below the fold.
+ *
+ * `status` narrows it, and the demo salon is why it has to exist: a hundred
+ * queued reminders sit ahead of every sent message, so with a flat limit the
+ * sent half -- auth email included -- was unreachable. A filter beats a bigger
+ * limit; the page a person wants is small, it is just not the first hundred.
  */
 export async function listNotifications(
-  organizationId: string, teamId: string | null,
+  organizationId: string, teamId: string | null, status: string | null = null,
 ): Promise<NotificationRow[]> {
   const { rows } = await db.execute(sql`
     select n.id, n.kind, n.status, n."to", n.body, c.name as customer_name,
@@ -268,6 +273,7 @@ export async function listNotifications(
       left join customers c on c.id = n.customer_id
      where n.organization_id = ${organizationId}
        ${teamId ? sql`and (n.team_id = ${teamId} or n.team_id is null)` : sql``}
+       ${status ? sql`and n.status = ${status}` : sql``}
      order by due desc,
               case n.status when 'queued' then 0 when 'failed' then 1
                             when 'sent' then 2 else 3 end,
