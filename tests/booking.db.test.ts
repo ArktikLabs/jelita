@@ -837,7 +837,11 @@ describe('a booking queues its notifications', () => {
       date: DAY, startsAt: `${DAY}T15:00`, staffUserId: STYLIST,
     })
     await setBookingStatus(id, ORG, 'cancelled')
-    expect((await queued(id)).every((r) => r.status === 'cancelled')).toBe(true)
+    const rows = await queued(id)
+    // The length first: `every` on an empty array is true, so the status
+    // assertion alone would pass just as well if nothing had been queued.
+    expect(rows).toHaveLength(4)
+    expect(rows.every((r) => r.status === 'cancelled')).toBe(true)
   })
 
   it('a no-show cancels them too', async () => {
@@ -847,7 +851,9 @@ describe('a booking queues its notifications', () => {
     })
     await setBookingStatus(id, ORG, 'confirmed')
     await setBookingStatus(id, ORG, 'no_show')
-    expect((await queued(id)).every((r) => r.status === 'cancelled')).toBe(true)
+    const rows = await queued(id)
+    expect(rows).toHaveLength(4)
+    expect(rows.every((r) => r.status === 'cancelled')).toBe(true)
   })
 
   it('completing it does NOT cancel the thank-you', async () => {
