@@ -1,6 +1,14 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  // The same `@/` the app and tsconfig use. Without it a test importing a
+  // component fails to COLLECT -- "Cannot find package '@/lib/utils'" -- which
+  // reports as "no tests" rather than as a failure, so the file looks like it
+  // passed.
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('.', import.meta.url)) },
+  },
   test: {
     globalSetup: ['./tests/global-setup.ts'],
     // Point the app's own pool (lib/pg-pool.ts reads DATABASE_URL) at the
