@@ -185,3 +185,80 @@ export async function processDue(organizationId: string): Promise<number> {
     return rows.length
   })
 }
+
+export type NotificationRow = {
+  id: string
+  kind: NotificationKind
+  status: string
+  to: string
+  body: string
+  customerName: string | null
+  sendAt: string
+  sentAt: string | null
+  due: boolean
+}
+
+/**
+ * The Notification Center's list (PRD §5.5): what would be sent, and whether
+ * it has been.
+ *
+ * Ordered DUE first, then the rest of the queue, then what has already gone.
+ * The due ones are the only rows anybody can act on, so they are the ones that
+ * must not be below the fold.
+ */
+export async function listNotifications(
+  organizationId: string, teamId: string | null,
+): Promise<NotificationRow[]> {
+  const { rows } = await db.execute(sql`
+    select n.id, n.kind, n.status, n."to", n.body, c.name as customer_name,
+           (n.status = 'queued' and n.send_at <= localtimestamp) as due,
+           to_char(n.send_at, 'YYYY-MM-DD HH24:MI') as send_at,
+           to_char(n.sent_at, 'YYYY-MM-DD HH24:MI') as sent_at
+      from notifications n
+      left join customers c on c.id = n.customer_id
+     where n.organization_id = ${organizationId}
+       ${teamId ? sql`and n.team_id = ${teamId}` : sql``}
+     order by due desc,
+              case n.status when 'queued' then 0 when 'failed' then 1
+                            when 'sent' then 2 else 3 end,
+              n.send_at desc
+     limit 100`)
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    id: r.id as string,
+    kind: r.kind as NotificationKind,
+    status: r.status as string,
+    to: r.to as string,
+    body: r.body as string,
+    customerName: (r.customer_name as string) ?? null,
+    sendAt: r.send_at as string,
+    sentAt: (r.sent_at as string) ?? null,
+    due: r.due as boolean,
+  }))
+}
+
+/** The four editable templates, in the order the events happen. */
+export async function listTemplates(
+  organizationId: string,
+): Promise<{ kind: NotificationKind; body: string }[]> {
+  const { rows } = await db.execute(sql`
+    select kind, body from notification_templates
+     where organization_id = ${organizationId}
+     order by case kind when 'booking_confirmed' then 0
+                        when 'reminder_day_before' then 1
+                        when 'reminder_2h' then 2 else 3 end`)
+  return rows as { kind: NotificationKind; body: string }[]
+}
+
+/**
+ * Rewrite one template. Messages already queued keep the text they were
+ * rendered with -- see queueForBooking.
+ */
+export async function setTemplate(
+  organizationId: string, kind: string, body: string,
+): Promise<void> {
+  const { rows } = await db.execute(sql`
+    update notification_templates set body = ${body}, updated_at = now()
+     where organization_id = ${organizationId} and kind = ${kind}
+    returning kind`)
+  if (rows.length === 0) throw new Error('UNKNOWN_TEMPLATE')
+}
