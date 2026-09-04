@@ -49,7 +49,25 @@ export const auth = betterAuth({
     minPasswordLength: MIN_PASSWORD_LENGTH,
     // Salon staff are created by the owner, not self-service; no inbox round
     // trip before they can work.
-    requireEmailVerification: true,
+    //
+    // ON by default, and turned off only by an EXPLICIT opt-out: an
+    // unrecognised value keeps verification required, so a typo weakens
+    // nothing. Anything else would make the safe state the one you have to
+    // remember.
+    //
+    // The demo deployment sets REQUIRE_EMAIL_VERIFICATION=false, because with
+    // no mail transport the verification link reaches only the server log --
+    // .mail.log cannot be written on a read-only serverless filesystem -- and
+    // requiring it makes self-registration a dead end with no way out.
+    //
+    // What that costs, said plainly: anyone can then register under an address
+    // they do not own. Acceptable for a demo whose data is seeded and
+    // disposable; NOT acceptable once a real salon's money is in here, so set
+    // RESEND_API_KEY and drop the flag before that happens.
+    //
+    // Staff accounts are unaffected either way -- lib/staff.ts creates them
+    // already verified, because an owner adding a stylist IS the proof.
+    requireEmailVerification: process.env.REQUIRE_EMAIL_VERIFICATION !== 'false',
     sendResetPassword: async ({ user, url, token }) => {
       // The URL goes in `secret`, so the copy stored for the Notification
       // Center keeps `{{link}}` written out rather than a live reset link that
