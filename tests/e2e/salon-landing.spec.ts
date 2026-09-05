@@ -22,6 +22,7 @@ const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 let orgId: string
 let teamId: string
 let otherTeamId: string
+let closedTeamId: string
 let serviceId: string
 
 test.beforeAll(async () => {
@@ -50,6 +51,17 @@ test.beforeAll(async () => {
   await pool.query(
     `insert into services (id, organization_id, category_id, name, duration_minutes, price)
      values ($1, $2, $3, 'Creambath Mekar', 60, 88000)`, [serviceId, orgId, catId])
+
+  // A CLOSED branch, so "only active branches are on the shopfront" is
+  // falsifiable. Without one, removing that filter fails nothing and the
+  // guard is a claim no test can check.
+  closedTeamId = crypto.randomUUID()
+  await pool.query(
+    `insert into teams (id, name, organization_id, created_at)
+     values ($1, 'Cabang Tutup', $2, now())`, [closedTeamId, orgId])
+  await pool.query(
+    `update branch_profiles set active = false, address = 'Jl. Sudah Tutup No. 1'
+      where team_id = $1`, [closedTeamId])
 
   const two = await createSalon(pool, {
     name: 'Land Owner Two', email: `owner2@${DOMAIN}`, password: PW,
@@ -116,6 +128,14 @@ test.describe('the salon shopfront', () => {
   test('an unknown salon is a 404, not a directory', async ({ page }) => {
     const res = await page.goto(at('tidak-ada-salon'))
     expect(res?.status()).toBe(404)
+  })
+
+  test('a closed branch is not on the shopfront', async ({ page }) => {
+    await page.goto(at(SLUG))
+    const body = await page.locator('body').innerText()
+    expect(body).toContain('Cabang Pusat')
+    expect(body, 'a closed branch must not be advertised').not.toContain('Cabang Tutup')
+    expect(body).not.toContain('Jl. Sudah Tutup No. 1')
   })
 
   test('carries no staff names', async ({ page }) => {
