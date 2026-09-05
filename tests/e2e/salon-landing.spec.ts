@@ -43,6 +43,12 @@ test.beforeAll(async () => {
     `update branch_profiles set address = 'Jl. Melati No. 9, Bandung', phone = '022-5550101'
       where team_id = $1`, [teamId])
 
+  // Sunday closed, so this salon's week is irregular and lists day by day.
+  // The second salon keeps the seeded uniform week, which collapses -- both
+  // renderings are exercised, and neither is assumed.
+  await pool.query(
+    `update branch_hours set closed = true where team_id = $1 and weekday = 0`, [teamId])
+
   serviceId = crypto.randomUUID()
   const catId = crypto.randomUUID()
   await pool.query(
@@ -99,7 +105,9 @@ test.describe('the salon shopfront', () => {
     const body = await page.locator('body').innerText()
     expect(body).toContain('Jl. Melati No. 9, Bandung')
     expect(body).toContain('022-5550101')
+    // Listed day by day, because Sunday is closed.
     expect(body).toContain('Senin')
+    expect(body).toContain('Tutup')
     expect(body).toContain('Creambath Mekar')
     expect(body).toContain('88.000')
     expect(body).toContain('Perawatan')
@@ -128,6 +136,14 @@ test.describe('the salon shopfront', () => {
   test('an unknown salon is a 404, not a directory', async ({ page }) => {
     const res = await page.goto(at('tidak-ada-salon'))
     expect(res?.status()).toBe(404)
+  })
+
+  test('a salon open the same hours all week says so in one line', async ({ page }) => {
+    await page.goto(at(OTHER))
+    const body = await page.locator('body').innerText()
+    expect(body).toContain('Setiap hari 09:00–21:00')
+    // Seven identical lines is the longest thing on the page saying the least.
+    expect(body).not.toContain('Selasa')
   })
 
   test('a closed branch is not on the shopfront', async ({ page }) => {

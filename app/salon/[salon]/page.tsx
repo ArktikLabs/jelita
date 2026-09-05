@@ -9,6 +9,12 @@ import { buttonVariants } from '@/components/ui/button'
 
 const DAYS = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu']
 
+/** Every day open, at the same times. A closed day makes a week irregular by
+ *  definition, so it never collapses. */
+const uniform = (hours: { closed: boolean; opensAt: string; closesAt: string }[]) =>
+  hours.length === 7 && hours.every(
+    (h) => !h.closed && h.opensAt === hours[0].opensAt && h.closesAt === hours[0].closesAt)
+
 /**
  * The salon's shopfront -- what a tenant subdomain serves at its root.
  *
@@ -118,18 +124,29 @@ export default async function SalonLandingPage({
                 <div className="font-medium">{b.name}</div>
                 {b.address && <p className="text-sm text-muted-foreground">{b.address}</p>}
                 {b.phone && <p className="text-sm text-muted-foreground">{b.phone}</p>}
-                <ul className="space-y-0.5 text-sm">
-                  {b.hours.map((h) => (
-                    <li
-                      key={h.weekday}
-                      /* Today emphasised: "are they open now" is the question
-                         a visitor actually has. */
-                      className={h.weekday === today ? 'font-medium' : 'text-muted-foreground'}
-                    >
-                      {DAYS[h.weekday]}: {h.closed ? 'Tutup' : `${h.opensAt}–${h.closesAt}`}
-                    </li>
-                  ))}
-                </ul>
+                {uniform(b.hours) ? (
+                  /* Most salons keep one set of hours all week, and seven
+                     identical lines is the longest thing on the page saying
+                     the least. Collapsed only when every day genuinely
+                     matches; anything irregular still lists day by day, since
+                     that is when a visitor has to read carefully. */
+                  <p className="text-sm">
+                    Setiap hari {b.hours[0].opensAt}–{b.hours[0].closesAt}
+                  </p>
+                ) : (
+                  <ul className="space-y-0.5 text-sm">
+                    {b.hours.map((h) => (
+                      <li
+                        key={h.weekday}
+                        /* Today emphasised: "are they open now" is the question
+                           a visitor actually has. */
+                        className={h.weekday === today ? 'font-medium' : 'text-muted-foreground'}
+                      >
+                        {DAYS[h.weekday]}: {h.closed ? 'Tutup' : `${h.opensAt}–${h.closesAt}`}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {branches.length > 1 && branch?.teamId !== b.teamId && (
                   <Link
                     href={`?cabang=${b.teamId}`}
@@ -161,9 +178,9 @@ export default async function SalonLandingPage({
                       href={bookHref(`?serviceId=${s.serviceId}&cabang=${branch.teamId}`)}
                       className="flex items-center justify-between gap-4 p-3 hover:bg-muted"
                     >
-                      <span>
+                      <span className="min-w-0">
                         {s.name}
-                        <span className="ml-2 text-sm text-muted-foreground">
+                        <span className="ml-2 whitespace-nowrap text-sm text-muted-foreground">
                           {s.durationMinutes} menit
                         </span>
                       </span>
