@@ -25,14 +25,15 @@ const TOUR = [
     src: '/shots/pos.png',
     alt: 'Layar kasir Jelita: keranjang berisi satu service dan satu produk retail, '
       + 'kolom nomor WhatsApp pelanggan, dan pilihan metode pembayaran.',
-    cap: 'Kasir — booking hari ini, ditambah satu produk dari rak.',
-    h: 'Checkout menutup empat hal sekaligus',
-    p: 'Booking selesai, stok turun, komisi dibuat, poin member naik. Satu tekan.',
+    cap: 'Kasir — booking hari itu, ditambah satu produk dari rak.',
+    h: 'Sekali bayar, empat catatan ikut beres',
+    p: 'Booking ditutup, stok berkurang, komisi staf tercatat, poin pelanggan '
+      + 'bertambah. Tidak ada yang perlu diingat belakangan.',
     claims: [
-      'Komisi dibuat per baris transaksi, bukan dihitung ulang tiap akhir bulan',
-      'Aturan persen atau nominal, per service per staff',
-      'Member dikenali dari nomor WhatsApp',
-      'Transaksi terkunci setelah selesai — pembatalan menulis baris balik, bukan menghapus',
+      'Komisi tercatat saat transaksi selesai, bukan dihitung ulang tiap akhir bulan',
+      'Persen atau nominal, dan boleh beda tiap layanan dan tiap staf',
+      'Pelanggan lama dikenali dari nomor WhatsApp-nya',
+      'Struk yang sudah selesai tidak bisa diam-diam diubah — pembatalan tercatat sebagai pembatalan',
     ],
   },
   {
@@ -40,27 +41,28 @@ const TOUR = [
     alt: 'Dasbor pemilik Jelita: omzet, jumlah janji temu, tingkat penyelesaian, '
       + 'grafik omzet harian, dan layanan teratas.',
     cap: 'Dasbor — tujuh hari terakhir, satu cabang.',
-    h: 'Revenue, top service, funnel, no-show',
-    p: 'Filter tanggal, export CSV, semuanya di-scope ke cabang yang sedang dipilih. '
-      + 'No-show akhirnya jadi angka yang bisa diperbaiki, bukan cerita.',
+    h: 'Tahu kondisi salon tanpa harus ada di salon',
+    p: 'Omzet hari ini, layanan yang paling laku, performa tiap staf, dan berapa '
+      + 'banyak yang tidak jadi datang. Semuanya mengikuti cabang yang sedang dibuka.',
     claims: [
-      'Semua angka per cabang — front desk terkunci di cabangnya sendiri',
-      'Cabang kedua = satu baris di settings, bukan kolom baru di database',
-      'Stylist melihat dasbor yang sama, di-scope ke dirinya sendiri',
+      'Kasir hanya melihat cabangnya sendiri',
+      'Buka cabang kedua tanpa menyiapkan sistem baru',
+      'Staf melihat dasbor yang sama, tapi hanya soal dirinya',
+      'Angka mana pun bisa diunduh ke Excel',
     ],
   },
   {
     src: '/shots/notifications.png',
     alt: 'Notification Center Jelita: daftar pesan WhatsApp yang akan dikirim, '
       + 'lengkap dengan isi pesan dan statusnya.',
-    cap: 'Notification Center — isi pesan yang akan dikirim, apa adanya.',
-    h: 'Pipeline-nya sudah jalan, kredensialnya belum',
-    p: 'Pesan disiapkan saat booking dibuat: konfirmasi, pengingat H-1, pengingat '
-      + '2 jam sebelum, dan terima kasih setelah kunjungan. Template bisa diedit admin.',
+    cap: 'Daftar pesan — persis kalimat yang akan sampai ke pelanggan.',
+    h: 'Pelanggan diingatkan tanpa Anda mengetik satu pesan pun',
+    p: 'Konfirmasi begitu booking masuk, pengingat sehari sebelum, pengingat dua jam '
+      + 'sebelum, dan ucapan terima kasih setelah pulang. Kalimatnya bisa Anda ubah sendiri.',
     claims: [
-      'Go-live ke Fonnte, Wablas, atau Meta API adalah tukar kredensial',
-      'Booking yang dibatalkan membatalkan pesan yang belum terkirim',
-      'Tautan reset kata sandi tidak pernah ikut tersimpan di sini',
+      'Di demo ini pesan belum benar-benar dikirim — Anda bisa baca dulu isinya',
+      'Booking yang batal ikut membatalkan pengingatnya',
+      'Menyambungkan ke nomor WhatsApp sungguhan tinggal memasukkan kredensial',
     ],
   },
 ]
@@ -68,38 +70,38 @@ const TOUR = [
 const STEPS = [
   {
     n: '1',
-    h: 'Customer booking sendiri',
-    p: 'Pilih cabang, service, staff, lalu slot. Ketersediaan dihitung dari jam kerja '
-      + 'staff, durasi service, dan booking yang sudah ada.',
-    facts: ['slot bentrok ditolak di database', '90 menit mengunci slot berikutnya', 'konfirmasi masuk antrean'],
+    h: 'Malam sebelumnya — pelanggan pesan sendiri',
+    p: 'Pelanggan memilih cabang, layanan, staf, lalu jam. Yang muncul hanya jam yang '
+      + 'benar-benar kosong — dihitung dari jadwal staf, lama layanan, dan booking yang sudah ada.',
+    facts: ['jam yang sama tidak bisa dipesan dua kali', 'layanan 90 menit ikut mengunci jam sesudahnya', 'konfirmasi langsung disiapkan'],
   },
   {
     n: '2',
-    h: 'Front desk checkout',
-    p: 'Buka booking hari ini, tambah produk retail, cari member lewat nomor WhatsApp, '
-      + 'pilih metode bayar, cetak struk.',
-    facts: ['komisi dibuat per baris', 'stok berkurang otomatis', 'poin member bertambah', 'transaksi terkunci setelah selesai'],
+    h: 'Siang — selesai dilayani, langsung bayar',
+    p: 'Buka booking hari itu, tambahkan produk kalau ada, cari pelanggan lewat nomor '
+      + 'WhatsApp, pilih cara bayar, cetak struk.',
+    facts: ['komisi langsung tercatat', 'stok berkurang sendiri', 'poin pelanggan bertambah', 'struk terkunci setelah selesai'],
   },
   {
     n: '3',
-    h: 'Owner buka dashboard',
-    p: 'Revenue hari ini, minggu ini, bulan ini. Top service, performa staff, funnel '
-      + 'booking, dan produk yang perlu dipesan ulang.',
-    facts: ['rekap komisi siap payroll', 'export CSV', 'semua angka per cabang'],
+    h: 'Tutup toko — Anda buka laporannya',
+    p: 'Omzet hari ini, minggu ini, bulan ini. Layanan terlaris, performa tiap staf, '
+      + 'dan produk yang sudah perlu dipesan lagi.',
+    facts: ['rekap komisi siap untuk gajian', 'bisa diunduh ke Excel', 'semua angka per cabang'],
   },
 ]
 
 const SPEC: [string, string][] = [
-  ['Online booking', 'Alur penuh: halaman publik, pilih slot, konfirmasi. Anti double-booking di level database.'],
-  ['Kasir / POS', 'Dari booking atau walk-in. Service dan produk satu keranjang, diskon per item dan per nota, struk siap cetak.'],
-  ['Komisi staff', 'Aturan persen atau nominal, per service per staff. Dibuat otomatis tiap transaksi selesai.'],
-  ['Inventory & stok', 'Produk retail dan pemakaian internal. Ledger masuk/keluar dengan waktu dan pelaku. Ambang stok menipis per produk.'],
-  ['Notifikasi WhatsApp', 'Notification Center menampilkan isi pesan yang akan dikirim, template bisa diedit admin. Belum dikirim ke nomor sungguhan.'],
-  ['Reports & analytics', 'Revenue, top 5 service, performa staff, funnel booking. Filter tanggal, export CSV.'],
-  ['Member database', 'Profil otomatis dari nomor WhatsApp. Riwayat kunjungan, total belanja, poin, catatan formula warna dan alergi.'],
-  ['Multi-cabang', 'branch_id di semua entitas inti. Stok per cabang. Front desk terkunci di cabangnya sendiri.'],
-  ['Payroll recap', 'Gaji pokok + komisi + tunjangan − potongan, per staff per bulan. Angka kotor, export CSV.'],
-  ['Pencatatan pembayaran', 'Cash, Transfer, QRIS, Debit/Credit. Dicatat lewat adapter ManualPayment — Midtrans atau Xendit masuk lewat interface yang sama.'],
+  ['Booking online', 'Halaman booking sendiri untuk pelanggan, tanpa perlu aplikasi. Jam yang sama tidak bisa dipesan dua kali — dijaga sistem, bukan diingat orang.'],
+  ['Kasir', 'Dari booking atau dari pelanggan yang langsung datang. Layanan dan produk dalam satu nota, diskon per item atau per nota, struk siap cetak.'],
+  ['Komisi staf', 'Persen atau nominal, boleh beda tiap layanan dan tiap staf. Tercatat sendiri setiap transaksi selesai, tidak dihitung ulang di akhir bulan.'],
+  ['Stok', 'Produk yang dijual dan yang dipakai sendiri. Setiap barang masuk dan keluar tercatat: kapan, berapa, oleh siapa. Ada peringatan sebelum habis.'],
+  ['Pengingat WhatsApp', 'Pesan disiapkan otomatis dan bisa Anda baca sebelum keluar. Kalimatnya bisa diubah. Di demo ini belum dikirim ke nomor sungguhan.'],
+  ['Laporan', 'Omzet, lima layanan terlaris, performa staf, dan berapa yang tidak jadi datang. Bisa disaring per tanggal dan diunduh ke Excel.'],
+  ['Data pelanggan', 'Profil terbentuk sendiri dari nomor WhatsApp. Riwayat kunjungan, total belanja, poin, dan catatan seperti formula warna atau alergi.'],
+  ['Banyak cabang', 'Setiap catatan tahu miliknya cabang mana. Stok dihitung per cabang, dan kasir hanya melihat cabangnya sendiri.'],
+  ['Rekap gaji', 'Gaji pokok + komisi + tunjangan − potongan, per staf per bulan. Masih angka kotor — pajak belum dihitung. Bisa diunduh.'],
+  ['Cara bayar', 'Tunai, transfer, QRIS, dan kartu, semuanya tercatat. Payment gateway bisa disambungkan nanti tanpa mengubah cara kasir bekerja.'],
 ]
 
 const GAPS = [
@@ -136,8 +138,9 @@ export default function Home() {
           <div>
             <h1>Booking penuh. Komisi beres. Stok aman.</h1>
             <p className="lede hero__lede">
-              Empat catatan yang biasanya hidup di buku tulis, chat, dan spreadsheet
-              yang berbeda. Jelita menyatukannya — per cabang, per staff, per hari.
+              Buku booking, catatan kas, hitungan komisi, dan stok — biasanya empat
+              tempat yang berbeda, dan cuma Anda yang tahu semuanya. Di sini satu
+              tempat, dan saling tahu.
             </p>
             <div className="hero__cta">
               <a className="btn btn--primary" href={DEMO_URL}>Coba demo</a>
@@ -151,8 +154,9 @@ export default function Home() {
               width={1280} height={720} priority
             />
             <figcaption>
-              Satu hari di satu cabang. Slot bentrok ditolak di database — dua orang
-              klik slot yang sama, tepat satu berhasil.
+              Satu hari, satu cabang. Kalau dua orang memesan jam yang sama, yang
+              kedua ditolak — bukan karena resepsionis ingat, tapi karena sistemnya
+              memang tidak mengizinkan.
             </figcaption>
           </figure>
         </section>
@@ -202,7 +206,7 @@ export default function Home() {
 
           {/* C4 · sticky bottom bar — after the third capture, once context is built */}
           <aside className="stickybar">
-            <p>Semua yang di atas jalan di demo, dengan data contoh.</p>
+            <p>Semua yang di atas bisa Anda coba sendiri, dengan data contoh.</p>
             <a className="btn btn--primary btn--sm" href={DEMO_URL}>Buka demo</a>
           </aside>
         </section>
@@ -233,8 +237,10 @@ export default function Home() {
         <section className="section" id="rinci">
           <div className="head">
             <p className="kicker">Rinci</p>
-            <h2>Sedalam apa tiap bagian benar-benar jalan.</h2>
-            <p className="lede">Ditulis apa adanya. Kalau ada yang cuma setengah jadi, tertulis setengah jadi.</p>
+            <h2>Sejauh apa tiap bagian benar-benar jalan.</h2>
+            <p className="lede">
+              Ditulis apa adanya. Kalau ada yang baru setengah jadi, tertulis setengah jadi.
+            </p>
           </div>
           <table className="spec">
             <tbody>
@@ -251,8 +257,8 @@ export default function Home() {
             <div className="head" style={{ marginBlockEnd: 'var(--space-md)' }}>
               <h2>Yang belum ada.</h2>
               <p className="lede">
-                Halaman produk biasanya diam soal ini. Kami tulis duluan karena lebih
-                murah Anda baca sekarang daripada ketemu pas demo.
+                Halaman produk biasanya diam soal ini. Kami tulis duluan, karena lebih
+                enak Anda tahu sekarang daripada ketahuan pas dipakai.
               </p>
             </div>
             <ul className="gaps">

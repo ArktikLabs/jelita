@@ -15,10 +15,10 @@ import './hallmark.css'
  * else uses.
  */
 export const metadata: Metadata = {
-  title: 'Jelita — software salon: booking, kasir, komisi, stok',
+  title: 'Jelita — aplikasi salon: booking, kasir, komisi, stok',
   description:
-    'Satu aplikasi untuk booking online, kasir, komisi staf, stok, member dan '
-    + 'laporan. Multi-cabang sejak hari pertama.',
+    'Booking online, kasir, komisi staf, stok, dan data pelanggan dalam satu '
+    + 'tempat. Untuk satu cabang atau beberapa.',
 }
 
 export default function MarketingLayout({
