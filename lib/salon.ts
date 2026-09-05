@@ -26,6 +26,14 @@ export type PublicBranch = {
   teamId: string
   name: string
   address: string | null
+  /**
+   * Phone and hours are on here because a shopfront prints them on its own
+   * door. The rule this widened under, so the next addition has to argue
+   * against it: a field belongs on PublicBranch only if a salon would put it
+   * on their own signage. staffCount and withinCap still do not.
+   */
+  phone: string | null
+  hours: { weekday: number; closed: boolean; opensAt: string; closesAt: string }[]
 }
 
 /**
@@ -75,9 +83,38 @@ export async function resolveSalon(slug: string): Promise<PublicSalon | null> {
  */
 export async function bookableBranches(organizationId: string): Promise<PublicBranch[]> {
   const branches = await listBranches(organizationId)
-  return branches
-    .filter((b) => b.active && b.withinCap)
-    .map((b) => ({ teamId: b.teamId, name: b.name, address: b.address }))
+  const open = branches.filter((b) => b.active && b.withinCap)
+  if (open.length === 0) return []
+
+  // ONE query for every branch's week, not getBranch() per branch: the landing
+  // page renders them all, and a salon on the business tier has no ceiling on
+  // how many that is.
+  const ids = open.map((b) => b.teamId)
+  const { rows } = await db.execute(sql`
+    select team_id, weekday, closed, opens_at, closes_at from branch_hours
+     where team_id in ${sql`(${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`}
+     order by team_id, weekday`)
+
+  const byTeam = new Map<string, PublicBranch['hours']>()
+  for (const r of rows as Record<string, unknown>[]) {
+    const teamId = r.team_id as string
+    const list = byTeam.get(teamId) ?? []
+    list.push({
+      weekday: Number(r.weekday),
+      closed: r.closed as boolean,
+      opensAt: String(r.opens_at).slice(0, 5),
+      closesAt: String(r.closes_at).slice(0, 5),
+    })
+    byTeam.set(teamId, list)
+  }
+
+  return open.map((b) => ({
+    teamId: b.teamId,
+    name: b.name,
+    address: b.address,
+    phone: b.phone,
+    hours: byTeam.get(b.teamId) ?? [],
+  }))
 }
 
 /**

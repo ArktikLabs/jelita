@@ -109,9 +109,17 @@ test.describe.serial('the public booking page', () => {
     await expect(page.locator('#serviceId')).not.toContainText('Potong Publik')
   })
 
-  test('the bare subdomain is the booking page too', async ({ page }) => {
+  test('the bare subdomain resolves to THIS salon', async ({ page }) => {
     await page.goto(`http://${SLUG}.localhost:${PORT}/`)
-    await expect(page.getByRole('heading', { name: 'Pub Check' })).toBeVisible()
+    // The root serves the SHOPFRONT now, not the booking form -- that page has
+    // its own suite (salon-landing.spec.ts). What this asserts is the half
+    // that belongs here: the host still resolves to this tenant.
+    //
+    // `exact`, because the shopfront names the salon twice: once as its title
+    // and once in "Layanan — <branch>", and the default branch carries the
+    // salon's name.
+    await expect(page.getByRole('heading', { name: 'Pub Check', exact: true }))
+      .toBeVisible()
   })
 
   test('an unknown subdomain 404s rather than saying which salons exist', async ({ page }) => {

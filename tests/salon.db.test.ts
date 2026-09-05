@@ -119,7 +119,33 @@ describe('bookableBranches', () => {
 
   it('never leaks the salon-only columns', async () => {
     const [branch] = await bookableBranches(ORG)
-    expect(Object.keys(branch).sort()).toEqual(['address', 'name', 'teamId'])
+    // An EXACT list, not a "does not contain" check: this is the shape a
+    // public page serialises into its RSC payload, and the failure mode is
+    // something new arriving here unnoticed.
+    //
+    // phone and hours joined it for the shopfront, under the rule written on
+    // the type: a field belongs here only if a salon would print it on their
+    // own signage. staffCount, withinCap and active would not, and their
+    // absence is what this pins.
+    expect(Object.keys(branch).sort())
+      .toEqual(['address', 'hours', 'name', 'phone', 'teamId'])
+  })
+
+  it('the hours it exposes are the branch"s own', async () => {
+    const [branch] = await bookableBranches(ORG)
+    expect(branch.hours).toHaveLength(7)
+    const { rows } = await pool.query(
+      `select count(*)::int n from branch_hours where team_id = $1`, [branch.teamId])
+    expect(rows[0].n).toBe(7)
+    // Every branch gets its OWN week -- one query fans out to all of them, and
+    // a mis-grouped Map would hand one branch another's opening times.
+    const all = await bookableBranches(ORG)
+    for (const b of all) {
+      const own = await pool.query(
+        `select weekday, closed from branch_hours where team_id = $1 order by weekday`,
+        [b.teamId])
+      expect(b.hours.map((h) => h.weekday)).toEqual(own.rows.map((r) => r.weekday))
+    }
   })
 })
 

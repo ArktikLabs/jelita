@@ -220,18 +220,24 @@ export async function createBooking(input: {
  */
 export async function bookableServices(organizationId: string, teamId: string) {
   const { rows } = await db.execute(sql`
-    select p.service_id, s.name, p.duration_minutes, p.price, p.currency
+    select p.service_id, s.name, p.duration_minutes, p.price, p.currency,
+           c.name as category
       from service_branch_pricing p
       join services s on s.id = p.service_id
+      left join service_categories c on c.id = s.category_id
      where p.organization_id = ${organizationId} and p.team_id = ${teamId}
        and p.offered
-     order by s.name, s.id`)
+     order by c.name nulls last, s.name, s.id`)
   return (rows as Record<string, unknown>[]).map((r) => ({
     serviceId: r.service_id as string,
     name: r.name as string,
     durationMinutes: r.duration_minutes as number,
     price: Number(r.price),
     currency: r.currency as string,
+    // For the landing page's menu. Added here rather than in a second query
+    // over service_branch_pricing: two readings of the same view can disagree,
+    // which is the failure the view exists to prevent.
+    category: (r.category as string) ?? null,
   }))
 }
 

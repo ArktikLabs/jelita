@@ -46,11 +46,15 @@ const nextConfig: NextConfig = {
         has: [{ type: 'host', value: `(?<salon>[^.]+)\\.${APEX}` }],
         destination: '/book/:salon',
       },
-      // The bare subdomain is the nicest link a salon can hand out.
+      // The bare subdomain is the nicest link a salon can hand out, so it
+      // serves the SHOPFRONT -- name, hours, address, prices -- rather than
+      // dropping a stranger straight into a date picker. /book above is
+      // untouched, so a salon that wants to link directly to booking still
+      // can.
       {
         source: '/',
         has: [{ type: 'host', value: `(?<salon>[^.]+)\\.${APEX}` }],
-        destination: '/book/:salon',
+        destination: '/salon/:salon',
       },
     ], afterFiles: [], fallback: [] }
   },
