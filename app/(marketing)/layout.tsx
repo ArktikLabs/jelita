@@ -1,5 +1,4 @@
 import type { Metadata } from 'next'
-import { JetBrains_Mono, Plus_Jakarta_Sans } from 'next/font/google'
 import './hallmark.css'
 
 /**
@@ -10,20 +9,11 @@ import './hallmark.css'
  * "Hum" theme, against the dashboard's shadcn theme. Next ships this CSS chunk
  * only for routes under this group, so the two never meet.
  *
- * The fonts load here rather than in the root layout for the same reason --
- * the app is Geist, this page is Plus Jakarta Sans, and neither should pay to
- * download the other's.
+ * No fonts of its own any more. The Coral theme is Geist, which the root
+ * layout already puts on <html>, so this page and the product it sells share
+ * one typeface -- and the landing page stops downloading two faces nothing
+ * else uses.
  */
-const jakarta = Plus_Jakarta_Sans({
-  variable: '--font-jakarta',
-  subsets: ['latin'],
-})
-
-const mono = JetBrains_Mono({
-  variable: '--font-jbmono',
-  subsets: ['latin'],
-})
-
 export const metadata: Metadata = {
   title: 'Jelita — software salon: booking, kasir, komisi, stok',
   description:
@@ -37,6 +27,6 @@ export default function MarketingLayout({
   children: React.ReactNode
 }) {
   return (
-    <div className={`hm ${jakarta.variable} ${mono.variable}`}>{children}</div>
+    <div className="hm">{children}</div>
   )
 }

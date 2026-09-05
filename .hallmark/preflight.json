@@ -1,0 +1,11 @@
+{
+  "date": "2026-09-05",
+  "framework": "Next.js 16.3.3 (app router, Turbopack default)",
+  "font_stack": "Geist + Geist Mono via next/font/google (app/layout.tsx) \u2014 the marketing route now shares them rather than loading its own",
+  "palette": "TWO scoped systems: app/globals.css carries the shadcn/base-ui product theme; app/(marketing)/tokens.css carries Hallmark Coral. Route-scoped, never merged.",
+  "motion": "none (no framer-motion / gsap / motion / lenis in package.json) \u2014 motion-cut",
+  "spacing": "Tailwind v4 defaults for the product; Hallmark --space-* 4-pt scale for the marketing route",
+  "tokens": "app/(marketing)/tokens.css (Coral). A stray duplicate at the repo root is untracked and unimported.",
+  "design_md": false,
+  "note": "Supersedes the 2026-08-30 scan, which described the project before the product existed and claimed 'no tokens / CRA palette only'."
+}

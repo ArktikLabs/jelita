@@ -1,111 +1,82 @@
-/* Hallmark · tokens · genre: playful · theme: Hum
- * Paper band: light cream (L 97%, pear-pulled) · Display: rounded-sans · Accent hue: MULTI
+/* Hallmark · tokens · genre: modern-minimal · theme: Coral
+ * Paper band: light warm-grey (L 98.5%) · Display: grotesk-sans (Geist) · Accent hue: WARM (coral 27°)
  *
- * Hum is the catalog's only multi-accent theme. Three accents on stage at once —
- * pear-yellow (primary action), sky-cyan (links + community), coral-red (the one
- * high-energy moment) — plus mint and lavender used sparingly.
+ * One accent, and it stays under 3% of any viewport. The primary CTA is
+ * INK-filled, not coral-filled — modern-minimal's canonical pair is
+ * black-fill + outlined-secondary, which is also what keeps the accent rare
+ * enough to still mean something.
  *
- * Contrast rules that fell out of checking every pair before emit:
- *   · PEAR fill  → ink label   9.27:1 ✓      · CORAL fill → ink label   5.25:1 ✓
- *   · MINT fill  → ink label   7.46:1 ✓      · CYAN  fill → CREAM label 5.01:1 ✓
- *     (ink on cyan is only 3.41 — cyan fills take cream text, never ink)
- *   · LAVENDER carries NO text at either polarity (4.22 / 4.05). Decorative tint only.
- *   · coral as text on cream is 3.25 — use --color-coral-deep (4.63:1) for coral type.
+ * Neutrals are tinted toward the anchor hue (40°), never flat grey: a warm
+ * accent over cool grey body copy looks wrong in a way most people can feel
+ * but can't name.
+ *
+ * Contrast, computed before emit rather than eyeballed (sRGB, WCAG 2.1):
+ *   · body   on paper  11.29:1 ✓      · ink    on paper  16.99:1 ✓
+ *   · muted  on paper   5.29:1 ✓      · paper  on ink    16.99:1 ✓  (primary CTA)
+ *   · coral  on paper   5.08:1 ✓      · focus ring vs paper 5.08:1 ✓ (needs 3.0)
+ *   · paper  on coral   5.08:1 ✓      — so coral may carry paper text if ever filled
  */
 
 :root {
-  /* ── Ground ── cream, never white. Ink near-black with a cool tilt, never #000. */
-  --color-paper:   oklch(97.0% 0.012 95);
-  --color-paper-2: oklch(94.0% 0.016 95);
-  --color-paper-3: oklch(91.0% 0.020 95);
-  --color-ink:     oklch(20.0% 0.012 250);
-  --color-ink-deep: oklch(12.0% 0.012 250);
+  /* ── Ground ── warm near-white, never #fff. Ink warm near-black, never #000. */
+  --color-paper:   oklch(98.5% 0.005 40);
+  --color-paper-2: oklch(96.5% 0.006 40);
+  --color-paper-3: oklch(93.5% 0.008 40);
+  --color-ink:     oklch(21.0% 0.012 40);
 
-  /* ink modified by opacity, not by new hues — Hum's micro-craft rule */
-  --color-body:  color-mix(in oklch, var(--color-ink) 88%, var(--color-paper));
-  --color-muted: color-mix(in oklch, var(--color-ink) 66%, var(--color-paper));
-  --color-faint: color-mix(in oklch, var(--color-ink) 42%, var(--color-paper));
-  --color-rule:  color-mix(in oklch, var(--color-ink) 14%, var(--color-paper));
+  --color-body:  oklch(34.0% 0.010 40);
+  --color-muted: oklch(52.0% 0.008 40);
+  --color-rule:  oklch(89.0% 0.006 40);
 
-  /* ── The three accents ── each owns its own kind of surface. Never blended. */
-  --color-pear:       oklch(86.0% 0.18 95);
-  --color-pear-edge:  oklch(72.0% 0.19 95);
-  --color-pear-deep:  oklch(65.0% 0.16 95);
-  --color-cyan:       oklch(66.0% 0.18 235);
-  --color-cyan-edge:  oklch(52.0% 0.17 235);
-  --color-coral:      oklch(68.0% 0.24 18);
-  --color-coral-edge: oklch(54.0% 0.22 18);
-  --color-coral-deep: oklch(62.0% 0.21 18);
-  --color-mint:       oklch(80.0% 0.16 150);
-  --color-lav:        oklch(74.0% 0.16 305);   /* decorative only — carries no text */
+  /* ── The one accent ── links, focus, annotation marks. Never a flood. */
+  --color-accent:      oklch(55.0% 0.18 27);
+  --color-accent-deep: oklch(50.0% 0.18 27);
+  --color-accent-tint: oklch(96.0% 0.020 27);
+  --color-focus:       oklch(55.0% 0.18 27);
 
-  /* ── Tint bands ── section grounds. Same hues, chroma pulled right down. */
-  --tint-pear:  oklch(95.5% 0.045 95);
-  --tint-cyan:  oklch(95.5% 0.030 235);
-  --tint-coral: oklch(95.5% 0.035 18);
-  --tint-mint:  oklch(95.5% 0.030 150);
-  --tint-lav:   oklch(95.5% 0.030 305);
+  /* ── Type ── Geist, already loaded by the app's root layout. The landing
+     page and the product share one typeface on purpose: modern-minimal is a
+     single-family discipline, and a marketing page in a different face than
+     the product it sells is a small lie. */
+  --font-display: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-body:    var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono:    var(--font-geist-mono), ui-monospace, monospace;
 
-  --color-focus: oklch(52.0% 0.17 235);
+  /* ── Space ── 4-pt scale, semantic names only. */
+  --space-3xs: 0.25rem; --space-2xs: 0.5rem;  --space-xs: 0.75rem;
+  --space-sm:  1rem;    --space-md:  1.5rem;  --space-lg: 2rem;
+  --space-xl:  3rem;    --space-2xl: 4.5rem;  --space-3xl: 7rem;
 
-  /* ── Type ── two families. Rounded sans + mono. No serif anywhere in Hum. */
-  --font-display: var(--font-jakarta), ui-rounded, system-ui, sans-serif;
-  --font-body:    var(--font-jakarta), ui-rounded, system-ui, sans-serif;
-  --font-mono:    var(--font-jbmono), ui-monospace, "SF Mono", monospace;
+  /* ── Scale ── tight-set displays, per the genre. */
+  --text-xs: 0.75rem;   --text-sm: 0.8125rem; --text-base: 0.9375rem;
+  --text-md: 1.0625rem; --text-lg: 1.3125rem; --text-xl: 1.625rem;
+  --text-2xl: clamp(1.75rem, 2.2vw + 1rem, 2.5rem);
+  --text-display: clamp(2.5rem, 5vw + 0.5rem, 4.5rem);
 
-  --text-sm:   0.8125rem;
-  --text-base: 1rem;
-  --text-md:   1.1875rem;
-  --text-lg:   1.5rem;
-  --text-xl:   1.9375rem;
-  --text-2xl:  2.4375rem;
-  --text-3xl:  3.0625rem;
-  --text-display:   clamp(2.75rem, 6vw + 0.5rem, 4.75rem);
-  --text-display-s: clamp(2.25rem, 4vw + 0.5rem, 3.0625rem);
-  --text-count:     clamp(2.5rem, 4vw + 1rem, 4rem);
-
-  /* ── Space ── */
-  --space-3xs: 0.125rem;
-  --space-2xs: 0.25rem;
-  --space-xs:  0.5rem;
-  --space-sm:  0.75rem;
-  --space-md:  1rem;
-  --space-lg:  1.5rem;
-  --space-xl:  2.5rem;
-  --space-2xl: 4rem;
-  --space-3xl: 6rem;
-  --space-4xl: 9rem;
-
-  /* ── Round ── no square corners anywhere. This is the rounded theme. */
-  --radius-card:  20px;
-  --radius-input: 12px;
-  --radius-sm:    10px;
-  --radius-pill:  999px;
-
-  /* ── Motion ── Hum's stack is the loudest in the catalog. */
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --ease-snap:   cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-push:   cubic-bezier(0.2, 0.7, 0.3, 1);
+  /* ── Motion ── three named easings, no browser default, no overshoot. */
   --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-micro: 140ms;
-  --dur-short: 220ms;
-  --dur-long:  420ms;
+  --ease-in:     cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-short: 160ms;
+  --dur-mid:   260ms;
 
-  /* layered shadows — a tight contact shadow plus a soft ambient one */
-  /* button cast shadows — alpha is a shadow modifier, but still named, never inline */
-  --cast-pear:  oklch(76% 0.20 95 / 0.45);
-  --cast-coral: oklch(60% 0.24 18 / 0.42);
-  --cast-ink:   oklch(20% 0.012 250 / 0.40);
+  /* ── Shape ── pills for CTAs, 10px for surfaces. */
+  --radius-pill: 999px;
+  --radius-card: 10px;
+  --radius-sm:   6px;
+  --rule: 1px solid var(--color-rule);
 
-  --shadow-contact: 0 1px 2px oklch(20% 0.012 250 / 0.06);
-  --shadow-ambient: 0 14px 34px -18px oklch(20% 0.012 250 / 0.28);
-  --shadow-lift:    0 20px 44px -18px oklch(20% 0.012 250 / 0.34);
+  /* Lifted here rather than written inline at the call site: gate 48 — every
+     colour in the artifact must reference a named token, or the theme was
+     picked and then quietly freestyled over. */
+  --color-ink-hover: oklch(28% 0.014 40);
+  --shadow-pill: 0 1px 2px oklch(21% 0.012 40 / 0.04), 0 8px 24px oklch(21% 0.012 40 / 0.05);
+  --shadow-bar:  0 8px 28px oklch(21% 0.012 40 / 0.07);
+  --scrim-nav:   color-mix(in oklch, var(--color-paper) 82%, transparent);
+  --scrim-bar:   color-mix(in oklch, var(--color-paper) 88%, transparent);
 
-  --shell:       78rem;
-  --page-gutter: clamp(1.25rem, 4vw, 3.5rem);
-  --section-gap: clamp(3.5rem, 7vw, 6rem);
-
-  --z-base: 1; --z-raised: 10; --z-dropdown: 100;
-  --z-sticky: 200; --z-sticky-nav: 210;
-  --z-modal: 400; --z-toast: 500; --z-tooltip: 600;
+  /* gate 24 — control padding is on the 4-pt scale like everything else */
+  --pad-btn-y:    0.75rem;   /* 12px */
+  --pad-btn-sm-y: 0.5rem;    /* 8px  */
+  --pad-chip-y:   0.25rem;   /* 4px  */
 }

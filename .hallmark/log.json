@@ -1,0 +1,27 @@
+[
+  {
+    "date": "2026-09-05",
+    "genre": "modern-minimal",
+    "macrostructure": "Workbench",
+    "theme": "Coral",
+    "theme_axes": "light-warm-grey / grotesk-sans / warm-accent",
+    "nav": "N5 Floating pill",
+    "footer": "Ft2 Inline rule",
+    "enrichment": "real product captures (no re-drawn chrome)",
+    "archetypes": "H2 split diptych \u00b7 S2 hanging \u00b7 F5 annotated screenshot \u00b7 F3 tabular spec \u00b7 F4 step sequence \u00b7 C4 sticky bottom bar",
+    "brief": "Jelita \u00b7 salon management SaaS landing (ID) \u2014 redesign, modern-minimal",
+    "note": "redesign of the 2026-08-30 Hum/Bento build. Rotated all four: macrostructure, theme, nav, footer \u2014 N7 and Ft8 are banned in modern-minimal anyway. Fonts dropped to the app's own Geist. 7 slop-test gates failed on first emit and were fixed: 22 (chroma floor), 24 (off-scale control padding), 25 (head clipped its own lede), 26 (no disabled state), 38 (mono in three slots), 44a (hero top-heavy), 48 (inline oklch outside tokens)."
+  },
+  {
+    "date": "2026-08-30",
+    "genre": "playful",
+    "macrostructure": "Bento Grid",
+    "theme": "Hum",
+    "theme_axes": "light-cream / rounded-sans / multi-accent",
+    "nav": "N7 Brutal slab (rounded)",
+    "footer": "Ft8 Marquee scroll",
+    "enrichment": "Tier A CSS artefacts (board, slot strip, mini ledger, character mark)",
+    "brief": "Jelita \u00b7 salon management SaaS landing (ID) \u2014 playful, chic, colorful",
+    "note": "v3. v1 modern-minimal/Coral/Narrative Workflow and v2 editorial/custom/Split Studio were both rejected as bland \u2014 genre mis-routed twice before landing on playful."
+  }
+]

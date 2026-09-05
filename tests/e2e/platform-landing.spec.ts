@@ -48,6 +48,23 @@ test.describe('the platform landing page', () => {
     expect(labels).toContain('40 customer')
   })
 
+  test('every product capture actually loads', async ({ page }) => {
+    // The page is a guided tour of real screenshots; a 404 on one of them is a
+    // broken landing page, and no other test looks at public/.
+    await page.goto('/')
+    const imgs = page.locator('main img')
+    await expect(imgs).toHaveCount(4)
+    for (let i = 0; i < 4; i++) {
+      const el = imgs.nth(i)
+      await expect(el).toBeVisible()
+      // naturalWidth is 0 for an image the browser could not decode.
+      expect(await el.evaluate((n: HTMLImageElement) => n.naturalWidth),
+        `capture ${i} must decode`).toBeGreaterThan(0)
+      // Real alt text, not a filename — these carry the tour for a screen reader.
+      expect((await el.getAttribute('alt') ?? '').length).toBeGreaterThan(30)
+    }
+  })
+
   test('fits a phone', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/')
@@ -59,15 +76,19 @@ test.describe('the platform landing page', () => {
     // Asserted on a token only Hallmark defines, not on a background colour:
     // the ground lives on the .hm wrapper now, so both <body> elements are the
     // same colour and comparing them proves nothing.
-    const pear = (sel: string) => (el: Element) =>
-      getComputedStyle(el).getPropertyValue('--color-pear').trim()
+    // --color-paper, not --color-accent: the app's own shadcn theme defines an
+    // `--color-accent` too, so that name is defined on /login either way and
+    // the probe passed for the wrong reason. --color-paper exists only in the
+    // Hallmark tokens.
+    const paper = (el: Element) =>
+      getComputedStyle(el).getPropertyValue('--color-paper').trim()
 
     await page.goto('/')
-    expect(await page.locator('.hm').evaluate(pear('.hm')),
+    expect(await page.locator('.hm').evaluate(paper),
       'the landing page defines its own palette').not.toBe('')
 
     await page.goto('/login')
-    expect(await page.locator('body').evaluate(pear('body')),
+    expect(await page.locator('body').evaluate(paper),
       'the app must not see the marketing palette').toBe('')
   })
 })
