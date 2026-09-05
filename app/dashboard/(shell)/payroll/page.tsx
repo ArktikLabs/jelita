@@ -50,6 +50,15 @@ export default async function PayrollPage({
         </form>
       </div>
 
+      {/* §5.9: "one screen, one click to export". A plain link, not a form:
+          the browser downloads it and the page stays where it is. */}
+      <a
+        href={`/api/payroll/csv?month=${month}`}
+        className={buttonVariants({ variant: 'outline', size: 'sm' })}
+      >
+        Unduh CSV
+      </a>
+
       <p className="text-sm text-muted-foreground">
         Total dibayarkan bulan ini:{' '}
         <span className="font-medium text-foreground">{formatMoney(total, currency)}</span>

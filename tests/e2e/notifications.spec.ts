@@ -187,13 +187,26 @@ test.describe.serial('the notification center', () => {
   })
 
   test('cancelling the booking cancels what has not gone', async ({ page }) => {
+    // The booking is named by its TIME and the row is found by that time, so
+    // the row clicked and the row asserted about are the same one. Taking
+    // "the earliest booking" from SQL and clicking "the first Batalkan on the
+    // page" is two different selections that agree only by luck -- once an
+    // earlier test added a second booking they diverged, and this failed in a
+    // full run while passing alone.
     const { rows: [b] } = await pool.query(
-      `select id from bookings where organization_id = $1 order by starts_at limit 1`, [orgId])
+      `select id, to_char(starts_at, 'HH24:MI') as t from bookings
+        where organization_id = $1 and status in ('pending', 'confirmed')
+        order by starts_at limit 1`, [orgId])
 
     await page.context().addCookies((await owner.storageState()).cookies)
     await page.goto(`/dashboard/bookings?date=${DAY}`)
-    await page.getByRole('button', { name: 'Batalkan' }).first().click()
-    await expect(page.getByText('Batal').first()).toBeVisible()
+    const row = page.locator('tbody tr', { hasText: b.t })
+    await row.getByRole('button', { name: 'Batalkan' }).click()
+    // Waiting for the BUTTON TO GO, not for the text "Batal": "Batal" is a
+    // substring of "Batalkan", so the old wait was satisfied by the button
+    // still on screen and the query below could run before the cancel had
+    // committed.
+    await expect(row.getByRole('button', { name: 'Batalkan' })).toHaveCount(0)
 
     const after = (await pool.query(
       `select status from notifications where booking_id = $1`, [b.id])).rows

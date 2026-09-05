@@ -20,8 +20,12 @@ const ROOTS = ['app', 'lib', 'components', 'scripts', 'next.config.ts']
  */
 const READ_BY_DEPENDENCIES = ['BETTER_AUTH_SECRET']
 
-/** Build/test plumbing, not deployment configuration. */
-const NOT_DEPLOYMENT_CONFIG = ['NEXT_DIST_DIR']
+/**
+ * Not deployment configuration: build plumbing, and one-off overrides passed
+ * on a command line when running a script by hand. .env.example is what you
+ * paste into a hosting provider, so listing these there would be noise.
+ */
+const NOT_DEPLOYMENT_CONFIG = ['NEXT_DIST_DIR', 'DEMO_SLUG']
 
 function walk(path: string): string[] {
   if (statSync(path).isFile()) return [path]

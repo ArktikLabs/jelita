@@ -51,7 +51,11 @@ export default async function AppLayout({
   )
   return (
     <div className="flex min-h-full flex-col">
-      <header className="flex items-center justify-between border-b px-6 py-3">
+      {/* print:hidden -- §5.2 asks for a printable receipt, and the receipt page
+          already strips its own chrome. Without this the navigation bar and
+          the branch switcher print across the top of every receipt handed to
+          a customer. */}
+      <header className="flex items-center justify-between border-b px-6 py-3 print:hidden">
         <div className="flex min-w-0 items-center gap-6 overflow-x-auto">
           <Link href="/dashboard" className="font-medium">Jelita</Link>
           <MainNav items={navItems} />

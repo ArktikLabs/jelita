@@ -112,6 +112,7 @@ test.describe.serial('checkout', () => {
 
     await page.waitForURL('**/dashboard/transactions/**')
     await expect(page.getByText('INV-000001')).toBeVisible()
+
     await expect(page.getByText('Creambath')).toBeVisible()
 
     const rows = await sales()
@@ -161,6 +162,21 @@ test.describe.serial('checkout', () => {
     const rows = await sales()
     expect(rows.map((r) => r.invoice_no)).toEqual([1, 2])
     expect(Number(rows[0].total) + Number(rows[1].total), 'the ledger nets to zero').toBe(0)
+  })
+})
+
+test.describe('the printed receipt', () => {
+  test('carries none of the dashboard chrome', async ({ page }) => {
+    // §5.2 asks for a printable receipt, and one handed to a customer must not
+    // have the navigation printed across the top. The receipt page strips its
+    // own chrome; the shell header has to strip itself, and nothing else in
+    // the suite would notice if it stopped.
+    //
+    // getByRole('banner'), not locator('header'): the receipt has a <header>
+    // of its own, so the bare tag matches two elements.
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard')
+    await expect(page.getByRole('banner')).toHaveClass(/print:hidden/)
   })
 })
 
