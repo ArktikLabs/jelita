@@ -28,10 +28,16 @@ test.describe('the platform landing page', () => {
   test('it says what is NOT built', async ({ page }) => {
     await page.goto('/')
     const body = await page.locator('body').innerText()
-    expect(body).toContain('Yang belum ada')
-    // The claims that would age worst if the page quietly dropped them.
-    expect(body).toContain('Kirim WhatsApp ke nomor sungguhan')
-    expect(body).toContain('Payment gateway live')
+    expect(body).toContain('Belum semuanya ada')
+    // The two admissions that would age worst if the page quietly dropped
+    // them: that WhatsApp does not actually send, and that online payment is
+    // not wired. Asserted on meaning rather than on the old chip labels --
+    // the honesty moved from a nine-item register into prose, and the test
+    // should follow the claim, not the markup it used to live in.
+    expect(body, 'the page must still admit WhatsApp does not send')
+      .toContain('belum benar-benar terkirim')
+    expect(body, 'and that online payment is not wired')
+      .toContain('pembayaran online')
   })
 
   test('the demo figures match what the seed actually builds', async ({ page }) => {
