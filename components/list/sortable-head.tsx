@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { listHref } from '@/lib/list-url'
+import { listHref, type Params } from '@/lib/list-url'
 import { TableHead } from '@/components/ui/table'
 import type { ListQuery, ListSpec } from '@/lib/list-query'
 
@@ -15,7 +15,7 @@ export function SortableHead({
   label: string
   spec: ListSpec
   query: ListQuery
-  params: Record<string, string | string[] | undefined>
+  params: Params
 }) {
   const isActive = query.sort === column
   // Clicking the active column flips it; clicking a new one starts ascending.

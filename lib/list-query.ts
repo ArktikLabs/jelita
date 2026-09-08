@@ -56,8 +56,16 @@ const one = (v: string | string[] | undefined): string | undefined =>
  * absent, so there is no escaping step to get wrong.
  */
 export function parseListQuery(spec: ListSpec, params: Params): ListQuery {
-  const rawPage = Number(one(params.page))
-  const page = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1
+  // Parsed from the raw string rather than coerced through Number: a float
+  // coercion accepts things like `1e21` (Number.isInteger(1e21) is true) or
+  // digit strings past bigint range, and paginate() below turns page into a
+  // Postgres OFFSET -- a value Postgres cannot parse crashes the request with
+  // a 500 instead of simply falling back to page 1. The regex makes the bad
+  // state unrepresentable: only a plain run of digits, capped at 7 of them
+  // (comfortably below where page * perPage could ever approach bigint
+  // range), counts as a page number at all.
+  const rawPage = one(params.page) ?? ''
+  const page = /^[1-9]\d{0,6}$/.test(rawPage) ? Number(rawPage) : 1
 
   const rawPer = Number(one(params.per))
   const perPage = (PER_PAGE as readonly number[]).includes(rawPer) ? rawPer : PER_PAGE[0]

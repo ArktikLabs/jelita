@@ -1,4 +1,4 @@
-type Params = Record<string, string | string[] | undefined>
+export type Params = Record<string, string | string[] | undefined>
 
 /**
  * Build the href for a list control.
@@ -28,4 +28,26 @@ export function listHref(
   // Rule 2: anything but a page move invalidates the current page number.
   if (!('page' in changes)) next.delete('page')
   return `?${next.toString()}`
+}
+
+/**
+ * Hidden fields carrying everything a GET form would otherwise drop.
+ *
+ * A native GET submit replaces the WHOLE query string with only the form's
+ * own named inputs -- it never goes through listHref, so a plain `<form>`
+ * cannot rely on rule 1 above and has historically hand-enumerated which
+ * parameters to keep, one hidden input at a time. That list gets forgotten
+ * (it already was, once, for `sort`). This makes it impossible to forget:
+ * every current parameter is carried except `page` -- a new search resets
+ * the page by rule 2, same as everywhere else -- and except the fields the
+ * form owns itself.
+ */
+export function preservedFields(params: Params, own: string[]): [string, string][] {
+  const fields: [string, string][] = []
+  for (const [k, v] of Object.entries(params)) {
+    if (k === 'page' || own.includes(k)) continue
+    const value = Array.isArray(v) ? v[0] : v
+    if (value !== undefined && value !== '') fields.push([k, value])
+  }
+  return fields
 }

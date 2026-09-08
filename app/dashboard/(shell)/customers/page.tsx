@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { CUSTOMER_LIST, listCustomers } from '@/lib/customer'
 import { parseListQuery } from '@/lib/list-query'
+import { listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -14,7 +15,7 @@ import {
 export default async function CustomersPage({
   searchParams,
 }: {
-  searchParams: Promise<Record<string, string | string[] | undefined>>
+  searchParams: Promise<Params>
 }) {
   // read, not update: front desk needs the list at checkout, and stylists may
   // look someone up. The create and edit screens guard more tightly.
@@ -24,11 +25,6 @@ export default async function CustomersPage({
   const query = parseListQuery(CUSTOMER_LIST, params)
   const customers = await listCustomers(organizationId, query)
   const q = query.q
-  // The wire format a URL uses: a `-` prefix means descending. Reconstructed
-  // here because the form below is a plain GET -- unlike SortableHead and
-  // Pagination, it does not go through listHref, so anything it should
-  // preserve needs its own hidden field.
-  const sortParam = query.desc ? `-${query.sort}` : query.sort
 
   return (
     <div className="space-y-6">
@@ -39,14 +35,15 @@ export default async function CustomersPage({
         </Link>
       </div>
 
-      {/* A plain GET form: zero client JS, and the query survives a reload. */}
+      {/* A plain GET form: zero client JS, and the query survives a reload.
+          A native GET submit replaces the WHOLE query string with only this
+          form's own named inputs, so it can't go through listHref like every
+          other control -- preservedFields is what stops it from silently
+          dropping whatever it doesn't ask for by name (sort, active, per...). */}
       <form className="max-w-sm">
-        {query.filters.active !== undefined && (
-          <input type="hidden" name="active" value={query.filters.active} />
-        )}
-        {sortParam !== CUSTOMER_LIST.defaultSort && (
-          <input type="hidden" name="sort" value={sortParam} />
-        )}
+        {preservedFields(params, ['q']).map(([name, value]) => (
+          <input key={name} type="hidden" name={name} value={value} />
+        ))}
         <Input name="q" defaultValue={q ?? ''} placeholder="Cari nama atau nomor" />
       </form>
 
@@ -66,7 +63,9 @@ export default async function CustomersPage({
                 {query.q || Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
-                    <Link href="/dashboard/customers" className="underline">Hapus filter</Link>
+                    <Link href={listHref(params, { q: null, active: null })} className="underline">
+                      Hapus filter
+                    </Link>
                   </>
                 ) : (
                   'Belum ada pelanggan.'

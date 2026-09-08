@@ -259,7 +259,11 @@ test.describe('the URL controls', () => {
   test('a page past the end shows the last page, not an empty table', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard/customers?page=999')
-    await expect(page.locator('tbody tr')).not.toHaveCount(0)
+    // 60 seeded customers at 25/page clamp page 999 to page 3, which holds
+    // 60 - 50 = 10 rows. The empty state also renders as a `tbody tr` (it's
+    // a <TableRow>), so `not.toHaveCount(0)` would pass even with zero real
+    // rows -- asserting the exact count is what actually proves the clamp.
+    await expect(page.locator('tbody tr')).toHaveCount(10)
   })
 
   test('the two empty states say different things', async ({ page }) => {
@@ -267,5 +271,21 @@ test.describe('the URL controls', () => {
     await page.goto('/dashboard/customers?q=zzzzznotfound')
     await expect(page.getByText('Tidak ada pelanggan yang cocok')).toBeVisible()
     await expect(page.getByRole('link', { name: 'Hapus filter' })).toBeVisible()
+
+    // The other branch: a salon with no customers at all (as opposed to a
+    // search that matched none). A fresh org with nothing seeded is the
+    // deterministic way to reach it -- proving this isn't just the same
+    // copy rendered for both cases.
+    const empty = await createSalon(pool, {
+      name: 'Ctrl Empty', email: `empty@${CTRL_DOMAIN}`, password: PW,
+      salon: 'Ctrl Empty Salon', slug: `${CTRL_SLUG}-empty`,
+    })
+    try {
+      await page.context().addCookies((await empty.ctx.storageState()).cookies)
+      await page.goto('/dashboard/customers')
+      await expect(page.getByText('Belum ada pelanggan')).toBeVisible()
+    } finally {
+      await empty.ctx.dispose()
+    }
   })
 })

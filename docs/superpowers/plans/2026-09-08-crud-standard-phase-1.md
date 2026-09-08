@@ -740,13 +740,13 @@ In `app/dashboard/(shell)/customers/page.tsx`: replace the plain `<TableHead>Nam
 </TableCell>
 ```
 
-Keep the search `<form>`, but add a hidden input so searching does not drop the active filter:
+Keep the search `<form>`, but carry every parameter it doesn't own through `preservedFields` (`lib/list-url.ts`) rather than hand-writing one hidden input per parameter — a native GET submit replaces the WHOLE query string with only the form's own named inputs, so anything not named this way is silently dropped the moment someone searches, and a hand-written list is exactly what gets forgotten (see the `sort` fix commit that had to happen after this form first shipped with only `active`):
 
 ```tsx
 <form className="max-w-sm">
-  {query.filters.active !== undefined && (
-    <input type="hidden" name="active" value={query.filters.active} />
-  )}
+  {preservedFields(params, ['q']).map(([name, value]) => (
+    <input key={name} type="hidden" name={name} value={value} />
+  ))}
   <Input name="q" defaultValue={query.q ?? ''} placeholder="Cari nama atau nomor" />
 </form>
 ```
@@ -797,10 +797,10 @@ Commit first — `git checkout HEAD -- <file>` restores to the last commit, and 
 
 | break | must fail |
 |---|---|
-| delete `next.delete('page')` from `listHref` | "searching resets the page" |
+| delete `next.delete('page')` from `listHref` | `tests/list-url.test.ts`: "resets the page whenever the result set changes" -- NOT the e2e "searching resets the page": a native GET submit drops `page` on its own by omitting it from the form, so that test never exercises `listHref` at all and cannot catch this break |
 | drop the tiebreaker from `orderBy` | "pages through 60 identical names" |
 | remove `clampPage` from `listCustomers` | "clamps a page past the end" |
-| return the hidden `active` input from the search form | "sorting keeps the search" |
+| remove the `preservedFields(params, ['q'])` call from the search form | "searching keeps the active filter" / "searching keeps the sort" |
 
 Restore with `git checkout HEAD -- <file>` and confirm `git status --short` is clean after each.
 

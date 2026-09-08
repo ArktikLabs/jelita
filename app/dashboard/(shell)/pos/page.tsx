@@ -62,8 +62,13 @@ export default async function PosPage({
   // §5.7: "search by name/number from POS for fast lookup at checkout". A GET
   // param rather than a client fetch -- the same two-phase shape the booking
   // form uses, so the result is bookmarkable and there is no second code path.
-  const found = q
-    ? (await listCustomers(organizationId, parseListQuery(CUSTOMER_LIST, { q }))).rows
+  //
+  // Trimmed once and reused for both the query and the render gate below: a
+  // whitespace-only `q` must not run an unfiltered listCustomers (and its
+  // paired count(*)) just because `q` itself was truthy.
+  const searchTerm = q?.trim() || undefined
+  const found = searchTerm
+    ? (await listCustomers(organizationId, parseListQuery(CUSTOMER_LIST, { q: searchTerm }))).rows
     : []
   const chosen = customerId ? await getCustomer(customerId, organizationId) : null
   const bookingCustomer = booking
@@ -122,7 +127,7 @@ export default async function PosPage({
               Cari
             </button>
           </form>
-          {q?.trim() && (
+          {searchTerm && (
             found.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 Tidak ada yang cocok. Isi nama dan nomor di bawah untuk pelanggan baru.

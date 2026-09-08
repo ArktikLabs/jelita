@@ -58,6 +58,20 @@ describe('parseListQuery', () => {
     expect(parseListQuery(SPEC, { page: 'abc' }).page).toBe(1)
   })
 
+  it('refuses a page number that would overflow the OFFSET Postgres expects', () => {
+    // Number('1e21') is 1e21 and Number.isInteger(1e21) is true, so a naive
+    // float coercion would let this through; paginate() would then hand
+    // Postgres an OFFSET it cannot parse as a bigint and the request 500s.
+    expect(parseListQuery(SPEC, { page: '1e21' }).page).toBe(1)
+    // A plain digit string can also exceed bigint range even though it is a
+    // perfectly good integer.
+    expect(parseListQuery(SPEC, { page: '99999999999999999999' }).page).toBe(1)
+    // A legitimate large page still works -- this isn't a low cap in
+    // disguise, just one below where offset math could ever reach bigint
+    // range.
+    expect(parseListQuery(SPEC, { page: '1000000' }).page).toBe(1000000)
+  })
+
   it('falls back to the default sort for a column that is not declared', () => {
     expect(parseListQuery(SPEC, { sort: 'salary' }).sort).toBe('name')
   })

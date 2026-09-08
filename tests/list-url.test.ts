@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { listHref } from '../lib/list-url'
+import { listHref, preservedFields } from '../lib/list-url'
 
 describe('listHref', () => {
   it('keeps the parameters it was not asked to change', () => {
@@ -29,5 +29,29 @@ describe('listHref', () => {
 
   it('returns a bare path when nothing is set', () => {
     expect(listHref({}, {})).toBe('?')
+  })
+})
+
+describe('preservedFields', () => {
+  it('excludes page -- a new search resets it, same as listHref', () => {
+    const fields = preservedFields({ q: 'budi', page: '3' }, ['q'])
+    expect(fields).not.toContainEqual(['page', '3'])
+  })
+
+  it("excludes the form's own fields", () => {
+    const fields = preservedFields({ q: 'budi', sort: 'name' }, ['q'])
+    expect(fields).not.toContainEqual(['q', 'budi'])
+    expect(fields).toContainEqual(['sort', 'name'])
+  })
+
+  it('carries everything else, including per', () => {
+    const fields = preservedFields(
+      { q: 'budi', sort: '-created', active: 'false', per: '50', page: '2' },
+      ['q'],
+    )
+    expect(fields).toEqual(expect.arrayContaining([
+      ['sort', '-created'], ['active', 'false'], ['per', '50'],
+    ]))
+    expect(fields).toHaveLength(3)
   })
 })

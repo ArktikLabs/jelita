@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { listHref } from '@/lib/list-url'
+import { listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import type { ListResult } from '@/lib/list-query'
 
@@ -9,7 +9,7 @@ export function Pagination({
   result, params,
 }: {
   result: ListResult<unknown>
-  params: Record<string, string | string[] | undefined>
+  params: Params
 }) {
   const from = (result.page - 1) * result.perPage + 1
   const to = Math.min(result.page * result.perPage, result.total)
