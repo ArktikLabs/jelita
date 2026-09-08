@@ -91,9 +91,13 @@ describe('listCustomers paging', () => {
   })
 
   it('pages through 60 identical names without repeating or losing one', async () => {
-    // The tiebreaker test. With `order by name` alone and 60 rows called the
-    // same thing, Postgres may return them in any order per query -- rows
-    // repeat across pages and others are never seen.
+    // This proves paging returns every row of THIS dataset exactly once. It
+    // does NOT prove the tiebreaker is present: Postgres's tie order for an
+    // unchanging small table tends to be stable run-to-run even with no
+    // tiebreak at all, so a missing tiebreak does not reliably fail this
+    // test (confirmed by breaking it -- see tests/list-query.test.ts's
+    // `orderBy` suite, which asserts the emitted ORDER BY text directly and
+    // is what actually proves §3.3).
     const seen = new Set<string>()
     for (const page of ['1', '2', '3']) {
       const r = await listCustomers(ORG, q({ page }))

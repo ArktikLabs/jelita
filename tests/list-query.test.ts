@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { clampPage, parseListQuery, toResult, type ListSpec } from '../lib/list-query'
+import type { SQL } from 'drizzle-orm'
+import { clampPage, orderBy, parseListQuery, toResult, type ListSpec } from '../lib/list-query'
 
 const SPEC: ListSpec = {
   sortable: { name: 'c.name', created: 'c.created_at' },
@@ -8,6 +9,28 @@ const SPEC: ListSpec = {
   searchable: true,
   filters: { active: ['true', 'false'] },
 }
+
+/**
+ * Flatten a drizzle `SQL` fragment back to plain text, without a database.
+ *
+ * `sql` and `sql.raw` are pure object construction -- no connection, no
+ * dialect -- they just build a tree of chunks (`{ value: [...] }` for a plain
+ * string, `{ queryChunks: [...] }` for a nested SQL fragment from `sql.raw`
+ * or an interpolated value). Concatenating that tree is exactly what a real
+ * driver does before sending the string over the wire, so this asserts on
+ * the same text Postgres would receive, with no live connection required --
+ * which is what keeps this test file runnable against nothing.
+ */
+function render(chunk: unknown): string {
+  if (chunk == null) return ''
+  const c = chunk as { queryChunks?: unknown[]; value?: unknown[] }
+  if (Array.isArray(c.queryChunks)) return c.queryChunks.map(render).join('')
+  if (Array.isArray(c.value)) return c.value.join('')
+  return String(chunk)
+}
+
+const renderOrderBy = (query: ReturnType<typeof parseListQuery>): string =>
+  render(orderBy(SPEC, query) as SQL)
 
 describe('parseListQuery', () => {
   it('falls back to the spec defaults when nothing is given', () => {
@@ -74,6 +97,39 @@ describe('clampPage', () => {
 
   it('keeps page 1 when there are no rows at all', () => {
     expect(clampPage(parseListQuery(SPEC, { page: '4' }), 0).page).toBe(1)
+  })
+})
+
+describe('orderBy', () => {
+  // §3.3: a bare `order by name` over duplicate names is not deterministic
+  // between two queries -- a row can appear on two pages and another on
+  // none. The customers.db.test.ts paging test proves rows aren't lost in
+  // practice on an unchanging table, but Postgres's tie order for such a
+  // table is often stable run-to-run regardless -- so that test cannot prove
+  // the tiebreaker is actually emitted. This asserts the emitted SQL text
+  // directly instead.
+  it('always ends the ORDER BY in the tiebreak column', () => {
+    const asc = renderOrderBy(parseListQuery(SPEC, { sort: 'name' }))
+    expect(asc).toContain(SPEC.tiebreak)
+    expect(asc.trim().endsWith(SPEC.tiebreak)).toBe(true)
+  })
+
+  it('holds for both sort directions', () => {
+    const asc = renderOrderBy(parseListQuery(SPEC, { sort: 'name' }))
+    const desc = renderOrderBy(parseListQuery(SPEC, { sort: '-name' }))
+    expect(asc.trim().endsWith(SPEC.tiebreak)).toBe(true)
+    expect(desc.trim().endsWith(SPEC.tiebreak)).toBe(true)
+    expect(asc).not.toBe(desc)
+  })
+
+  it('falls back to the default column, with its tiebreak, for an unknown sort', () => {
+    // Same injection attempt as parseListQuery's own test above, carried
+    // through to what actually reaches Postgres.
+    const injected = "c.name; drop table customers --"
+    const rendered = renderOrderBy(parseListQuery(SPEC, { sort: injected }))
+    expect(rendered).not.toContain(injected)
+    expect(rendered).toContain(SPEC.sortable[SPEC.defaultSort])
+    expect(rendered.trim().endsWith(SPEC.tiebreak)).toBe(true)
   })
 })
 
