@@ -245,6 +245,17 @@ test.describe('the URL controls', () => {
     await expect(page).toHaveURL(/active=false/)
   })
 
+  // A native GET submit replaces the WHOLE query string with only the form's
+  // own named fields -- so a sort with no hidden field to carry it forward is
+  // silently reset to the default the moment someone searches.
+  test('searching keeps the sort', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?sort=-created')
+    await page.locator('input[name="q"]').fill('Budi')
+    await page.locator('input[name="q"]').press('Enter')
+    await expect(page).toHaveURL(/sort=-created/)
+  })
+
   test('a page past the end shows the last page, not an empty table', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard/customers?page=999')

@@ -24,6 +24,11 @@ export default async function CustomersPage({
   const query = parseListQuery(CUSTOMER_LIST, params)
   const customers = await listCustomers(organizationId, query)
   const q = query.q
+  // The wire format a URL uses: a `-` prefix means descending. Reconstructed
+  // here because the form below is a plain GET -- unlike SortableHead and
+  // Pagination, it does not go through listHref, so anything it should
+  // preserve needs its own hidden field.
+  const sortParam = query.desc ? `-${query.sort}` : query.sort
 
   return (
     <div className="space-y-6">
@@ -38,6 +43,9 @@ export default async function CustomersPage({
       <form className="max-w-sm">
         {query.filters.active !== undefined && (
           <input type="hidden" name="active" value={query.filters.active} />
+        )}
+        {sortParam !== CUSTOMER_LIST.defaultSort && (
+          <input type="hidden" name="sort" value={sortParam} />
         )}
         <Input name="q" defaultValue={q ?? ''} placeholder="Cari nama atau nomor" />
       </form>
