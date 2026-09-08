@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
+import { listCustomers, CUSTOMER_LIST } from '../lib/customer'
+import { parseListQuery } from '../lib/list-query'
 
 /**
  * Constraint behaviour, asserted against a real Postgres rather than mocked.
@@ -61,5 +63,73 @@ describe('customers phone uniqueness', () => {
   it('scopes uniqueness per salon', async () => {
     await expect(addCustomer('vt_c5', ORG2, 'Dewi Salon Lain', '62812345678'))
       .resolves.toBeDefined()
+  })
+})
+
+describe('listCustomers paging', () => {
+  const q = (params: Record<string, string> = {}) => parseListQuery(CUSTOMER_LIST, params)
+
+  beforeAll(async () => {
+    await pool.query(`delete from customers where organization_id = $1`, [ORG])
+    // 60 rows, and DELIBERATELY duplicated names: a non-unique sort column is
+    // what makes paging non-deterministic without a tiebreaker.
+    for (let i = 0; i < 60; i++) {
+      await pool.query(
+        `insert into customers (id, organization_id, name, phone, phone_key)
+         values ($1, $2, $3, $4, $5)`,
+        [`pg_${String(i).padStart(3, '0')}`, ORG, 'Sama Persis', `08120000${String(i).padStart(3, '0')}`,
+         `628120000${String(i).padStart(3, '0')}`])
+    }
+  })
+
+  it('returns one page and the true total', async () => {
+    const r = await listCustomers(ORG, q())
+    expect(r.rows).toHaveLength(25)
+    expect(r.total).toBe(60)
+    expect(r.pages).toBe(3)
+    expect(r.page).toBe(1)
+  })
+
+  it('pages through 60 identical names without repeating or losing one', async () => {
+    // This proves paging returns every row of THIS dataset exactly once. It
+    // does NOT prove the tiebreaker is present: Postgres's tie order for an
+    // unchanging small table tends to be stable run-to-run even with no
+    // tiebreak at all, so a missing tiebreak does not reliably fail this
+    // test (confirmed by breaking it -- see tests/list-query.test.ts's
+    // `orderBy` suite, which asserts the emitted ORDER BY text directly and
+    // is what actually proves §3.3).
+    const seen = new Set<string>()
+    for (const page of ['1', '2', '3']) {
+      const r = await listCustomers(ORG, q({ page }))
+      for (const row of r.rows) seen.add(row.id)
+    }
+    expect(seen.size, 'every row seen exactly once across three pages').toBe(60)
+  })
+
+  it('clamps a page past the end to the last page', async () => {
+    const r = await listCustomers(ORG, q({ page: '999' }))
+    expect(r.page).toBe(3)
+    expect(r.rows).toHaveLength(10)
+  })
+
+  it('counts only the rows the search matches', async () => {
+    const r = await listCustomers(ORG, q({ q: '628120000005' }))
+    expect(r.total).toBe(1)
+    expect(r.rows).toHaveLength(1)
+  })
+
+  it('sorts descending when asked', async () => {
+    const asc = await listCustomers(ORG, q({ sort: 'created' }))
+    const desc = await listCustomers(ORG, q({ sort: '-created' }))
+    expect(desc.rows[0].id).not.toBe(asc.rows[0].id)
+  })
+
+  it('never returns another salon"s customers', async () => {
+    await pool.query(
+      `insert into customers (id, organization_id, name) values ('pg_other', $1, 'Sama Persis')`,
+      [ORG2])
+    const r = await listCustomers(ORG, q())
+    expect(r.total).toBe(60)
+    expect(r.rows.map((x) => x.id)).not.toContain('pg_other')
   })
 })

@@ -1,7 +1,7 @@
 import { expect, request, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
-import { BASE_URL } from './fixtures'
+import { BASE_URL, createSalon } from './fixtures'
 
 /**
  * Search, cross-tenant scoping, permissions and the duplicate-number 409,
@@ -172,5 +172,120 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     const res = await stylist.get(`/dashboard/customers/${sariId}`)
     expect(res.status()).toBeGreaterThanOrEqual(300)
     expect(res.status()).toBeLessThan(400)
+  })
+})
+
+/**
+ * The URL controls (sort, page, search) added on top of the list contract
+ * from tests/list-url.test.ts. Modelled on tests/e2e/payroll.spec.ts's
+ * fixture shape -- signed-in via createSalon and a cookie jar, not the raw
+ * API-request-context style above, because these assertions are ABOUT what
+ * the browser's address bar shows after a click.
+ *
+ * 60 customers sharing one name so paging and sorting have real work: with
+ * fewer rows than a page, or all-unique names, the tiebreaker and the clamp
+ * this suite leans on never actually engage.
+ */
+test.describe('the URL controls', () => {
+  const CTRL_DOMAIN = 'custurl.local'
+  const CTRL_SLUG = 'custurl'
+
+  let owner: Awaited<ReturnType<typeof createSalon>>['ctx']
+  const ownerCookies = async () => (await owner.storageState()).cookies
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug like 'custurl%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${CTRL_DOMAIN}`])
+
+    const salon = await createSalon(pool, {
+      name: 'Ctrl Owner', email: `owner@${CTRL_DOMAIN}`, password: PW,
+      salon: 'Ctrl Salon', slug: CTRL_SLUG,
+    })
+    owner = salon.ctx
+
+    // generate_series rather than 60 literal rows: the point is the count
+    // and the shared name, not any one customer's identity.
+    await pool.query(`
+      insert into customers (id, organization_id, name)
+      select 'e2e_curl_' || gs, $1, 'Budi Santoso'
+        from generate_series(1, 60) as gs`, [salon.organizationId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await pool.query(`delete from organizations where slug like 'custurl%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${CTRL_DOMAIN}`])
+  })
+
+  test('sorting keeps the search', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?q=Budi')
+    await page.getByRole('link', { name: /Nama/ }).click()
+    await expect(page).toHaveURL(/q=Budi/)
+    await expect(page).toHaveURL(/sort=/)
+  })
+
+  test('searching resets the page', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?page=3')
+    await page.locator('input[name="q"]').fill('Budi')
+    await page.locator('input[name="q"]').press('Enter')
+    await expect(page).not.toHaveURL(/page=/)
+  })
+
+  // Not one of the brief's four scenarios, but the one that actually
+  // exercises the hidden `active` input: a search box that silently drops an
+  // active filter is the exact URL-state bug listHref exists to prevent, and
+  // none of the other cases submit the form with a filter already set.
+  test('searching keeps the active filter', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?active=false')
+    await page.locator('input[name="q"]').fill('Budi')
+    await page.locator('input[name="q"]').press('Enter')
+    await expect(page).toHaveURL(/active=false/)
+  })
+
+  // A native GET submit replaces the WHOLE query string with only the form's
+  // own named fields -- so a sort with no hidden field to carry it forward is
+  // silently reset to the default the moment someone searches.
+  test('searching keeps the sort', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?sort=-created')
+    await page.locator('input[name="q"]').fill('Budi')
+    await page.locator('input[name="q"]').press('Enter')
+    await expect(page).toHaveURL(/sort=-created/)
+  })
+
+  test('a page past the end shows the last page, not an empty table', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?page=999')
+    // 60 seeded customers at 25/page clamp page 999 to page 3, which holds
+    // 60 - 50 = 10 rows. The empty state also renders as a `tbody tr` (it's
+    // a <TableRow>), so `not.toHaveCount(0)` would pass even with zero real
+    // rows -- asserting the exact count is what actually proves the clamp.
+    await expect(page.locator('tbody tr')).toHaveCount(10)
+  })
+
+  test('the two empty states say different things', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?q=zzzzznotfound')
+    await expect(page.getByText('Tidak ada pelanggan yang cocok')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Hapus filter' })).toBeVisible()
+
+    // The other branch: a salon with no customers at all (as opposed to a
+    // search that matched none). A fresh org with nothing seeded is the
+    // deterministic way to reach it -- proving this isn't just the same
+    // copy rendered for both cases.
+    const empty = await createSalon(pool, {
+      name: 'Ctrl Empty', email: `empty@${CTRL_DOMAIN}`, password: PW,
+      salon: 'Ctrl Empty Salon', slug: `${CTRL_SLUG}-empty`,
+    })
+    try {
+      await page.context().addCookies((await empty.ctx.storageState()).cookies)
+      await page.goto('/dashboard/customers')
+      await expect(page.getByText('Belum ada pelanggan')).toBeVisible()
+    } finally {
+      await empty.ctx.dispose()
+    }
   })
 })

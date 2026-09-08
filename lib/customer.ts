@@ -3,6 +3,10 @@ import { db } from './db'
 import { normalizePhone } from './phone'
 import { roundHalfUp } from './commission'
 import { parseMoney, type CurrencyCode } from './money'
+import {
+  clampPage, orderBy, paginate, toResult,
+  type ListQuery, type ListResult, type ListSpec,
+} from './list-query'
 
 export type CustomerRow = {
   id: string
@@ -10,6 +14,7 @@ export type CustomerRow = {
   phone: string | null
   notes: string | null
   active: boolean
+  createdAt: string
 }
 
 const rowsToCustomers = (rows: Record<string, unknown>[]): CustomerRow[] =>
@@ -19,36 +24,82 @@ const rowsToCustomers = (rows: Record<string, unknown>[]): CustomerRow[] =>
     phone: (r.phone as string) ?? null,
     notes: (r.notes as string) ?? null,
     active: r.active as boolean,
+    createdAt: r.created_at as string,
   }))
 
 /**
- * Customers of one salon. `search` matches the name or the NORMALISED number,
- * so typing 0812 finds a customer stored as +62812 -- matching the raw `phone`
- * would miss exactly the spellings normalisation exists to unify.
+ * What a URL may ask of the customer list.
+ *
+ * `created` is backed by customers_org_created_idx; `name` by the existing
+ * (organization_id, name). Nothing else is sortable, because nothing else is
+ * indexed -- see §3.2.
+ */
+export const CUSTOMER_LIST: ListSpec = {
+  sortable: { name: 'c.name', created: 'c.created_at' },
+  defaultSort: 'name',
+  tiebreak: 'c.id',
+  searchable: true,
+  filters: { active: ['true', 'false'] },
+}
+
+/**
+ * One page of a salon's customers.
+ *
+ * `search` matches the name or the NORMALISED number, so typing 0812 finds a
+ * customer stored as +62812 -- matching the raw `phone` would miss exactly the
+ * spellings normalisation exists to unify.
+ *
+ * The count and the page run in PARALLEL: the exact total is being paid for
+ * either way, so it costs one round trip rather than two. Only an
+ * out-of-range page pays for a second fetch, and nobody reaches one by
+ * clicking.
  */
 export async function listCustomers(
-  organizationId: string, opts: { search?: string } = {},
-): Promise<CustomerRow[]> {
-  const term = (opts.search ?? '').trim()
+  organizationId: string, query: ListQuery,
+): Promise<ListResult<CustomerRow>> {
+  const term = (query.q ?? '').trim()
   // Escape LIKE metacharacters: a bare '%' would otherwise match every
   // customer in the salon rather than searching for the character.
   const like = `%${term.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
   const key = term ? normalizePhone(term) : null
-  const { rows } = await db.execute(sql`
-    select id, name, phone, notes, active from customers
-     where organization_id = ${organizationId}
-       ${term === '' ? sql`` : sql`and (
-         name ilike ${like}
-         or (${key}::text is not null and phone_key like ${(key ?? '') + '%'})
-       )`}
-     order by name, id`)
-  return rowsToCustomers(rows as Record<string, unknown>[])
+
+  const where = sql`
+    where c.organization_id = ${organizationId}
+      ${term === '' ? sql`` : sql`and (
+        c.name ilike ${like}
+        or (${key}::text is not null and c.phone_key like ${(key ?? '') + '%'})
+      )`}
+      ${query.filters.active === undefined
+        ? sql``
+        : sql`and c.active = ${query.filters.active === 'true'}`}`
+
+  const fetch = async (q: ListQuery) => {
+    const { rows } = await db.execute(sql`
+      select c.id, c.name, c.phone, c.notes, c.active,
+             to_char(c.created_at, 'YYYY-MM-DD') as created_at
+        from customers c ${where} ${orderBy(CUSTOMER_LIST, q)} ${paginate(q)}`)
+    return rowsToCustomers(rows as Record<string, unknown>[])
+  }
+
+  const [rows, countRows] = await Promise.all([
+    fetch(query),
+    db.execute(sql`select count(*)::int as n from customers c ${where}`),
+  ])
+  const total = (countRows.rows[0] as { n: number }).n
+
+  const clamped = clampPage(query, total)
+  return toResult(
+    clamped.page === query.page ? rows : await fetch(clamped),
+    total,
+    clamped,
+  )
 }
 
 /** Scoped by organizationId in the query, so a bare id cannot cross tenants. */
 export async function getCustomer(customerId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
-    select id, name, phone, notes, active from customers
+    select id, name, phone, notes, active, to_char(created_at, 'YYYY-MM-DD') as created_at
+      from customers
      where id = ${customerId} and organization_id = ${organizationId}`)
   return rowsToCustomers(rows as Record<string, unknown>[])[0] ?? null
 }
@@ -71,7 +122,8 @@ export async function findOrCreateByPhone(
   if (!key) throw new Error('PHONE_REQUIRED')
 
   const existing = await db.execute(sql`
-    select id, name, phone, notes, active from customers
+    select id, name, phone, notes, active, to_char(created_at, 'YYYY-MM-DD') as created_at
+      from customers
      where organization_id = ${organizationId} and phone_key = ${key}`)
   const found = rowsToCustomers(existing.rows as Record<string, unknown>[])[0]
   if (found) return found
@@ -84,7 +136,8 @@ export async function findOrCreateByPhone(
     do nothing`)
 
   const after = await db.execute(sql`
-    select id, name, phone, notes, active from customers
+    select id, name, phone, notes, active, to_char(created_at, 'YYYY-MM-DD') as created_at
+      from customers
      where organization_id = ${organizationId} and phone_key = ${key}`)
   const row = rowsToCustomers(after.rows as Record<string, unknown>[])[0]
   if (!row) throw new Error('CUSTOMER_CREATE_FAILED')
