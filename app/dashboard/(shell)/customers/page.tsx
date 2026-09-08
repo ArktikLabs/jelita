@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
-import { listCustomers } from '@/lib/customer'
+import { CUSTOMER_LIST, listCustomers } from '@/lib/customer'
+import { parseListQuery } from '@/lib/list-query'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -11,14 +12,16 @@ import {
 export default async function CustomersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string }>
+  searchParams: Promise<Record<string, string | string[] | undefined>>
 }) {
   // read, not update: front desk needs the list at checkout, and stylists may
   // look someone up. The create and edit screens guard more tightly.
   await requirePagePermission({ customer: ['read'] })
   const { organizationId } = await requirePageOrg()
-  const { q } = await searchParams
-  const customers = await listCustomers(organizationId, { search: q })
+  const params = await searchParams
+  const query = parseListQuery(CUSTOMER_LIST, params)
+  const customers = await listCustomers(organizationId, query)
+  const q = query.q
 
   return (
     <div className="space-y-6">
@@ -43,14 +46,14 @@ export default async function CustomersPage({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {customers.length === 0 && (
+          {customers.rows.length === 0 && (
             <TableRow>
               <TableCell colSpan={3} className="text-muted-foreground">
                 {q ? 'Tidak ada pelanggan yang cocok.' : 'Belum ada pelanggan.'}
               </TableCell>
             </TableRow>
           )}
-          {customers.map((c) => (
+          {customers.rows.map((c) => (
             <TableRow key={c.id}>
               <TableCell>
                 <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>

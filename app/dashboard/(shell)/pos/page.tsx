@@ -3,7 +3,8 @@ import { headers } from 'next/headers'
 import { requireBranch, requirePagePermission, requirePageOrg } from '@/lib/session'
 import { auth } from '@/lib/auth'
 import { bookableServices, getBooking } from '@/lib/booking'
-import { getCustomer, listCustomers } from '@/lib/customer'
+import { CUSTOMER_LIST, getCustomer, listCustomers } from '@/lib/customer'
+import { parseListQuery } from '@/lib/list-query'
 import { salonSettings } from '@/lib/service'
 import { listStaff } from '@/lib/staff'
 import { sellableProducts } from '@/lib/inventory'
@@ -61,7 +62,9 @@ export default async function PosPage({
   // §5.7: "search by name/number from POS for fast lookup at checkout". A GET
   // param rather than a client fetch -- the same two-phase shape the booking
   // form uses, so the result is bookmarkable and there is no second code path.
-  const matches = q?.trim() ? await listCustomers(organizationId, { search: q }) : []
+  const found = q
+    ? (await listCustomers(organizationId, parseListQuery(CUSTOMER_LIST, { q }))).rows
+    : []
   const chosen = customerId ? await getCustomer(customerId, organizationId) : null
   const bookingCustomer = booking
     ? await getCustomer(booking.customerId, organizationId)
@@ -120,13 +123,13 @@ export default async function PosPage({
             </button>
           </form>
           {q?.trim() && (
-            matches.length === 0 ? (
+            found.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 Tidak ada yang cocok. Isi nama dan nomor di bawah untuk pelanggan baru.
               </p>
             ) : (
               <ul className="flex flex-wrap gap-2">
-                {matches.slice(0, 8).map((c) => (
+                {found.slice(0, 8).map((c) => (
                   <li key={c.id}>
                     <Link
                       href={`/dashboard/pos?customer=${c.id}`}
