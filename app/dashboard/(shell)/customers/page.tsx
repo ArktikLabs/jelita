@@ -5,6 +5,8 @@ import { parseListQuery } from '@/lib/list-query'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { SortableHead } from '@/components/list/sortable-head'
+import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -34,22 +36,33 @@ export default async function CustomersPage({
 
       {/* A plain GET form: zero client JS, and the query survives a reload. */}
       <form className="max-w-sm">
+        {query.filters.active !== undefined && (
+          <input type="hidden" name="active" value={query.filters.active} />
+        )}
         <Input name="q" defaultValue={q ?? ''} placeholder="Cari nama atau nomor" />
       </form>
 
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Nama</TableHead>
+            <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
             <TableHead>Nomor</TableHead>
             <TableHead>Status</TableHead>
+            <SortableHead column="created" label="Dibuat" spec={CUSTOMER_LIST} query={query} params={params} />
           </TableRow>
         </TableHeader>
         <TableBody>
           {customers.rows.length === 0 && (
             <TableRow>
-              <TableCell colSpan={3} className="text-muted-foreground">
-                {q ? 'Tidak ada pelanggan yang cocok.' : 'Belum ada pelanggan.'}
+              <TableCell colSpan={4} className="text-muted-foreground">
+                {query.q || Object.keys(query.filters).length > 0 ? (
+                  <>
+                    Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
+                    <Link href="/dashboard/customers" className="underline">Hapus filter</Link>
+                  </>
+                ) : (
+                  'Belum ada pelanggan.'
+                )}
               </TableCell>
             </TableRow>
           )}
@@ -64,10 +77,13 @@ export default async function CustomersPage({
                   {c.active ? 'Aktif' : 'Nonaktif'}
                 </Badge>
               </TableCell>
+              <TableCell>{c.createdAt}</TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
+
+      <Pagination result={customers} params={params} />
     </div>
   )
 }

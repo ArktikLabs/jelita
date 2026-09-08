@@ -14,6 +14,7 @@ export type CustomerRow = {
   phone: string | null
   notes: string | null
   active: boolean
+  createdAt: string
 }
 
 const rowsToCustomers = (rows: Record<string, unknown>[]): CustomerRow[] =>
@@ -23,6 +24,7 @@ const rowsToCustomers = (rows: Record<string, unknown>[]): CustomerRow[] =>
     phone: (r.phone as string) ?? null,
     notes: (r.notes as string) ?? null,
     active: r.active as boolean,
+    createdAt: r.created_at as string,
   }))
 
 /**
@@ -73,7 +75,8 @@ export async function listCustomers(
 
   const fetch = async (q: ListQuery) => {
     const { rows } = await db.execute(sql`
-      select c.id, c.name, c.phone, c.notes, c.active
+      select c.id, c.name, c.phone, c.notes, c.active,
+             to_char(c.created_at, 'YYYY-MM-DD') as created_at
         from customers c ${where} ${orderBy(CUSTOMER_LIST, q)} ${paginate(q)}`)
     return rowsToCustomers(rows as Record<string, unknown>[])
   }
@@ -95,7 +98,8 @@ export async function listCustomers(
 /** Scoped by organizationId in the query, so a bare id cannot cross tenants. */
 export async function getCustomer(customerId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
-    select id, name, phone, notes, active from customers
+    select id, name, phone, notes, active, to_char(created_at, 'YYYY-MM-DD') as created_at
+      from customers
      where id = ${customerId} and organization_id = ${organizationId}`)
   return rowsToCustomers(rows as Record<string, unknown>[])[0] ?? null
 }
@@ -118,7 +122,8 @@ export async function findOrCreateByPhone(
   if (!key) throw new Error('PHONE_REQUIRED')
 
   const existing = await db.execute(sql`
-    select id, name, phone, notes, active from customers
+    select id, name, phone, notes, active, to_char(created_at, 'YYYY-MM-DD') as created_at
+      from customers
      where organization_id = ${organizationId} and phone_key = ${key}`)
   const found = rowsToCustomers(existing.rows as Record<string, unknown>[])[0]
   if (found) return found
@@ -131,7 +136,8 @@ export async function findOrCreateByPhone(
     do nothing`)
 
   const after = await db.execute(sql`
-    select id, name, phone, notes, active from customers
+    select id, name, phone, notes, active, to_char(created_at, 'YYYY-MM-DD') as created_at
+      from customers
      where organization_id = ${organizationId} and phone_key = ${key}`)
   const row = rowsToCustomers(after.rows as Record<string, unknown>[])[0]
   if (!row) throw new Error('CUSTOMER_CREATE_FAILED')
