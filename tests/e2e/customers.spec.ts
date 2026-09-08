@@ -233,6 +233,18 @@ test.describe('the URL controls', () => {
     await expect(page).not.toHaveURL(/page=/)
   })
 
+  // Not one of the brief's four scenarios, but the one that actually
+  // exercises the hidden `active` input: a search box that silently drops an
+  // active filter is the exact URL-state bug listHref exists to prevent, and
+  // none of the other cases submit the form with a filter already set.
+  test('searching keeps the active filter', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?active=false')
+    await page.locator('input[name="q"]').fill('Budi')
+    await page.locator('input[name="q"]').press('Enter')
+    await expect(page).toHaveURL(/active=false/)
+  })
+
   test('a page past the end shows the last page, not an empty table', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard/customers?page=999')
