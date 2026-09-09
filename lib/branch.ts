@@ -191,13 +191,21 @@ export async function getBranch(teamId: string, organizationId: string) {
  * filled in -- because created_by must be stamped either way, and
  * branch_profiles is seeded by a trigger on `teams` (db/migrations/0008) with
  * no actor of its own to record.
+ *
+ * Org-scoped like updateBranchDetails/deactivateBranch/reactivateBranch --
+ * not reachable cross-tenant today (the only caller passes the id createTeam
+ * just returned), but this was the one write on the branch with no org
+ * predicate at all, defense in depth for the day another caller exists.
  */
 export async function completeBranchCreation(
-  teamId: string, address: string | null, phone: string | null, actorUserId: string,
+  teamId: string, organizationId: string,
+  address: string | null, phone: string | null, actorUserId: string,
 ): Promise<void> {
   await db.execute(sql`
     update branch_profiles set address = ${address}, phone = ${phone}, created_by = ${actorUserId}
-     where team_id = ${teamId}`)
+     where team_id = ${teamId}
+       and exists (select 1 from teams
+                    where id = ${teamId} and organization_id = ${organizationId})`)
 }
 
 /** The details form -- name goes through auth.api.updateTeam (the caller's

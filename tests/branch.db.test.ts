@@ -278,7 +278,7 @@ describe('Task 4: getBranch surfaces the audit trail', () => {
 
   it('names who created it, with nothing to report before any edit', async () => {
     const teamId = await makeTeam()
-    await completeBranchCreation(teamId, null, null, ACTOR)
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
     const got = await getBranch(teamId, ORG)
     expect(got!.audit.createdByName).toBe('VT Branch Actor')
     expect(got!.audit.updatedByName).toBeNull()
@@ -286,7 +286,7 @@ describe('Task 4: getBranch surfaces the audit trail', () => {
 
   it('suppresses the diubah line for the same actor updating seconds after creation', async () => {
     const teamId = await makeTeam()
-    await completeBranchCreation(teamId, null, null, ACTOR)
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
     await updateBranchDetails(teamId, ORG, { address: 'Jl. Baru', phone: null }, ACTOR)
     const got = await getBranch(teamId, ORG)
     expect(got!.audit.updatedByName).toBeNull()
@@ -294,7 +294,7 @@ describe('Task 4: getBranch surfaces the audit trail', () => {
 
   it('shows the diubah line when a DIFFERENT actor makes the edit, however soon', async () => {
     const teamId = await makeTeam()
-    await completeBranchCreation(teamId, null, null, ACTOR)
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
     await updateBranchDetails(teamId, ORG, { address: 'Jl. Baru', phone: null }, OTHER)
     const got = await getBranch(teamId, ORG)
     expect(got!.audit.updatedByName).toBe('VT Branch Other')
@@ -302,7 +302,7 @@ describe('Task 4: getBranch surfaces the audit trail', () => {
 
   it('shows the diubah line for the SAME actor once real time has passed', async () => {
     const teamId = await makeTeam()
-    await completeBranchCreation(teamId, null, null, ACTOR)
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
     await pool.query(
       `update branch_profiles set created_at = now() - interval '1 hour' where team_id = $1`,
       [teamId])
@@ -314,7 +314,7 @@ describe('Task 4: getBranch surfaces the audit trail', () => {
   it('shows the deactivation line, independent of the diubah line', async () => {
     const teamId = await makeTeam()
     await makeTeam() // a second active branch, so teamId is not the org's LAST one (spec §7)
-    await completeBranchCreation(teamId, null, null, ACTOR)
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
     const closed = await deactivateBranch(teamId, ORG, OTHER)
     expect(closed).toBe(true)
     const got = await getBranch(teamId, ORG)

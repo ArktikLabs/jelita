@@ -82,7 +82,7 @@ export async function createBranchAction(
   // this org" query — two concurrent creates would otherwise race and one
   // branch's address/phone could land on the other. Runs even with neither
   // field filled in: created_by must be stamped either way.
-  await completeBranchCreation(teamId, address || null, phone || null, user.id)
+  await completeBranchCreation(teamId, organizationId, address || null, phone || null, user.id)
   revalidatePath('/dashboard/branches')
   return { done: true }
 }
