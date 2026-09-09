@@ -11,7 +11,9 @@ import { db } from '@/lib/db'
 import { PlanError, requireQuota, countResource, getEntitlements } from '@/lib/plan/entitlements'
 import { getBranchStatus } from '@/lib/plan/branch'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
-import { provisionStaff, assignBranch, getStaff } from '@/lib/staff'
+import {
+  assignBranch, deactivateStaff, getStaff, provisionStaff, reactivateStaff,
+} from '@/lib/staff'
 import { branchesOf } from '@/lib/branch'
 import { formError, type FormState, type ImportState } from '@/lib/form-state'
 import { ASSIGNABLE_ROLES, type SalonRole } from '@/lib/permissions'
@@ -126,7 +128,7 @@ async function memberIdFor(userId: string, organizationId: string) {
 export async function createStaffAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ staff: ['create'] })
+  const actor = await requirePagePermission({ staff: ['create'] })
   const { organizationId } = await requirePageOrg()
 
   const name = String(formData.get('name') ?? '').trim()
@@ -156,7 +158,9 @@ export async function createStaffAction(
   }
 
   try {
-    await provisionStaff({ organizationId, name, email, password, role, teamId })
+    await provisionStaff({
+      organizationId, name, email, password, role, teamId, actorUserId: actor.user.id,
+    })
   } catch (e) {
     // A branch the owner closed, or one the plan tier has outgrown, must not
     // silently acquire a new hire -- provisionStaff itself throws these
@@ -181,7 +185,7 @@ export async function createStaffAction(
 export async function importStaffAction(
   _prev: ImportState, formData: FormData,
 ): Promise<ImportState> {
-  await requirePagePermission({ staff: ['create'] })
+  const actor = await requirePagePermission({ staff: ['create'] })
   const { organizationId } = await requirePageOrg()
 
   const branches = await branchesOf(organizationId)
@@ -337,6 +341,7 @@ export async function importStaffAction(
       const { user } = await provisionStaff({
         organizationId, name: row.name, email: row.email,
         password: row.password, role: row.role, teamId: row.teamId,
+        actorUserId: actor.user.id,
       })
       createdIds.push(user.id)
     } catch (e) {
@@ -471,7 +476,7 @@ export async function updateStaffRoleAction(
   // false when no profile row matched, and reporting success on a demotion
   // that left team_id untouched means claiming a stylist has a branch when
   // they have none. transferStaffAction maps it the same way.
-  if (!(await assignBranch(userId, organizationId, nextTeamId))) {
+  if (!(await assignBranch(userId, organizationId, nextTeamId, actor.user.id))) {
     return { error: BRANCH_NOT_FOUND_MSG }
   }
 
@@ -482,7 +487,7 @@ export async function updateStaffRoleAction(
 export async function transferStaffAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ staff: ['update'] })
+  const actor = await requirePagePermission({ staff: ['update'] })
   const { organizationId } = await requirePageOrg()
   const userId = String(formData.get('userId') ?? '')
   const teamId = String(formData.get('teamId') ?? '').trim()
@@ -510,7 +515,7 @@ export async function transferStaffAction(
   // re-assign the branch it meant to clear.
   if (formData.get('release')) {
     if (needsBranch) return { error: 'Peran ini harus ditempatkan di cabang.' }
-    const cleared = await assignBranch(userId, organizationId, null)
+    const cleared = await assignBranch(userId, organizationId, null, actor.user.id)
     if (!cleared) return NOT_FOUND
     revalidateStaff(userId)
     return { done: true }
@@ -525,7 +530,7 @@ export async function transferStaffAction(
   // exercises it -- see lib/staff.ts). A foreign or bogus teamId updates 0
   // rows and reads as not-found, same as a bogus one, without a second
   // query duplicating what assignBranch already does.
-  const updated = await assignBranch(userId, organizationId, teamId)
+  const updated = await assignBranch(userId, organizationId, teamId, actor.user.id)
   if (!updated) return { error: BRANCH_NOT_FOUND_MSG }
 
   revalidateStaff(userId)
@@ -568,39 +573,13 @@ export async function deactivateStaffAction(
   }
 
   // "The last owner cannot be deactivated" is PREVENTED, not handled, so the
-  // count and the write are ONE statement. Folding the count into the WHERE
-  // alone is not enough: under READ COMMITTED two owners deactivating two
-  // DIFFERENT owner peers would each read "2 owners" and both write, leaving
-  // the salon ownerless. The materialized CTE locks every active owner row of the
-  // salon first (ordered, so two of these cannot deadlock), so the second
-  // transaction blocks there, re-reads the now-inactive row under EvalPlanQual,
-  // counts 1 and refuses. Same shape as deactivateBranchAction.
-  const { rows: closed } = await db.execute(sql`
-    with owners as materialized (
-      select s.user_id from staff_profiles s
-        join members m on m.user_id = s.user_id
-                      and m.organization_id = s.organization_id
-       where s.organization_id = ${organizationId} and s.active
-         and (string_to_array(m.role, ',') && array['owner'])
-       order by s.user_id
-         -- of s, m: owner-ness is read from members.role, which
-         -- updateStaffRoleAction writes while taking no staff_profiles lock.
-         -- Locking only s, the two operations never contend: a demotion of
-         -- owner B could commit while this statement's snapshot still counted
-         -- B as an owner, and deactivating A would leave the salon with none.
-         -- With m in the lock set the demotion serialises this behind it, and
-         -- the EvalPlanQual re-check drops B from the owner set.
-         for update of s, m
-    )
-    update staff_profiles
-       set active = false, deleted_at = now(), updated_at = now()
-     where user_id = ${userId} and organization_id = ${organizationId}
-       and active
-       and (user_id not in (select user_id from owners)
-            or (select count(*) from owners) > 1)
-    returning user_id`)
+  // count and the write are ONE statement -- see deactivateStaff (lib/staff.ts)
+  // for the full CTE and the race it closes (two owners deactivating two
+  // DIFFERENT owner peers under READ COMMITTED). Same shape as
+  // deactivateBranchAction.
+  const closed = await deactivateStaff(userId, organizationId, actor.user.id)
 
-  if (closed.length === 0) {
+  if (!closed) {
     // Two remaining ways to affect no rows, and they are not the same news:
     // already inactive (a double submit) is a no-op, anything else is the
     // last-owner refusal. Re-read rather than trust the pre-read above -- the
@@ -629,7 +608,7 @@ export async function deactivateStaffAction(
 export async function reactivateStaffAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ staff: ['deactivate'] })
+  const actor = await requirePagePermission({ staff: ['deactivate'] })
   const { organizationId } = await requirePageOrg()
   const userId = String(formData.get('userId') ?? '')
   const target = await getStaff(userId, organizationId)
@@ -658,10 +637,7 @@ export async function reactivateStaffAction(
     return { error: formError(e, 'Gagal mengaktifkan staf.') }
   }
 
-  await db.execute(sql`
-    update staff_profiles
-       set active = true, deleted_at = null, updated_at = now()
-     where user_id = ${userId} and organization_id = ${organizationId}`)
+  await reactivateStaff(userId, organizationId, actor.user.id)
   revalidateStaff(userId)
   return { done: true }
 }

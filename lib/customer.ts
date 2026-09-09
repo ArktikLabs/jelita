@@ -95,6 +95,70 @@ export async function listCustomers(
   )
 }
 
+/**
+ * A new customer, from the dashboard's own form. `actorUserId` is required and
+ * never null here -- this path only ever runs behind a session (see
+ * findOrCreateByPhone below for the one insert into this table that a
+ * stranger can reach).
+ */
+export async function createCustomer(input: {
+  organizationId: string
+  name: string
+  phone?: string | null
+  notes?: string | null
+  actorUserId: string
+}): Promise<{ id: string }> {
+  const phone = input.phone ?? null
+  const key = phone ? normalizePhone(phone) : null
+  const { rows } = await db.execute(sql`
+    insert into customers (id, organization_id, name, phone, phone_key, notes, created_by)
+    values (${crypto.randomUUID()}, ${input.organizationId}, ${input.name}, ${phone},
+            ${key}, ${input.notes ?? null}, ${input.actorUserId})
+    returning id`)
+  return rows[0] as { id: string }
+}
+
+/** The edit form: every field is replaced, never merged -- same shape the
+ *  action always submitted. */
+export async function updateCustomer(
+  customerId: string, organizationId: string,
+  patch: { name: string; phone?: string | null; notes?: string | null },
+  actorUserId: string,
+): Promise<void> {
+  const phone = patch.phone ?? null
+  const key = phone ? normalizePhone(phone) : null
+  await db.execute(sql`
+    update customers set name = ${patch.name}, phone = ${phone},
+           phone_key = ${key}, notes = ${patch.notes ?? null}, updated_by = ${actorUserId}
+     where id = ${customerId} and organization_id = ${organizationId}`)
+}
+
+/**
+ * `active` stays the single truth for visibility (spec) -- this only stamps
+ * WHEN and BY WHOM the customer stopped being offered.
+ */
+export async function deactivateCustomer(
+  customerId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update customers set active = false, deleted_at = now(), deleted_by = ${actorUserId}
+     where id = ${customerId} and organization_id = ${organizationId}`)
+}
+
+/**
+ * A live row must not still claim a deletion date -- both deletion columns
+ * clear together. `updated_by` still moves: reactivating is itself a change
+ * to the row, even though there is no "reactivated_by" column of its own.
+ */
+export async function reactivateCustomer(
+  customerId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update customers
+       set active = true, deleted_at = null, deleted_by = null, updated_by = ${actorUserId}
+     where id = ${customerId} and organization_id = ${organizationId}`)
+}
+
 /** Scoped by organizationId in the query, so a bare id cannot cross tenants. */
 export async function getCustomer(customerId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
@@ -116,7 +180,8 @@ export async function getCustomer(customerId: string, organizationId: string) {
  * on one customer instead of one of them erroring.
  */
 export async function findOrCreateByPhone(
-  organizationId: string, input: { name: string; phone: string },
+  organizationId: string,
+  input: { name: string; phone: string; actorUserId: string | null },
 ): Promise<CustomerRow> {
   const key = normalizePhone(input.phone)
   if (!key) throw new Error('PHONE_REQUIRED')
@@ -128,10 +193,13 @@ export async function findOrCreateByPhone(
   const found = rowsToCustomers(existing.rows as Record<string, unknown>[])[0]
   if (found) return found
 
+  // `actorUserId` is null on the public booking page and set from the
+  // dashboard's own session -- the one insert into this table reachable both
+  // with and without a signed-in person behind it.
   await db.execute(sql`
-    insert into customers (id, organization_id, name, phone, phone_key)
+    insert into customers (id, organization_id, name, phone, phone_key, created_by)
     values (${crypto.randomUUID()}, ${organizationId}, ${input.name},
-            ${input.phone}, ${key})
+            ${input.phone}, ${key}, ${input.actorUserId})
     on conflict (organization_id, phone_key) where phone_key is not null
     do nothing`)
 

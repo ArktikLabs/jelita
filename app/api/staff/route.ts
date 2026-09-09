@@ -56,6 +56,7 @@ export async function POST(req: Request) {
       password,
       role: role as SalonRole,
       teamId: branchId,
+      actorUserId: session.user.id,
     })
 
     return Response.json({ user }, { status: 201 })

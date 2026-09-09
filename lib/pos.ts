@@ -222,10 +222,10 @@ async function ring(
     await tx.execute(sql`
       insert into transactions (id, organization_id, team_id, customer_id, booking_id,
                                 shift_id, invoice_no, status, subtotal, discount,
-                                total, currency)
+                                total, currency, created_by)
       values (${id}, ${input.organizationId}, ${input.teamId}, ${input.customerId ?? null},
               ${input.bookingId ?? null}, ${shiftId}, ${invoiceNo}, 'open',
-              ${subtotal}, ${discount}, ${total}, ${currency})`)
+              ${subtotal}, ${discount}, ${total}, ${currency}, ${input.userId})`)
 
     for (const item of input.items) {
       const p = prices.get((item.serviceId ?? item.productId)!)!
@@ -286,7 +286,7 @@ async function ring(
  * actually decides.
  */
 export async function voidSale(
-  transactionId: string, organizationId: string, actorUserId = 'system',
+  transactionId: string, organizationId: string, actorUserId: string,
 ): Promise<{ id: string; invoiceNo: number }> {
   try {
     return await reverse(transactionId, organizationId, actorUserId)
@@ -330,10 +330,10 @@ async function reverse(
     await tx.execute(sql`
       insert into transactions (id, organization_id, team_id, customer_id, booking_id,
                                 shift_id, invoice_no, status, reverses_id,
-                                subtotal, discount, total, currency)
+                                subtotal, discount, total, currency, created_by)
       select ${id}, t.organization_id, t.team_id, t.customer_id, t.booking_id,
              t.shift_id, ${invoiceNo}, 'open', t.id,
-             t.subtotal, t.discount, t.total, t.currency
+             t.subtotal, t.discount, t.total, t.currency, ${actorUserId}
         from transactions t where t.id = ${transactionId}`)
 
     await tx.execute(sql`

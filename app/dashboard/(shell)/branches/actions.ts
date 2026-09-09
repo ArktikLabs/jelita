@@ -6,7 +6,9 @@ import { sql } from 'drizzle-orm'
 import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
-import { assignedStaff } from '@/lib/branch'
+import {
+  assignedStaff, completeBranchCreation, deactivateBranch, reactivateBranch, updateBranchDetails,
+} from '@/lib/branch'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { formError, type FormState } from '@/lib/form-state'
 
@@ -76,15 +78,11 @@ export async function createBranchAction(
 
   const address = String(formData.get('address') ?? '').trim()
   const phone = String(formData.get('phone') ?? '').trim()
-  if (address || phone) {
-    // Keyed off the id createTeam just returned, not a re-derived "latest team in
-    // this org" query — two concurrent creates would otherwise race and one
-    // branch's address/phone could land on the other.
-    await db.execute(sql`
-      update branch_profiles set address = ${address || null}, phone = ${phone || null},
-             updated_at = now()
-       where team_id = ${teamId}`)
-  }
+  // Keyed off the id createTeam just returned, not a re-derived "latest team in
+  // this org" query — two concurrent creates would otherwise race and one
+  // branch's address/phone could land on the other. Runs even with neither
+  // field filled in: created_by must be stamped either way.
+  await completeBranchCreation(teamId, address || null, phone || null, user.id)
   revalidatePath('/dashboard/branches')
   return { done: true }
 }
@@ -92,7 +90,7 @@ export async function createBranchAction(
 export async function updateBranchDetailsAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ branch: ['update'] })
+  const actor = await requirePagePermission({ branch: ['update'] })
   const { organizationId } = await requirePageOrg()
   const teamId = String(formData.get('teamId') ?? '')
   const name = String(formData.get('name') ?? '').trim()
@@ -107,14 +105,10 @@ export async function updateBranchDetailsAction(
       body: { teamId, data: { name } },
       headers: await headers(),
     })
-    await db.execute(sql`
-      update branch_profiles
-         set address = ${String(formData.get('address') ?? '').trim() || null},
-             phone = ${String(formData.get('phone') ?? '').trim() || null},
-             updated_at = now()
-       where team_id = ${teamId}
-         and exists (select 1 from teams
-                      where id = ${teamId} and organization_id = ${organizationId})`)
+    await updateBranchDetails(teamId, organizationId, {
+      address: String(formData.get('address') ?? '').trim() || null,
+      phone: String(formData.get('phone') ?? '').trim() || null,
+    }, actor.user.id)
   } catch (e) {
     return { error: formError(e, 'Gagal menyimpan cabang.') }
   }
@@ -159,7 +153,7 @@ export async function updateBranchHoursAction(
 export async function deactivateBranchAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ branch: ['update'] })
+  const actor = await requirePagePermission({ branch: ['update'] })
   const { organizationId } = await requirePageOrg()
   const teamId = String(formData.get('teamId') ?? '')
   if (!teamId) return NOT_FOUND
@@ -172,28 +166,12 @@ export async function deactivateBranchAction(
   }
 
   // "The last active branch cannot be deactivated" is PREVENTED, not handled
-  // (spec §7), so the count and the write are one statement. The CTE locks the
-  // salon's open branches first: a second deactivation of a DIFFERENT branch
-  // blocks there, then re-reads under READ COMMITTED, sees this branch already
-  // closed, counts 1 and refuses. Two admins clicking together can no longer
-  // leave a salon with nothing open. `in (select ... from live)` also carries
-  // the org scoping and the "still open" check, so a foreign id and a repeat
-  // click both land on 0 rows.
-  const { rows: closed } = await db.execute(sql`
-    with live as materialized (
-      select p.team_id from branch_profiles p
-        join teams t on t.id = p.team_id
-       where t.organization_id = ${organizationId} and p.active
-       order by p.team_id
-         for update of p
-    )
-    update branch_profiles set active = false, deleted_at = now(), updated_at = now()
-     where team_id = ${teamId}
-       and team_id in (select team_id from live)
-       and (select count(*) from live) > 1
-    returning team_id`)
+  // (spec §7), so the count and the write are one statement -- see
+  // deactivateBranch (lib/branch.ts) for the full CTE and race it closes. Two
+  // admins clicking together can no longer leave a salon with nothing open.
+  const closed = await deactivateBranch(teamId, organizationId, actor.user.id)
 
-  if (closed.length === 0) {
+  if (!closed) {
     // Two ways to affect no rows, and they are not the same news: a branch
     // that was already closed (a double submit) is a no-op, anything else is
     // the last-open-branch refusal. The foreign-id case never reaches here.
@@ -214,16 +192,12 @@ export async function deactivateBranchAction(
 export async function reactivateBranchAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ branch: ['update'] })
+  const actor = await requirePagePermission({ branch: ['update'] })
   const { organizationId } = await requirePageOrg()
   const teamId = String(formData.get('teamId') ?? '')
   if (!teamId) return NOT_FOUND
   if (!await ownedBranch(teamId, organizationId)) return NOT_FOUND
-  await db.execute(sql`
-    update branch_profiles set active = true, deleted_at = null, updated_at = now()
-     where team_id = ${teamId}
-       and exists (select 1 from teams
-                    where id = ${teamId} and organization_id = ${organizationId})`)
+  await reactivateBranch(teamId, organizationId, actor.user.id)
   revalidateBranch(teamId)
   return { done: true }
 }

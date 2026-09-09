@@ -270,14 +270,20 @@ describe('countResource(\'staff\') SQL facts', () => {
   })
 })
 
-describe('the ownerless-salon guards (deactivateStaffAction, read out of actions.ts)', () => {
-  // The statement is READ OUT OF actions.ts, not copied here -- a copy only
-  // proves the copy. Hoisted above the tests that use it.
-  const actionsSrc = readFileSync('app/dashboard/(shell)/staff/actions.ts', 'utf8')
+describe('the ownerless-salon guards (deactivateStaff, read out of lib/staff.ts)', () => {
+  // The statement is READ OUT OF lib/staff.ts, not copied here -- a copy only
+  // proves the copy. Hoisted above the tests that use it. Task 2 moved this
+  // statement out of actions.ts and into deactivateStaff() so the actor could
+  // be threaded through it -- same statement, new home, one extra parameter.
+  const actionsSrc = readFileSync('lib/staff.ts', 'utf8')
   const sqlStart = actionsSrc.indexOf('with owners as materialized')
   const sqlEnd = actionsSrc.indexOf('returning user_id', sqlStart)
   const deactivateSql = actionsSrc.slice(sqlStart, sqlEnd + 'returning user_id'.length)
     .replaceAll('${organizationId}', '$1').replaceAll('${userId}', '$2')
+    .replaceAll('${actorUserId}', '$3')
+  // Any real user id satisfies deleted_by's FK -- these tests assert the
+  // owner-guard, not who gets recorded as having deactivated whom.
+  const ACTOR = 'vt_staff_owner1'
 
   const activeOwners = async () => (await pool.query(`
     select count(*)::int n from staff_profiles s
@@ -358,7 +364,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
       // With the lock narrowed to `s` only, this does NOT need owner2's
       // members row at all -- it proceeds immediately, uncommitted, still
       // counting owner2 as an owner (its own snapshot predates d1's write).
-      const raceB = await d2.query(weakenedSql, [OWNERS_ORG, 'vt_staff_owner1'])
+      const raceB = await d2.query(weakenedSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
       expect(raceB.rows, 'the weakened statement itself still matches').toHaveLength(1)
 
       const results = await Promise.allSettled([d1.query('commit'), d2.query('commit')])
@@ -376,7 +382,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
     await pool.query(`
       update staff_profiles set active = false
        where organization_id = $1 and user_id = 'vt_staff_owner2'`, [OWNERS_ORG])
-    const result = await pool.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1'])
+    const result = await pool.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
     expect(result.rows).toHaveLength(0)
     expect(await activeOwners()).toBe(1)
     await resetTwoActiveOwners()
@@ -401,11 +407,11 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
     try {
       await c1.query('begin')
       await c2.query('begin')
-      const raceA = await c1.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1'])
+      const raceA = await c1.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
       // Fired, not awaited: c2 needs owner1's now-locked row (part of the
       // "every active owner" CTE), so this call blocks in Postgres until c1
       // commits or rolls back.
-      const pending = c2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner2'])
+      const pending = c2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner2', ACTOR])
       await c1.query('commit')
       const raceB = await pending
       await c2.query('commit')
@@ -439,7 +445,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
          where user_id = 'vt_staff_owner2' and organization_id = $1`, [OWNERS_ORG])
       // Needs owner2's members row (locked by d1, uncommitted) as part of the
       // "every active owner" CTE for owner1's own deactivation -- blocks.
-      const pending = d2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1'])
+      const pending = d2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
       await d1.query('commit')
       const demoteRace = await pending
       await d2.query('commit')

@@ -39,6 +39,7 @@ export async function provisionStaff(input: {
   password: string
   role: SalonRole
   teamId?: string | null
+  actorUserId: string
 }) {
   // The allow-list, not `role in roles`: `roles` contains 'owner', and
   // better-auth's addMember performs NO permission check on the role it writes
@@ -108,8 +109,15 @@ export async function provisionStaff(input: {
     })
 
     // The members insert fired the trigger, so a profile exists with team_id
-    // null. Assignment is this module's job -- see the pairing note below.
-    if (input.teamId) await assignBranch(created.id, input.organizationId, input.teamId)
+    // null and no actor at all -- the trigger runs inside Postgres with no
+    // idea who called addMember. Stamp it here, the one place that knows.
+    await db.execute(sql`
+      update staff_profiles set created_by = ${input.actorUserId}
+       where user_id = ${created.id} and organization_id = ${input.organizationId}`)
+    // Assignment is this module's job -- see the pairing note below.
+    if (input.teamId) {
+      await assignBranch(created.id, input.organizationId, input.teamId, input.actorUserId)
+    }
   } catch (e) {
     await ctx.internalAdapter.deleteUser(created.id)
     throw e
@@ -145,10 +153,10 @@ export async function provisionStaff(input: {
  * read as "not found" to the operator).
  */
 export async function assignBranch(
-  userId: string, organizationId: string, teamId: string | null,
+  userId: string, organizationId: string, teamId: string | null, actorUserId: string,
 ): Promise<boolean> {
   const result = await db.execute(sql`
-    update staff_profiles set team_id = ${teamId}, updated_at = now()
+    update staff_profiles set team_id = ${teamId}, updated_by = ${actorUserId}
      where user_id = ${userId} and organization_id = ${organizationId}
        and (${teamId}::text is null or exists (
          select 1 from teams where id = ${teamId}
@@ -357,4 +365,50 @@ export async function listStaff(
     total,
     clamped,
   )
+}
+
+/**
+ * The deactivation write. "The last active owner cannot be deactivated" is
+ * PREVENTED, not handled (spec §6.3), so the count and the write are ONE
+ * statement -- see deactivateStaffAction, which carries the full race
+ * reasoning (two owners deactivating two different peers under READ
+ * COMMITTED). Returns whether a row actually closed: false means either
+ * already inactive (a double submit) or the last-owner refusal, and the
+ * caller re-reads to tell those apart, the same way it always has.
+ */
+export async function deactivateStaff(
+  userId: string, organizationId: string, actorUserId: string,
+): Promise<boolean> {
+  const { rows: closed } = await db.execute(sql`
+    with owners as materialized (
+      select s.user_id from staff_profiles s
+        join members m on m.user_id = s.user_id
+                      and m.organization_id = s.organization_id
+       where s.organization_id = ${organizationId} and s.active
+         and (string_to_array(m.role, ',') && array['owner'])
+       order by s.user_id
+         -- of s, m: see deactivateStaffAction for why members must be locked
+         -- too, not just staff_profiles.
+         for update of s, m
+    )
+    update staff_profiles
+       set active = false, deleted_at = now(), deleted_by = ${actorUserId}
+     where user_id = ${userId} and organization_id = ${organizationId}
+       and active
+       and (user_id not in (select user_id from owners)
+            or (select count(*) from owners) > 1)
+    returning user_id`)
+  return closed.length > 0
+}
+
+/** Rehiring clears the deactivation stamp -- a live row must not still claim
+ *  a deletion date. `updated_by` moves too: reactivating is itself a change,
+ *  even with no "reactivated_by" column of its own. */
+export async function reactivateStaff(
+  userId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update staff_profiles
+       set active = true, deleted_at = null, deleted_by = null, updated_by = ${actorUserId}
+     where user_id = ${userId} and organization_id = ${organizationId}`)
 }

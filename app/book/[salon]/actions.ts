@@ -67,7 +67,10 @@ export async function publicBookAction(
     return { error: 'Nomor ini sudah punya banyak janji temu hari itu. Hubungi salon langsung.' }
   }
 
-  const customer = await findOrCreateByPhone(salon.organizationId, { name, phone })
+  // No session at all on this page (see the note above the function) --
+  // NULL is the honest actor for a customer a stranger created themselves.
+  const customer = await findOrCreateByPhone(
+    salon.organizationId, { name, phone, actorUserId: null })
 
   try {
     await createBooking({

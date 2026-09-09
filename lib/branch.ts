@@ -156,6 +156,76 @@ export async function getBranch(teamId: string, organizationId: string) {
 }
 
 /**
+ * Fills in what createTeam and the trigger left blank: the profile's address,
+ * phone, and who created it. Runs unconditionally -- even with neither field
+ * filled in -- because created_by must be stamped either way, and
+ * branch_profiles is seeded by a trigger on `teams` (db/migrations/0008) with
+ * no actor of its own to record.
+ */
+export async function completeBranchCreation(
+  teamId: string, address: string | null, phone: string | null, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update branch_profiles set address = ${address}, phone = ${phone}, created_by = ${actorUserId}
+     where team_id = ${teamId}`)
+}
+
+/** The details form -- name goes through auth.api.updateTeam (the caller's
+ *  job, since it needs the session's own headers); address/phone live here. */
+export async function updateBranchDetails(
+  teamId: string, organizationId: string,
+  details: { address: string | null; phone: string | null },
+  actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update branch_profiles
+       set address = ${details.address}, phone = ${details.phone}, updated_by = ${actorUserId}
+     where team_id = ${teamId}
+       and exists (select 1 from teams
+                    where id = ${teamId} and organization_id = ${organizationId})`)
+}
+
+/**
+ * "The last active branch cannot be deactivated" is PREVENTED, not handled
+ * (spec §7), so the count and the write are ONE statement -- see
+ * deactivateBranchAction for the full race reasoning. Returns whether a row
+ * actually closed: false means either already closed (a double submit) or a
+ * foreign id, and the caller re-reads to tell those apart.
+ */
+export async function deactivateBranch(
+  teamId: string, organizationId: string, actorUserId: string,
+): Promise<boolean> {
+  const { rows: closed } = await db.execute(sql`
+    with live as materialized (
+      select p.team_id from branch_profiles p
+        join teams t on t.id = p.team_id
+       where t.organization_id = ${organizationId} and p.active
+       order by p.team_id
+         for update of p
+    )
+    update branch_profiles set active = false, deleted_at = now(), deleted_by = ${actorUserId}
+     where team_id = ${teamId}
+       and team_id in (select team_id from live)
+       and (select count(*) from live) > 1
+    returning team_id`)
+  return closed.length > 0
+}
+
+/** Reactivation clears the deletion stamp -- a live row must not still claim
+ *  a deletion date; `updated_by` moves too, the same as every other
+ *  reactivate in this phase. */
+export async function reactivateBranch(
+  teamId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update branch_profiles
+       set active = true, deleted_at = null, deleted_by = null, updated_by = ${actorUserId}
+     where team_id = ${teamId}
+       and exists (select 1 from teams
+                    where id = ${teamId} and organization_id = ${organizationId})`)
+}
+
+/**
  * Names of the STAFF STATIONED at a branch, for the deactivation block.
  *
  * Reads staff_profiles, not team_members: the latter also holds navigational

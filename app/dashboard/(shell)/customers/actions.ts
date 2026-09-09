@@ -2,10 +2,10 @@
 
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
-import { sql } from 'drizzle-orm'
-import { db } from '@/lib/db'
 import { normalizePhone } from '@/lib/phone'
-import { getCustomer } from '@/lib/customer'
+import {
+  createCustomer, deactivateCustomer, getCustomer, reactivateCustomer, updateCustomer,
+} from '@/lib/customer'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { formError, type FormState } from '@/lib/form-state'
 
@@ -30,7 +30,7 @@ function readForm(formData: FormData) {
 export async function createCustomerAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ customer: ['create'] })
+  const actor = await requirePagePermission({ customer: ['create'] })
   const { organizationId } = await requirePageOrg()
   const { name, phone, phoneKey, notes } = readForm(formData)
 
@@ -41,10 +41,7 @@ export async function createCustomerAction(
   if (phone && !phoneKey) return { error: 'Nomor tidak valid.' }
 
   try {
-    await db.execute(sql`
-      insert into customers (id, organization_id, name, phone, phone_key, notes)
-      values (${crypto.randomUUID()}, ${organizationId}, ${name}, ${phone},
-              ${phoneKey}, ${notes})`)
+    await createCustomer({ organizationId, name, phone, notes, actorUserId: actor.user.id })
   } catch (e) {
     if (isDuplicatePhone(e)) return { error: DUPLICATE }
     return { error: formError(e, 'Gagal menambah pelanggan.') }
@@ -56,20 +53,17 @@ export async function createCustomerAction(
 export async function updateCustomerAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ customer: ['update'] })
+  const actor = await requirePagePermission({ customer: ['update'] })
   const { organizationId } = await requirePageOrg()
   const id = String(formData.get('customerId') ?? '')
-  const { name, phone, phoneKey, notes } = readForm(formData)
+  const { name, phone, notes, phoneKey } = readForm(formData)
 
   if (!(await getCustomer(id, organizationId))) return { error: 'Pelanggan tidak ditemukan.' }
   if (!name) return { error: 'Nama pelanggan wajib diisi.' }
   if (phone && !phoneKey) return { error: 'Nomor tidak valid.' }
 
   try {
-    await db.execute(sql`
-      update customers set name = ${name}, phone = ${phone},
-             phone_key = ${phoneKey}, notes = ${notes}, updated_at = now()
-       where id = ${id} and organization_id = ${organizationId}`)
+    await updateCustomer(id, organizationId, { name, phone, notes }, actor.user.id)
   } catch (e) {
     if (isDuplicatePhone(e)) return { error: DUPLICATE }
     return { error: formError(e, 'Gagal menyimpan pelanggan.') }
@@ -82,16 +76,18 @@ export async function updateCustomerAction(
 export async function setCustomerActiveAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ customer: ['update'] })
+  const actor = await requirePagePermission({ customer: ['update'] })
   const { organizationId } = await requirePageOrg()
   const id = String(formData.get('customerId') ?? '')
   const active = String(formData.get('active') ?? '') === 'true'
 
   if (!(await getCustomer(id, organizationId))) return { error: 'Pelanggan tidak ditemukan.' }
   try {
-    await db.execute(sql`
-      update customers set active = ${active}, updated_at = now()
-       where id = ${id} and organization_id = ${organizationId}`)
+    if (active) {
+      await reactivateCustomer(id, organizationId, actor.user.id)
+    } else {
+      await deactivateCustomer(id, organizationId, actor.user.id)
+    }
   } catch (e) {
     return { error: formError(e, 'Gagal memperbarui status pelanggan.') }
   }

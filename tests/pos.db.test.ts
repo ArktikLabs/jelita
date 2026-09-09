@@ -286,7 +286,7 @@ describe('one booking, one sale', () => {
       items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
       bookingId, customerId: CUSTOMER,
     })
-    await expect(voidSale(id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(id, ORG, 'pos_stylist')).resolves.toBeTruthy()
   })
 
   it('refuses another salon\'s booking', async () => {
@@ -449,7 +449,7 @@ describe('voiding within the shift window', () => {
 
   it('mirrors the sale, and the ledger nets to zero', async () => {
     const { id } = await sale()
-    const { invoiceNo } = await voidSale(id, ORG)
+    const { invoiceNo } = await voidSale(id, ORG, STAFF)
     expect(invoiceNo, 'a void is a document too').toBe(2)
     const { rows } = await pool.query(
       `select coalesce(sum(total), 0)::bigint revenue from transactions
@@ -467,7 +467,7 @@ describe('voiding within the shift window', () => {
     const { rows } = await pool.query(
       `select id from shifts where team_id = $1 and closed_at is null`, [TEAM])
     await closeShift(rows[0].id, ORG, STAFF)
-    await expect(voidSale(id, ORG)).rejects.toThrow('SHIFT_CLOSED')
+    await expect(voidSale(id, ORG, STAFF)).rejects.toThrow('SHIFT_CLOSED')
   })
 
   it('refuses a second close of the same shift', async () => {
@@ -484,13 +484,13 @@ describe('voiding within the shift window', () => {
       `select id from shifts where team_id = $1 and closed_at is null`, [TEAM])
     await closeShift(rows[0].id, ORG, STAFF)
     const second = await sale()
-    await expect(voidSale(first.id, ORG)).rejects.toThrow('SHIFT_CLOSED')
-    await expect(voidSale(second.id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(first.id, ORG, STAFF)).rejects.toThrow('SHIFT_CLOSED')
+    await expect(voidSale(second.id, ORG, STAFF)).resolves.toBeTruthy()
   })
 
   it('cannot reach another salon\'s sale', async () => {
     const { id } = await sale()
-    await expect(voidSale(id, ORG2)).rejects.toThrow('NOT_FOUND')
+    await expect(voidSale(id, ORG2, STAFF)).rejects.toThrow('NOT_FOUND')
   })
 })
 
@@ -678,7 +678,7 @@ describe('commission rules', () => {
   it('gives the earnings back when the sale is voided, netting the month to zero', async () => {
     await setRule('salon', 'percent', 1000)
     const { id } = await sell()
-    await voidSale(id, ORG)
+    await voidSale(id, ORG, STAFF)
     const { rows } = await pool.query(
       `select coalesce(sum(amount), 0)::bigint total from commissions where organization_id = $1`,
       [ORG])
@@ -747,7 +747,7 @@ describe('automatic shift close', () => {
     expect(await openShifts(), 'one shift, still yesterday\'s').toHaveLength(1)
     // Which is the point of leaving it off: the guarantee is only as good as
     // the habit, and that is the salon's choice to make.
-    await expect(voidSale(first.id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(first.id, ORG, STAFF)).resolves.toBeTruthy()
   })
 
   it('closes yesterday\'s shift on the first sale of a new day when switched on', async () => {
@@ -766,7 +766,7 @@ describe('automatic shift close', () => {
     expect(closed.rows[0].closed_by).toBeNull()
     expect(await openShifts(), 'and a fresh one is open').toHaveLength(1)
 
-    await expect(voidSale(first.id, ORG), 'yesterday is locked')
+    await expect(voidSale(first.id, ORG, STAFF), 'yesterday is locked')
       .rejects.toThrow('SHIFT_CLOSED')
   })
 
@@ -776,7 +776,7 @@ describe('automatic shift close', () => {
     const first = await sell()
     await sell()
     expect(await openShifts(), 'the day is not over').toHaveLength(1)
-    await expect(voidSale(first.id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(first.id, ORG, STAFF)).resolves.toBeTruthy()
   })
 
   it('lets a close record no closer at all, which the old constraint forbade', async () => {

@@ -146,6 +146,72 @@ export async function listServices(
   )
 }
 
+/**
+ * A new service, guarded by the same currency race createServiceAction always
+ * closed: `insert ... select ... for update` locks the salon_profiles row and
+ * re-checks its currency inside the SAME statement, so a currency change that
+ * wins the race leaves nothing inserted. `null` back means exactly that race
+ * was lost -- the caller (createServiceAction) turns it into the "reload the
+ * page" message; a thrown constraint violation still means the duplicate-name
+ * index fired, same as before.
+ */
+export async function createService(input: {
+  organizationId: string
+  name: string
+  durationMinutes: number
+  price: number
+  currency: CurrencyCode
+  categoryId?: string | null
+  actorUserId: string
+}): Promise<{ id: string } | null> {
+  const id = crypto.randomUUID()
+  const { rowCount } = await db.execute(sql`
+    insert into services (id, organization_id, category_id, name,
+                          duration_minutes, price, created_by)
+    select ${id}, ${input.organizationId}, ${input.categoryId ?? null},
+           ${input.name}, ${input.durationMinutes}, ${input.price}, ${input.actorUserId}
+      from salon_profiles
+     where organization_id = ${input.organizationId} and currency = ${input.currency}
+       for update`)
+  return rowCount ? { id } : null
+}
+
+/** The detail screen's edit form -- same fields createServiceAction writes. */
+export async function updateService(
+  serviceId: string, organizationId: string,
+  patch: { name: string; categoryId: string | null; durationMinutes: number; price: number },
+  actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update services
+       set name = ${patch.name}, category_id = ${patch.categoryId},
+           duration_minutes = ${patch.durationMinutes}, price = ${patch.price},
+           updated_by = ${actorUserId}
+     where id = ${serviceId} and organization_id = ${organizationId}`)
+}
+
+/** `active` stays the single truth for visibility -- this only stamps WHEN
+ *  and BY WHOM the service stopped being offered. */
+export async function deactivateService(
+  serviceId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update services set active = false, deleted_at = now(), deleted_by = ${actorUserId}
+     where id = ${serviceId} and organization_id = ${organizationId}`)
+}
+
+/** A live row must not still claim a deletion date -- both deletion columns
+ *  clear together; `updated_by` moves because reactivating is itself a
+ *  change, even with no "reactivated_by" column of its own. */
+export async function reactivateService(
+  serviceId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update services
+       set active = true, deleted_at = null, deleted_by = null, updated_by = ${actorUserId}
+     where id = ${serviceId} and organization_id = ${organizationId}`)
+}
+
 export async function salonCurrency(organizationId: string): Promise<CurrencyCode> {
   const { rows } = await db.execute(sql`
     select currency from salon_profiles where organization_id = ${organizationId}`)
