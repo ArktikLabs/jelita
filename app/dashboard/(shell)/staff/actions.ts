@@ -117,12 +117,32 @@ async function activeOwnerCount(organizationId: string) {
  * node_modules/better-auth/dist/plugins/organization/routes/crud-members.mjs:
  * it resolves the target via `adapter.findMemberById(ctx.body.memberId)`
  * whenever that id differs from the caller's own member id.
+ *
+ * Returns EVERY row this person holds in this org, not one. `members` carries
+ * no unique on (user_id, organization_id) by design (migration
+ * 0010_services.sql -- better-auth only checks "already a member" at invite
+ * time), so a person is reachable with two rows the way lib/staff.ts's
+ * staffOf/listStaff docstrings describe: invite an address, create the same
+ * person through "Tambah staf", then accept the stale invitation.
+ *
+ * This used to be `... limit 1` with NO `order by` -- a query with no natural
+ * ordering, so which of a dual-membership person's rows a role change landed
+ * on was whatever Postgres felt like returning that day. Every owner guard in
+ * this file already treats a person's roles as the UNION across their rows
+ * (`role.split(',').includes('owner')`, fed by staffOf's `string_agg`), so a
+ * demotion that only ever touches ONE arbitrarily-chosen row can leave the
+ * OTHER row still saying 'owner' -- silently keeping them an owner despite
+ * every other read of them (and the screen itself) reporting success.
+ * Ordering the pick deterministically would not fix this: no ordering rule
+ * reliably prefers the 'owner' row over whichever role the update is even
+ * clearing. Acting on the whole set does, and matches how the guards already
+ * read this person's roles -- one write, applied to every row, not a pick.
  */
-async function memberIdFor(userId: string, organizationId: string) {
+async function memberIdsFor(userId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
     select id from members where user_id = ${userId} and organization_id = ${organizationId}
-     limit 1`)
-  return (rows[0] as { id: string } | undefined)?.id ?? null
+     order by id`)
+  return (rows as { id: string }[]).map((r) => r.id)
 }
 
 export async function createStaffAction(
@@ -461,14 +481,19 @@ export async function updateStaffRoleAction(
     return { error: LAST_OWNER_MSG }
   }
 
-  const memberId = await memberIdFor(userId, organizationId)
-  if (!memberId) return NOT_FOUND
+  const memberIds = await memberIdsFor(userId, organizationId)
+  if (memberIds.length === 0) return NOT_FOUND
 
   try {
-    await auth.api.updateMemberRole({
-      body: { memberId, organizationId, role },
-      headers: await headers(),
-    })
+    // updateMemberRole takes one memberId per call -- apply the SAME role to
+    // every row this person holds, not just one. See memberIdsFor's docstring
+    // for why a single, nondeterministically-chosen row was the bug.
+    for (const memberId of memberIds) {
+      await auth.api.updateMemberRole({
+        body: { memberId, organizationId, role },
+        headers: await headers(),
+      })
+    }
   } catch (e) {
     return { error: formError(e, 'Gagal mengubah peran.') }
   }

@@ -431,6 +431,84 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
   })
 })
 
+/**
+ * Phase-2 review, finding 2: `memberIdFor` (app/dashboard/(shell)/staff/actions.ts)
+ * picked whichever of a person's `members` rows Postgres happened to return
+ * first for `... limit 1` with no `order by` -- a query with no natural
+ * ordering. A person can hold two rows in the same salon the same way the
+ * dual-role fixture in tests/staff.db.test.ts reaches it: invite an address,
+ * create the same person through "Tambah staf", then accept the stale
+ * invitation. Demoting that person used to touch only the ROW `memberIdFor`
+ * happened to pick -- if that was their weaker row, the actual 'owner' row
+ * was left completely untouched, and the person stayed an owner despite the
+ * screen (and every other read of them) reporting the demotion succeeded.
+ *
+ * Reproduced deterministically here by controlling INSERT order: `members`
+ * has a btree index on user_id and no other ordering guarantee, and a bitmap
+ * heap scan over that index returns matching rows in heap (insertion) order
+ * for a freshly-inserted, never-updated table -- confirmed directly against
+ * this Postgres before writing this fixture. Inserting the weaker ('admin')
+ * row FIRST and the 'owner' row SECOND means the old `limit 1` with no
+ * `order by` reliably picked the admin row, leaving the owner row alone.
+ */
+test.describe.serial('a person with two membership rows: demoting them must not leave a stale owner row behind', () => {
+  let owner: Awaited<ReturnType<typeof client>>
+  let orgId: string
+  let branchId: string
+  let dualUserId: string
+  let ownerRowId: string
+  let adminRowId: string
+
+  test.beforeAll(async () => {
+    ;({ ctx: owner, organizationId: orgId } = await createSalon(pool, {
+      name: 'Stf Dual Owner', email: `dual-owner@${DOMAIN}`, password: PW,
+      salon: 'Stf Check Dual', slug: 'staffcheck-dual',
+    }))
+    await setPlan(orgId, 'business')
+    const branch = await owner.post('/api/auth/organization/create-team',
+      { data: { name: 'Cabang Dual', organizationId: orgId } })
+    branchId = (await branch.json()).id
+
+    // A login with no members row of its own yet -- both rows below are
+    // inserted directly, the same way the dual-role fixture in
+    // tests/staff.db.test.ts does it, since this state (two rows for one
+    // person in one salon) is reachable but not something any single form
+    // submission produces.
+    const email = `dual-member@${DOMAIN}`
+    const created = await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values (gen_random_uuid()::text, 'Stf Dual Member', $1, true, now(), now())
+      returning id`, [email])
+    dualUserId = created.rows[0].id
+
+    adminRowId = `${dualUserId}_m_admin`
+    ownerRowId = `${dualUserId}_m_owner`
+    // Admin row first, owner row second -- see the fixture-order note above.
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'admin', now())`, [adminRowId, dualUserId, orgId])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now())`, [ownerRowId, dualUserId, orgId])
+  })
+  test.afterAll(() => owner.dispose())
+
+  test('the row that said owner is the one that changed, not the weaker row a nondeterministic pick might have touched instead', async () => {
+    const demoted = await submitForm(owner, `/dashboard/staff/${dualUserId}`,
+      'Simpan peran</button>', { userId: dualUserId, role: 'stylist', teamId: branchId })
+    expect(demoted.status, demoted.html).toBe(200)
+    expect(demoted.html).toContain('Peran diperbarui.')
+
+    const { rows: [afterOwnerRow] } = await pool.query(
+      `select role from members where id = $1`, [ownerRowId])
+    expect(afterOwnerRow?.role, 'the row that used to say owner').toBe('stylist')
+
+    const { rows: [afterAdminRow] } = await pool.query(
+      `select role from members where id = $1`, [adminRowId])
+    expect(afterAdminRow?.role, 'the other row, so the person is not left with two conflicting roles').toBe('stylist')
+  })
+})
+
 test.describe.serial('branch-status guard applied to staff assignment (creation, transfer, role change, reactivation)', () => {
   // Fresh owner on 'pro' (branches cap 3, fixed by seed-plans.mjs -- nothing
   // here needs restoring afterward, unlike the default-plan staff cap
