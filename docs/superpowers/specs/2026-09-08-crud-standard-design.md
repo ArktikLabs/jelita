@@ -65,22 +65,50 @@ constraint already make.
 
 `sortable` is not only a security allow-list. It is a promise that the column
 is cheap to order by, and at tens of thousands of rows an unindexed sort is a
-sequential scan on every page load.
+sequential scan on every page load. The rule holds, but it is a rule per
+*(column, direction)*, over a real column — not a promise that any attribute
+a user might want to sort by can be declared sortable. Three things looked
+like counterexamples during implementation and turned out to be the rule
+holding in a sharper form:
 
-Today that promise would be false in several places:
+- **A computed column cannot be indexed, so it cannot be declared sortable.**
+  `products.stock` is not a column; `stock_on_hand` is a view over it, and no
+  index backs a view's arithmetic. `PRODUCT_LIST` (`lib/inventory.ts`)
+  deliberately leaves `stock` off its sortable set for exactly this reason. If
+  sorting by stock level is ever wanted, that is a new design — materializing
+  or indexing the view's output — not a migration filling in a gap.
+- **A join-then-sort with no tenant-partitioned table to index is the one
+  place the rule cannot be honoured, and that is acceptable.** `staff` sorts
+  on `users.name`, and `users` is better-auth's own table, shared across every
+  salon rather than partitioned by `organization_id` — there is no `(org,
+  name)` index to build and never will be. What makes this tolerable rather
+  than a hole in the rule is that `listStaff`'s join narrows to one tenant's
+  members (`members.organization_id`) before the sort ever runs, so the
+  unindexed step orders at most one salon's staff, never the table. See the
+  comment above `STAFF_LIST` in `lib/staff.ts`.
+- **A nullable column can need two indexes, one per direction, not one.**
+  `products.price` sorts `nulls last` in both directions — a null-priced
+  product must not jump from last to first depending only on which way the
+  list is sorted. A plain ascending btree serves `nulls last asc` as an exact
+  scan, but reading it backwards for `desc` puts nulls first, so the
+  descending case still costs a sort node even with the index in place.
+  `products_org_price_idx (organization_id, price, id)` is therefore an index
+  that satisfies the rule for one direction and not the other; see the
+  migration's own comment (`db/migrations/0034_list_indexes.sql`) for why that
+  is the honest description rather than a gap.
 
-| table | covered | missing |
+What the rule still forbids, unconditionally: declaring a column sortable
+because it would be convenient, ahead of the index that makes it cheap.
+Every table below reflects what migrations 0032–0034 actually built:
+
+| table | sortable columns | indexes |
 |---|---|---|
-| customers | `(org, name)` | created_at |
-| products | `(org, name)`, `(org, sku)` | stock, price |
-| transactions | `(org, team, completed_at)`, `(org, invoice_no)` | total |
-| services | `(org, lower(name))` | a plain `name` sort will not use it |
-| staff_profiles | — | **no `(org, name)` index at all** |
-| teams | `(org)` | **no name index** |
-
-So the work includes a migration adding an index for every column declared
-sortable. Services either gains a plain-name index or sorts by `lower(name)`
-to match the one it has.
+| customers | name, created | `(org, name)`, `(org, created_at, id)` |
+| products | name, sku, price | `(org, name)`, `(org, sku)`, `(org, price, id)` — exact scan ascending only, see above |
+| transactions | completed, invoice | `(org, team, completed_at)`, `(org, invoice_no)` |
+| services | name, price | `(org, lower(name))`, `(org, price, id)` — exact scan both directions, price is never null here |
+| staff | name (`users.name`) | none, and none possible — see above |
+| branches | name | `(org, name, id)` |
 
 ### 3.3 Every sort carries a tiebreaker
 

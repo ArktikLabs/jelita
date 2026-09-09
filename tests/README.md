@@ -212,3 +212,41 @@ The rule that removes both: **commit the work, then break it.** The restore is
 then `git checkout HEAD -- <file>` plus `git status --short <file>` printing
 nothing. If the restore leaves the file dirty, or a re-run still fails, the
 baseline was wrong -- not the code.
+
+## Lists (the CRUD standard, phase 2)
+
+**`count(*)` over a join silently over-reports.** Five of the six list
+resources join 1:1 and count with a plain `count(*)`. `staff` is the
+exception: `members` carries no unique on `(user_id, organization_id)` by
+design (`0010_services.sql` -- adding one would forbid a second membership
+row that better-auth itself does not forbid), so a person holding two
+membership rows in one salon joins to two rows and a plain `count(*)` reports
+them twice. `listStaff` counts with `count(distinct m.user_id)` instead. The
+bug this guards against has no stack trace: the header reads "1–25 dari 26"
+above a page of 25 real people, and only a fixture with one person holding
+two membership rows ever makes the count and the rendered rows disagree.
+
+**A chained `toHaveURL` assertion can pass against the pre-navigation URL.**
+`await expect(page).toHaveURL(/a/); await expect(page).toHaveURL(/b/)` lets
+the first call resolve against the URL from *before* the click, because
+Playwright's auto-retry only has to converge on each assertion in turn, not
+on both at once against the same URL read. Found producing break-and-restore
+evidence for a control that preserves the sort on filtering: the broken
+`listHref` call passed 3 of 3 against the old two-assertion shape. The fix is
+one predicate that requires every condition on a single URL read (see
+`filtering keeps the sort` in `tests/e2e/customers.spec.ts`), not two
+sequential `toHaveURL` calls. Three tests in that same file still use the old
+shape -- `sorting keeps the search`, `searching keeps the active filter`,
+`searching keeps the sort` -- known and not yet fixed.
+
+**A DB-level paging test cannot prove a tiebreaker.** First recorded on
+customers: paging through 60 duplicate-named rows and asserting every id is
+seen exactly once (`tests/customers.db.test.ts`) keeps passing even with the
+tiebreak removed from `ORDER BY`, because Postgres's tie order for a small,
+unchanging table tends to hold stable run-to-run with no tiebreak at all.
+`tests/list-query.test.ts` asserts the emitted `ORDER BY` text directly
+instead, which is what actually proves §3.3. Phase 2 hit the identical shape
+on a second resource, branches (`tests/branch.db.test.ts`) -- same duplicate-
+name fixture, same false confidence -- and needed no new fix, because the one
+proof that matters is already centralised in `list-query.test.ts` rather than
+repeated per resource.
