@@ -102,6 +102,33 @@ test.beforeEach(async () => {
      `${DAY} 10:00`, `${DAY} 11:00`])
 })
 
+// Finding 3 of the final whole-branch review: /dashboard/transactions used to
+// render "Belum ada transaksi hari itu." whether nothing existed at all or a
+// chosen date simply had nothing on it, with no way back to the unfiltered
+// view -- the other five list resources distinguish the two and offer "Hapus
+// filter". `query.filters.date === undefined` (no `?date=` at all) is what
+// the page now reads as "no filter chosen", as opposed to a `?date=` that
+// happens to match nothing.
+test.describe('transactions empty states', () => {
+  test('a bare URL with nothing today says so, and offers no filter to clear', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/transactions')
+    await expect(page.getByText('Belum ada transaksi hari itu.')).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Hapus filter' })).not.toBeVisible()
+  })
+
+  test('an explicitly chosen date with nothing on it says so differently, and offers Hapus filter', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/transactions?date=${DAY}`)
+    await expect(page.getByText('Tidak ada transaksi yang cocok dengan filter ini.')).toBeVisible()
+    const clear = page.getByRole('link', { name: 'Hapus filter' })
+    await expect(clear).toBeVisible()
+    // And it actually clears -- landing back on the unfiltered, no-date URL.
+    await clear.click()
+    await expect(page).not.toHaveURL(/date=/)
+  })
+})
+
 test.describe.serial('checkout', () => {
   test('rings up a booking, completes it, and prints a numbered receipt', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())

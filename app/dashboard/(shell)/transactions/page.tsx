@@ -2,10 +2,15 @@ import Link from 'next/link'
 import { headers } from 'next/headers'
 import { requireBranch, requirePagePermission, requirePageOrg } from '@/lib/session'
 import { auth } from '@/lib/auth'
-import { listSales, openShift } from '@/lib/pos'
+import { TRANSACTION_LIST, listSales, openShift } from '@/lib/pos'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
+import { parseListQuery } from '@/lib/list-query'
+import { clearFilters, listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
+import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -23,16 +28,21 @@ export const INVOICE = (n: number | null) =>
 export default async function TransactionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ date?: string }>
+  searchParams: Promise<Params>
 }) {
   await requirePagePermission({ pos: ['checkout'] })
   const { organizationId } = await requirePageOrg()
   const { branchId } = await requireBranch()
-  const { date: raw } = await searchParams
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(raw ?? '') ? raw! : todayLocal()
+  const params = await searchParams
+  const query = parseListQuery(TRANSACTION_LIST, params)
+  // The date filter's default (today) lives on the PAGE, not the contract --
+  // a bare/bookmarked `/transactions` URL must keep showing today's sales,
+  // exactly as the old regex-and-fallback did, while an absent filter means
+  // "no restriction" everywhere else in the contract.
+  const date = query.filters.date ?? todayLocal()
 
   const [sales, shift] = await Promise.all([
-    listSales(organizationId, branchId, date),
+    listSales(organizationId, branchId, { ...query, filters: { ...query.filters, date } }),
     openShift(organizationId, branchId),
   ])
   const { success: canVoid } = await auth.api.hasPermission({
@@ -51,7 +61,7 @@ export default async function TransactionsPage({
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm">
           <span>
             Shift dibuka {shift.openedAt.slice(11)} — {shift.sales} transaksi,{' '}
-            {formatMoney(shift.takings, (sales[0]?.currency ?? 'IDR') as CurrencyCode)}
+            {formatMoney(shift.takings, (sales.rows[0]?.currency ?? 'IDR') as CurrencyCode)}
           </span>
           {/* Closing locks these takings: a sale can be voided while its shift
               is open and not after (spec 2.7). */}
@@ -59,25 +69,37 @@ export default async function TransactionsPage({
         </div>
       )}
 
-      <form className="flex items-end gap-2">
-        <div className="space-y-2">
-          <label htmlFor="date" className="text-sm font-medium">Tanggal</label>
-          <input
-            id="date" type="date" name="date" defaultValue={date}
-            className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
-          />
-        </div>
-        <button type="submit" className={buttonVariants({ variant: 'outline' })}>Lihat</button>
-      </form>
+      <FilterBar
+        spec={TRANSACTION_LIST}
+        query={query}
+        params={params}
+        controls={{ date: { type: 'date', label: 'Tanggal', value: date } }}
+      />
 
-      {sales.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Belum ada transaksi hari itu.</p>
+      {sales.rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {/* query.filters.date, not the resolved `date` above: `date` always
+              has a value (the page's own today-default), so it can't tell
+              "nothing happened today" from "you picked a date with nothing on
+              it" apart -- only the RAW filter, undefined when the user never
+              chose one, can. */}
+          {query.filters.date === undefined ? (
+            'Belum ada transaksi hari itu.'
+          ) : (
+            <>
+              Tidak ada transaksi yang cocok dengan filter ini.{' '}
+              <Link href={listHref(params, clearFilters(TRANSACTION_LIST))} className="underline">
+                Hapus filter
+              </Link>
+            </>
+          )}
+        </p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>No.</TableHead>
-              <TableHead>Jam</TableHead>
+              <SortableHead column="invoice" label="No." spec={TRANSACTION_LIST} query={query} params={params} />
+              <SortableHead column="completed" label="Jam" spec={TRANSACTION_LIST} query={query} params={params} />
               <TableHead>Pelanggan</TableHead>
               <TableHead>Total</TableHead>
               <TableHead>Status</TableHead>
@@ -85,7 +107,7 @@ export default async function TransactionsPage({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sales.map((s) => (
+            {sales.rows.map((s) => (
               <TableRow key={s.id}>
                 <TableCell className="font-medium">
                   <Link href={`/dashboard/transactions/${s.id}`} className="underline">
@@ -113,6 +135,8 @@ export default async function TransactionsPage({
           </TableBody>
         </Table>
       )}
+
+      <Pagination result={sales} params={params} />
     </div>
   )
 }

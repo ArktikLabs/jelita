@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
+import { STAFF_LIST, getStaff, listStaff, staffOf } from '../lib/staff'
+import { parseListQuery } from '../lib/list-query'
 
 /**
  * Staff schema, the seeding trigger/backfill, the countResource('staff') SQL
@@ -496,6 +498,295 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
       update members set role = 'owner'
        where organization_id = $1 and user_id in ('vt_staff_owner1', 'vt_staff_owner2')`,
       [OWNERS_ORG])
+  })
+})
+
+describe('listStaff paging', () => {
+  // Own org and own users, not the fixtures above: the paging assertions need
+  // an exact roster size (30), and reusing FIXTURE_USER_IDS would make that
+  // count a moving target as earlier describe blocks add and remove people.
+  const LIST_ORG = 'vt_staff_list_org'
+  const ids = Array.from({ length: 30 }, (_, i) => `vt_staff_list_${String(i).padStart(3, '0')}`)
+  const q = (params: Record<string, string> = {}) => parseListQuery(STAFF_LIST, params)
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [LIST_ORG])
+    await pool.query(`delete from users where id = any($1)`, [ids])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Staff List Test', 'vt-staff-list', now())`, [LIST_ORG])
+    // The free plan's staff cap (3, see migration 0026's seat-cap trigger)
+    // would refuse this fixture's 30 rows -- move to the uncapped 'business'
+    // plan (no plan_limits row for a resource means unlimited).
+    await pool.query(`
+      update subscriptions set plan_id = (select id from plans where key = 'business')
+       where organization_id = $1`, [LIST_ORG])
+    // 30 rows, and DELIBERATELY duplicated names -- same reasoning as
+    // customers.db.test.ts's paging fixture: a non-unique sort column is what
+    // makes paging non-deterministic without a tiebreaker.
+    for (const id of ids) {
+      await pool.query(`
+        insert into users (id, name, email, email_verified, created_at, updated_at)
+        values ($1, 'Sama Persis', $2, true, now(), now())`, [id, `${id}@test.local`])
+      await pool.query(`
+        insert into members (id, user_id, organization_id, role, created_at)
+        values ($1, $2, $3, 'stylist', now())`, [`${id}_m`, id, LIST_ORG])
+    }
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [LIST_ORG])
+    await pool.query(`delete from users where id = any($1)`, [ids])
+  })
+
+  it('returns one page and the true total', async () => {
+    const r = await listStaff(LIST_ORG, q())
+    expect(r.rows).toHaveLength(25)
+    expect(r.total).toBe(30)
+    expect(r.pages).toBe(2)
+    expect(r.page).toBe(1)
+  })
+
+  it('pages through 30 identical names without repeating or losing one', async () => {
+    // Proves paging returns every row of THIS dataset exactly once. As
+    // customers.db.test.ts's equivalent test notes, this does NOT prove the
+    // tiebreaker is present -- see tests/list-query.test.ts's `orderBy` suite
+    // for that.
+    const seen = new Set<string>()
+    for (const page of ['1', '2']) {
+      const r = await listStaff(LIST_ORG, q({ page }))
+      for (const row of r.rows) seen.add(row.userId)
+    }
+    expect(seen.size, 'every row seen exactly once across two pages').toBe(30)
+  })
+
+  it('clamps a page past the end to the last page', async () => {
+    const r = await listStaff(LIST_ORG, q({ page: '999' }))
+    expect(r.page).toBe(2)
+    expect(r.rows).toHaveLength(5)
+  })
+
+  // members carries no unique on (user_id, organization_id) -- deliberately,
+  // per migration 0010. A plain count(*) over the members join therefore
+  // reports one person twice, and the list header would say "1-25 dari 31"
+  // above 25 rows. This is the only one of the six resources where that is
+  // possible (spec §3.2's correction, Task 6).
+  it('counts a person once even with two membership rows', async () => {
+    const baseline = (await listStaff(LIST_ORG, q())).total
+    const staffA = ids[0]
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'stylist', now())`, [`${staffA}_m2`, staffA, LIST_ORG])
+
+    const r = await listStaff(LIST_ORG, q())
+    expect(r.total, 'the person is counted once').toBe(baseline)
+    // The page query needs the same de-duplication as the count: not just an
+    // unchanged total, but the doubly-membered person appearing exactly once
+    // among the actual rows (ids[0] sorts first under the name tie -- see the
+    // paging fixture's comment -- so it is always on this first page), not
+    // twice at the cost of someone else falling off the page.
+    expect(r.rows.filter((s) => s.userId === staffA)).toHaveLength(1)
+    expect(r.rows).toHaveLength(25)
+  })
+
+  // staffOf is the unpaged building block the calendar's lane list and the
+  // POS performer picker both read directly (no page, no count) -- it has
+  // the exact same members-join fan-out as listStaff's page query, and a
+  // picker showing the same stylist twice is worse than a wrong count: the
+  // person choosing has no way to tell the two entries apart. Reuses the
+  // duplicate-membership row the previous test left in place, rather than
+  // inserting its own.
+  it('staffOf also returns the person once, not twice', async () => {
+    const all = await staffOf(LIST_ORG)
+    expect(all.filter((s) => s.userId === ids[0])).toHaveLength(1)
+  })
+})
+
+/**
+ * Task 5: `branch` folded into STAFF_LIST.filters (it used to be a third,
+ * un-contracted parameter -- app/dashboard/(shell)/staff/page.tsx read it off
+ * searchParams directly) and `active` added to match the other four
+ * resources that carry the column. Own fixture, not LIST_ORG above: that
+ * describe's own afterAll deletes LIST_ORG once its tests finish, and these
+ * need a real team to filter by, which LIST_ORG's roster never assigns.
+ */
+describe('listStaff filters', () => {
+  const FILTER_ORG = 'vt_staff_filter_org'
+  const FILTER_TEAM = 'vt_staff_filter_team'
+  const uOwner = 'vt_staff_filter_owner' // active, unassigned -- keeps the salon a valid owner
+  const uA = 'vt_staff_filter_a' // active, assigned to FILTER_TEAM
+  const uB = 'vt_staff_filter_b' // INACTIVE, assigned to FILTER_TEAM
+  const uC = 'vt_staff_filter_c' // active, unassigned
+  const users = [uOwner, uA, uB, uC]
+  // A second, unrelated salon with its OWN real team and its own staff member
+  // assigned to it -- Finding 6 of the final whole-branch review: `branch` is
+  // the newest URL-controlled filter here, and the other five list resources
+  // each have a "never returns another salon's X" test exercised against a
+  // REAL foreign id, never just a nonsense string. `listStaff`'s WHERE joins
+  // `staff_profiles s on s.organization_id = m.organization_id` -- pass this
+  // team id to FILTER_ORG's own query and, if `m.organization_id =
+  // ${organizationId}` in listStaff's WHERE were ever dropped, FOREIGN_USER's
+  // own row (paired with ITS OWN org's staff_profiles via that join) would
+  // leak into FILTER_ORG's results. With the guard in place it does not.
+  const FOREIGN_ORG = 'vt_staff_filter_foreign_org'
+  const FOREIGN_TEAM = 'vt_staff_filter_foreign_team'
+  const FOREIGN_USER = 'vt_staff_filter_foreign_user'
+  const q = (params: Record<string, string> = {}) => parseListQuery(STAFF_LIST, params)
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = any($1)`, [[FILTER_ORG, FOREIGN_ORG]])
+    await pool.query(`delete from users where id = any($1)`, [[...users, FOREIGN_USER]])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Staff Filter Test', 'vt-staff-filter', now()),
+             ($2, 'Staff Filter Foreign Test', 'vt-staff-filter-foreign', now())`,
+      [FILTER_ORG, FOREIGN_ORG])
+    await pool.query(`
+      insert into teams (id, name, organization_id, created_at)
+      values ($1, 'Cabang Filter', $2, now()), ($3, 'Cabang Asing', $4, now())`,
+      [FILTER_TEAM, FILTER_ORG, FOREIGN_TEAM, FOREIGN_ORG])
+    // The free plan's staff cap (3) would refuse this fixture's four rows --
+    // same move as the paging describe above.
+    await pool.query(`
+      update subscriptions set plan_id = (select id from plans where key = 'business')
+       where organization_id = $1`, [FILTER_ORG])
+    for (const id of users) {
+      await pool.query(`
+        insert into users (id, name, email, email_verified, created_at, updated_at)
+        values ($1, $1, $2, true, now(), now())`, [id, `${id}@test.local`])
+      await pool.query(`
+        insert into members (id, user_id, organization_id, role, created_at)
+        values ($1, $2, $3, $4, now())`, [`${id}_m`, id, FILTER_ORG, id === uOwner ? 'owner' : 'stylist'])
+    }
+    // The members insert above already fired the seeding trigger, so a
+    // staff_profiles row exists for each with team_id null and active true
+    // (see the schema describe up top) -- assignment and deactivation are
+    // this describe's own job, same division as assignBranch's docstring.
+    // uOwner is left untouched throughout: deactivating uB below fires the
+    // "keep an owner" constraint trigger (migration 0025) for the WHOLE
+    // organization, not just the row being touched, so a fixture with no
+    // active owner at all fails that check for a reason that has nothing to
+    // do with the filter under test here.
+    await pool.query(`
+      update staff_profiles set team_id = $1
+       where organization_id = $2 and user_id = any($3)`, [FILTER_TEAM, FILTER_ORG, [uA, uB]])
+    await pool.query(`
+      update staff_profiles set active = false
+       where organization_id = $1 and user_id = $2`, [FILTER_ORG, uB])
+
+    // FOREIGN_ORG's own owner (required by the same "keep an owner" trigger)
+    // and its one real staff member, assigned to FOREIGN_TEAM.
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, $1, $2, true, now(), now())`, [FOREIGN_USER, `${FOREIGN_USER}@test.local`])
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, $1, $2, true, now(), now())`,
+      [`${FOREIGN_USER}_owner`, `${FOREIGN_USER}_owner@test.local`])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now()), ($4, $5, $3, 'stylist', now())`,
+      [`${FOREIGN_USER}_owner_m`, `${FOREIGN_USER}_owner`, FOREIGN_ORG,
+        `${FOREIGN_USER}_m`, FOREIGN_USER])
+    await pool.query(`
+      update staff_profiles set team_id = $1
+       where organization_id = $2 and user_id = $3`, [FOREIGN_TEAM, FOREIGN_ORG, FOREIGN_USER])
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = any($1)`, [[FILTER_ORG, FOREIGN_ORG]])
+    await pool.query(`delete from users where id = any($1)`,
+      [[...users, FOREIGN_USER, `${FOREIGN_USER}_owner`]])
+  })
+
+  it('narrows to one branch', async () => {
+    const r = await listStaff(FILTER_ORG, q({ branch: FILTER_TEAM }))
+    expect(r.rows.map((s) => s.userId).sort()).toEqual([uA, uB].sort())
+  })
+
+  it('an id naming no branch at all matches nobody -- the same behaviour the old unchecked ?branch= already had, now reached through the contract', async () => {
+    const r = await listStaff(FILTER_ORG, q({ branch: 'not-a-real-branch' }))
+    expect(r.total).toBe(0)
+  })
+
+  it('never returns another salon\'s staff, even given that salon\'s real team id', async () => {
+    const r = await listStaff(FILTER_ORG, q({ branch: FOREIGN_TEAM }))
+    expect(r.total).toBe(0)
+    expect(r.rows.map((s) => s.userId)).not.toContain(FOREIGN_USER)
+  })
+
+  it('narrows to active or inactive staff', async () => {
+    const active = await listStaff(FILTER_ORG, q({ active: 'true' }))
+    expect(active.rows.map((s) => s.userId)).not.toContain(uB)
+    // uOwner is active too (it has to be, per the fixture note above), so
+    // this asserts membership rather than the exact set.
+    expect(active.rows.map((s) => s.userId)).toEqual(expect.arrayContaining([uA, uC]))
+
+    const inactive = await listStaff(FILTER_ORG, q({ active: 'false' }))
+    expect(inactive.rows.map((s) => s.userId)).toEqual([uB])
+  })
+
+  it('combines branch and active', async () => {
+    const r = await listStaff(FILTER_ORG, q({ branch: FILTER_TEAM, active: 'false' }))
+    expect(r.rows.map((s) => s.userId)).toEqual([uB])
+  })
+})
+
+/**
+ * Finding 1 of the final whole-branch review: a person who holds TWO
+ * membership rows in the same salon (one 'owner', one something weaker) must
+ * still read as an owner everywhere `role.split(',').includes('owner')` is
+ * checked -- app/dashboard/(shell)/staff/actions.ts gates four owner-only
+ * guards on exactly that (demotion, the last-owner check, deactivation and,
+ * sharpest of all, a password reset), and getStaff/staffOf/listStaff are the
+ * only path any of them has to `target.role`.
+ *
+ * Two membership rows for one person in one salon is reachable in practice:
+ * better-auth only checks "already a member" at INVITE time, so inviting an
+ * address, creating the same person through "Tambah staf" and then accepting
+ * the stale invitation produces two `members` rows for the same
+ * (user_id, organization_id) pair -- `members` carries no unique constraint
+ * on that pair by design (migration 0010_services.sql).
+ *
+ * `min(m.role)` -- what staffOf/listStaff used to select -- is alphabetical:
+ * `min('owner', 'admin')` is 'admin'. That silently downgraded an owner with
+ * a second, weaker membership row to non-owner everywhere, including the
+ * password-reset guard: an admin resetting the password of someone who
+ * secretly still holds 'owner' takes over the salon. This test is what
+ * catches a regression back to MIN (or any other collapse to one role) --
+ * confirmed failing against `min(m.role)` before the fix landed here.
+ */
+describe('a person with two membership rows is never hidden as an owner', () => {
+  const ORG = 'vt_staff_dual_role_org'
+  const USER = 'vt_staff_dual_role_user'
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = $1`, [USER])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Staff Dual Role Test', 'vt-staff-dual-role', now())`, [ORG])
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, 'VT Dual Role', 'vt-staff-dual-role@test.local', true, now(), now())`, [USER])
+    // The alphabetically WEAKER role second, deliberately: MIN(m.role) would
+    // pick 'admin' here ('admin' < 'owner'), which is exactly the failure
+    // mode this test exists to catch.
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $3, $2, 'owner', now()), ($4, $3, $2, 'admin', now())`,
+      [`${USER}_m_owner`, ORG, USER, `${USER}_m_admin`])
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = $1`, [USER])
+  })
+
+  it('getStaff reads the person as an owner, not the alphabetically weaker role', async () => {
+    const staff = await getStaff(USER, ORG)
+    expect(staff).not.toBeNull()
+    expect(staff!.role.split(',')).toContain('owner')
   })
 })
 

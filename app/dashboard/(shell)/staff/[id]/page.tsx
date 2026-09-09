@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { staffSchedule, upcomingExceptions, upcomingTimeOff } from '@/lib/schedule'
 import { getStaff } from '@/lib/staff'
-import { listBranches } from '@/lib/branch'
+import { branchesOf } from '@/lib/branch'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
@@ -38,7 +38,7 @@ export default async function StaffDetailPage({
   const staff = await getStaff(id, organizationId)
   if (!staff) notFound()
 
-  const branches = await listBranches(organizationId)
+  const branches = await branchesOf(organizationId)
   // Narrowed to what the forms need, same as /staff/new -- a full BranchRow
   // would serialize into the RSC payload for fields these forms never show.
   const branchOptions = branches.map((b) => ({ teamId: b.teamId, name: b.name }))

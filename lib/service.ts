@@ -1,6 +1,10 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
 import type { CurrencyCode } from './money'
+import {
+  clampPage, orderBy, paginate, toResult,
+  type ListQuery, type ListResult, type ListSpec,
+} from './list-query'
 
 export type ServiceRow = {
   id: string
@@ -50,8 +54,23 @@ export async function listCategories(organizationId: string): Promise<CategoryRo
   }))
 }
 
-/** Services of one salon, newest last. Pass serviceId to narrow to one. */
-export async function listServices(
+const rowsToServices = (rows: Record<string, unknown>[]): ServiceRow[] =>
+  rows.map((r) => ({
+    id: r.id as string,
+    name: r.name as string,
+    categoryId: (r.category_id as string) ?? null,
+    categoryName: (r.category_name as string) ?? null,
+    durationMinutes: Number(r.duration_minutes),
+    price: Number(r.price),
+    active: r.active as boolean,
+  }))
+
+/**
+ * Services of one salon, newest last -- unpaged. Pass serviceId to narrow to
+ * one. The building block for getService and settings' "does this salon have
+ * any services yet" check, neither of which wants a page of the catalogue.
+ */
+export async function servicesOf(
   organizationId: string, serviceId?: string,
 ): Promise<ServiceRow[]> {
   const { rows } = await db.execute(sql`
@@ -63,15 +82,68 @@ export async function listServices(
      where s.organization_id = ${organizationId}
        ${serviceId === undefined ? sql`` : sql`and s.id = ${serviceId}`}
      order by c.name nulls last, s.name`)
-  return (rows as Record<string, unknown>[]).map((r) => ({
-    id: r.id as string,
-    name: r.name as string,
-    categoryId: (r.category_id as string) ?? null,
-    categoryName: (r.category_name as string) ?? null,
-    durationMinutes: Number(r.duration_minutes),
-    price: Number(r.price),
-    active: r.active as boolean,
-  }))
+  return rowsToServices(rows as Record<string, unknown>[])
+}
+
+/**
+ * What a URL may ask of the services list. `name` sorts on `lower(s.name)` to
+ * match the existing `services_org_name_lower` unique index
+ * (organization_id, lower(name)) -- a plain `s.name` sort would not use it.
+ */
+export const SERVICE_LIST: ListSpec<'name' | 'price'> = {
+  sortable: { name: 'lower(s.name)', price: 's.price' },
+  defaultSort: 'name',
+  tiebreak: 's.id',
+  searchable: true,
+  // Services carries an `active` column same as customers -- undeclared
+  // until Task 5's FilterBar needed a second resource to generalise from.
+  filters: { active: ['true', 'false'] },
+}
+
+/**
+ * One page of a salon's services. Flat, not grouped by category -- a page of
+ * a grouped table has no single meaning, so the category is a plain column
+ * here instead (the services page renders it that way).
+ *
+ * The count and the page query run in PARALLEL against the SAME `where`
+ * fragment -- see listCustomers for why that pairing matters.
+ */
+export async function listServices(
+  organizationId: string, query: ListQuery,
+): Promise<ListResult<ServiceRow>> {
+  const term = (query.q ?? '').trim()
+  const like = `%${term.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
+
+  const where = sql`
+    where s.organization_id = ${organizationId}
+      ${term === '' ? sql`` : sql`and s.name ilike ${like}`}
+      ${query.filters.active === undefined
+        ? sql``
+        : sql`and s.active = ${query.filters.active === 'true'}`}`
+
+  const fetch = async (q: ListQuery) => {
+    const { rows } = await db.execute(sql`
+      select s.id, s.name, s.category_id, c.name as category_name,
+             s.duration_minutes, s.price, s.active
+        from services s
+        left join service_categories c
+          on c.id = s.category_id and c.organization_id = s.organization_id
+        ${where} ${orderBy(SERVICE_LIST, q)} ${paginate(q)}`)
+    return rowsToServices(rows as Record<string, unknown>[])
+  }
+
+  const [rows, countRows] = await Promise.all([
+    fetch(query),
+    db.execute(sql`select count(*)::int as n from services s ${where}`),
+  ])
+  const total = (countRows.rows[0] as { n: number }).n
+
+  const clamped = clampPage(query, total)
+  return toResult(
+    clamped.page === query.page ? rows : await fetch(clamped),
+    total,
+    clamped,
+  )
 }
 
 export async function salonCurrency(organizationId: string): Promise<CurrencyCode> {
@@ -153,7 +225,7 @@ export async function listPerformers(
 export async function getService(
   serviceId: string, organizationId: string,
 ): Promise<{ service: ServiceRow; overrides: OverrideRow[]; performers: PerformerCandidate[] } | null> {
-  const [service] = await listServices(organizationId, serviceId)
+  const [service] = await servicesOf(organizationId, serviceId)
   if (!service) return null
 
   const { rows: overrideRows } = await db.execute(sql`

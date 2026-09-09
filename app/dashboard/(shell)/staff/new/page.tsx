@@ -1,5 +1,5 @@
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { listBranches } from '@/lib/branch'
+import { branchesOf } from '@/lib/branch'
 import {
   Card, CardContent, CardHeader, CardTitle,
 } from '@/components/ui/card'
@@ -8,7 +8,7 @@ import { StaffCreateForm } from './staff-form'
 export default async function NewStaffPage() {
   await requirePagePermission({ staff: ['create'] })
   const { organizationId } = await requirePageOrg()
-  const branches = await listBranches(organizationId)
+  const branches = await branchesOf(organizationId)
 
   // Narrowed to what the form needs -- {teamId, name} -- not the full
   // BranchRow. Props to a client component serialize into the RSC payload

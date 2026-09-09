@@ -5,6 +5,10 @@ import { pgMentions } from './pg-error'
 import { writeCommissions } from './commission'
 import { moveStockForSale } from './inventory'
 import { writePoints } from './customer'
+import {
+  clampPage, orderBy, paginate, toResult,
+  type FilterRule, type ListQuery, type ListResult, type ListSpec,
+} from './list-query'
 
 /**
  * The sale.
@@ -377,24 +381,90 @@ export type SaleRow = {
   shiftClosed: boolean
 }
 
-/** One branch's sales for a day, newest first. */
+/**
+ * `?date=YYYY-MM-DD`. The page's old hand-rolled regex, moved into the
+ * contract so `parseListQuery` stays the only place a list reads
+ * searchParams -- a bookmarked `?date=...` URL must keep working exactly as
+ * it did, so the shape is copied verbatim rather than redesigned.
+ */
+const dateFilter: FilterRule = (raw) => (/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null)
+
+/**
+ * What a URL may ask of the transactions list.
+ *
+ * `completed` is backed by (organization_id, team_id, completed_at);
+ * `invoice` by (organization_id, invoice_no) -- both named in the task brief
+ * as already indexed. Nothing else is sortable, per §3.2.
+ */
+export const TRANSACTION_LIST: ListSpec<'completed' | 'invoice'> = {
+  sortable: { completed: 't.completed_at', invoice: 't.invoice_no' },
+  defaultSort: '-completed',
+  tiebreak: 't.id',
+  filters: { date: dateFilter },
+}
+
+/**
+ * One branch's sales, paged.
+ *
+ * `filters.date` is applied only when present: the transactions PAGE always
+ * resolves a default (today) before calling this, so a bookmarked or bare
+ * `/transactions` URL behaves exactly as before -- but the function itself
+ * makes no assumption that a date is mandatory, matching how every other
+ * filter on this contract means "no restriction" when absent.
+ *
+ * The reversal join (`r`) is 1:1: `transactions_reverses` is
+ * UNIQUE(reverses_id) (db/migrations/0018_pos.sql, unchanged through the
+ * latest snapshot), so a transaction has at most one reversal and this join
+ * can never fan a row out. `count(*)` is therefore exact -- unlike
+ * `listStaff`'s `members` join, which does fan out and needs `count(distinct
+ * ...)` instead.
+ */
 export async function listSales(
-  organizationId: string, teamId: string, date: string,
-): Promise<SaleRow[]> {
-  const { rows } = await db.execute(sql`
-    select t.id, t.invoice_no, t.status, t.total, t.currency, t.reverses_id,
-           to_char(t.completed_at, 'YYYY-MM-DD"T"HH24:MI') as completed_at,
-           c.name as customer_name,
-           r.id as reversed_by_id,
-           (s.closed_at is not null) as shift_closed
-      from transactions t
-      left join customers c on c.id = t.customer_id
-      left join transactions r on r.reverses_id = t.id
-      left join shifts s on s.id = t.shift_id
-     where t.organization_id = ${organizationId} and t.team_id = ${teamId}
-       and t.completed_at >= ${date}::date and t.completed_at < ${date}::date + 1
-     order by t.completed_at desc, t.invoice_no desc`)
-  return (rows as Record<string, unknown>[]).map(toSale)
+  organizationId: string, teamId: string, query: ListQuery,
+): Promise<ListResult<SaleRow>> {
+  const date = query.filters.date
+
+  const where = sql`
+    where t.organization_id = ${organizationId} and t.team_id = ${teamId}
+      ${date === undefined
+        ? sql``
+        : sql`and t.completed_at >= ${date}::date and t.completed_at < ${date}::date + 1`}`
+
+  const fetch = async (q: ListQuery) => {
+    const { rows } = await db.execute(sql`
+      select t.id, t.invoice_no, t.status, t.total, t.currency, t.reverses_id,
+             to_char(t.completed_at, 'YYYY-MM-DD"T"HH24:MI') as completed_at,
+             c.name as customer_name,
+             r.id as reversed_by_id,
+             (s.closed_at is not null) as shift_closed
+        from transactions t
+        left join customers c on c.id = t.customer_id
+        left join transactions r on r.reverses_id = t.id
+        left join shifts s on s.id = t.shift_id
+        ${where} ${orderBy(TRANSACTION_LIST, q)} ${paginate(q)}`)
+    return (rows as Record<string, unknown>[]).map(toSale)
+  }
+
+  const [rows, countRows] = await Promise.all([
+    fetch(query),
+    // Same `where`, and the join is included here too even though the count
+    // itself never reads `r` -- omitting it would count differently from the
+    // page query the moment `where` ever grows a condition on `r`, which is
+    // exactly the class of drift this pairing exists to prevent.
+    db.execute(sql`
+      select count(*)::int as n
+        from transactions t
+        left join transactions r on r.reverses_id = t.id
+        ${where}`),
+  ])
+  const total = (countRows.rows[0] as { n: number }).n
+
+  const clamped = clampPage(query, total)
+  return toResult(
+    clamped.page === query.page ? rows : await fetch(clamped),
+    total,
+    clamped,
+  )
 }
 
 const toSale = (r: Record<string, unknown>): SaleRow => ({

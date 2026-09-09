@@ -212,3 +212,55 @@ The rule that removes both: **commit the work, then break it.** The restore is
 then `git checkout HEAD -- <file>` plus `git status --short <file>` printing
 nothing. If the restore leaves the file dirty, or a re-run still fails, the
 baseline was wrong -- not the code.
+
+## Lists (the CRUD standard, phase 2)
+
+**`count(*)` over a join silently over-reports.** Five of the six list
+resources join 1:1 and count with a plain `count(*)`. `staff` is the
+exception: `members` carries no unique on `(user_id, organization_id)` by
+design (`0010_services.sql` -- adding one would forbid a second membership
+row that better-auth itself does not forbid), so a person holding two
+membership rows in one salon joins to two rows and a plain `count(*)` reports
+them twice. `listStaff` counts with `count(distinct m.user_id)` instead. The
+bug this guards against has no stack trace: the header reads "1–25 dari 26"
+above a page of 25 real people, and only a fixture with one person holding
+two membership rows ever makes the count and the rendered rows disagree.
+
+**A chained `toHaveURL` assertion can pass against the pre-navigation URL.**
+`await expect(page).toHaveURL(/a/); await expect(page).toHaveURL(/b/)` lets
+the first call resolve against the URL from *before* the click, because
+Playwright's auto-retry only has to converge on each assertion in turn, not
+on both at once against the same URL read. Found producing break-and-restore
+evidence for a control that preserves the sort on filtering: the broken
+`listHref` call passed 3 of 3 against the old two-assertion shape. The fix is
+one predicate that requires every condition on a single URL read (see
+`filtering keeps the sort` in `tests/e2e/customers.spec.ts`), not two
+sequential `toHaveURL` calls. `sorting keeps the search`, in that same file,
+used the old two-call shape and has since been converted to the single-
+predicate form (final whole-branch review, Finding 2) -- confirmed to fail
+against a `listHref` call broken the same way before the fix landed.
+
+The same failure has a single-assertion disguise: `searching keeps the active
+filter` and `searching keeps the sort`, in that same file, each `goto` a URL
+that already contains the value their one and only `toHaveURL` then checked
+for (`?active=false` .. `/active=false/`, `?sort=-created` .. `/sort=-created/`).
+A single loose-regex assertion is no safer than a chained one when the
+pre-navigation URL already satisfies it -- Playwright resolves on the first
+poll that matches, which can be the stale one, so either test passed even if
+the search actually dropped the filter or the sort. Both have since been
+converted to the same fix used in `filtering keeps the sort`: a predicate
+requiring a value the pre-navigation URL does NOT already carry (e.g.
+`active === 'false' && q === 'Budi'`), each confirmed to fail against a
+`preservedFields` call broken to drop the field under test.
+
+**A DB-level paging test cannot prove a tiebreaker.** First recorded on
+customers: paging through 60 duplicate-named rows and asserting every id is
+seen exactly once (`tests/customers.db.test.ts`) keeps passing even with the
+tiebreak removed from `ORDER BY`, because Postgres's tie order for a small,
+unchanging table tends to hold stable run-to-run with no tiebreak at all.
+`tests/list-query.test.ts` asserts the emitted `ORDER BY` text directly
+instead, which is what actually proves §3.3. Phase 2 hit the identical shape
+on a second resource, branches (`tests/branch.db.test.ts`) -- same duplicate-
+name fixture, same false confidence -- and needed no new fix, because the one
+proof that matters is already centralised in `list-query.test.ts` rather than
+repeated per resource.

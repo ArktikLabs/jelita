@@ -4,7 +4,7 @@ import { TEST_DATABASE_URL } from './db'
 import {
   createBooking, listBookings, listSlots, rescheduleBooking, setBookingStatus,
 } from '../lib/booking'
-import { assignedStaff, listBranches } from '../lib/branch'
+import { assignedStaff, branchesOf } from '../lib/branch'
 
 /**
  * The double-booking guarantee, asserted against real Postgres.
@@ -444,7 +444,7 @@ describe('the working owner (PRD 5.1: owners who cut hair)', () => {
   })
 
   it('does not block closing the branch they work at, and is not counted as stationed there', async () => {
-    // Through assignedStaff and listBranches themselves, not a copy of their
+    // Through assignedStaff and branchesOf themselves, not a copy of their
     // SQL: an inlined re-write of the query passes whatever the real one does,
     // which is exactly how an assertion ends up proving only the copy.
     const before = await assignedStaff(TEAM, ORG)
@@ -456,7 +456,7 @@ describe('the working owner (PRD 5.1: owners who cut hair)', () => {
       .toEqual(before)
     expect(after).not.toContain('Bu Pemilik')
 
-    const [branch] = await listBranches(ORG, TEAM)
+    const [branch] = await branchesOf(ORG, TEAM)
     expect(branch.staffCount, 'and does not inflate the stationed headcount')
       .toBe(before.length)
   })

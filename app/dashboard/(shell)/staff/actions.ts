@@ -12,7 +12,7 @@ import { PlanError, requireQuota, countResource, getEntitlements } from '@/lib/p
 import { getBranchStatus } from '@/lib/plan/branch'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { provisionStaff, assignBranch, getStaff } from '@/lib/staff'
-import { listBranches } from '@/lib/branch'
+import { branchesOf } from '@/lib/branch'
 import { formError, type FormState, type ImportState } from '@/lib/form-state'
 import { ASSIGNABLE_ROLES, type SalonRole } from '@/lib/permissions'
 
@@ -59,7 +59,7 @@ type CsvRow = {
  *
  * Ownership FIRST, and by a query scoped to this org: another salon's branch
  * must read as not-found, never as closed or locked (spec §6.3). getBranchStatus
- * is org-scoped too and answers 'ok' for a foreign id, so this listBranches
+ * is org-scoped too and answers 'ok' for a foreign id, so this branchesOf
  * lookup is what turns that into the right message instead of a silent pass.
  *
  * The order of these two `if`s is NOT load-bearing: getBranchStatus already
@@ -77,7 +77,7 @@ type CsvRow = {
 async function branchWriteError(
   teamId: string, organizationId: string,
 ): Promise<string | null> {
-  if ((await listBranches(organizationId, teamId)).length === 0) return BRANCH_NOT_FOUND_MSG
+  if ((await branchesOf(organizationId, teamId)).length === 0) return BRANCH_NOT_FOUND_MSG
   const status = await getBranchStatus(teamId, organizationId)
   if (status === 'closed') return CLOSED_MSG
   if (status === 'over_cap') return OVERCAP_MSG
@@ -184,7 +184,7 @@ export async function importStaffAction(
   await requirePagePermission({ staff: ['create'] })
   const { organizationId } = await requirePageOrg()
 
-  const branches = await listBranches(organizationId)
+  const branches = await branchesOf(organizationId)
   // Lowercased key: "cabang utama" must resolve the same branch as
   // "Cabang Utama" -- the error copy below still shows what the row typed.
   const branchByName = new Map(branches.map((b) => [b.name.toLowerCase(), b]))

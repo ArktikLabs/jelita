@@ -99,6 +99,45 @@ describe('parseListQuery', () => {
   })
 })
 
+const DATE_SPEC: ListSpec<'completed'> = {
+  sortable: { completed: 't.completed_at' },
+  defaultSort: 'completed',
+  tiebreak: 't.id',
+  // Legal by SHAPE, not by membership -- transactions' own re-expression of
+  // the page's old `/^\d{4}-\d{2}-\d{2}$/` regex, now living in the contract.
+  filters: { date: (raw: string) => (/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null) },
+}
+
+describe('parseListQuery with a validator filter', () => {
+  it('keeps a value the validator accepts', () => {
+    expect(parseListQuery(DATE_SPEC, { date: '2026-09-09' }).filters)
+      .toEqual({ date: '2026-09-09' })
+  })
+
+  it('drops a malformed date rather than passing it through', () => {
+    expect(parseListQuery(DATE_SPEC, { date: '09/09/2026' }).filters).toEqual({})
+  })
+
+  it('drops an injection attempt the same way -- there is nothing to escape', () => {
+    const q = parseListQuery(DATE_SPEC, { date: "2026-09-09'; drop table transactions --" })
+    expect(q.filters).toEqual({})
+  })
+
+  it('leaves the filter ABSENT, not present-and-empty, when the validator returns null', () => {
+    // The one that matters: a resource's `where` fragment tests
+    // `filters.date === undefined` to mean "no restriction". A validator that
+    // instead stored '' or the rejected raw value would make that test lie.
+    const q = parseListQuery(DATE_SPEC, { date: 'not-a-date' })
+    expect(Object.hasOwn(q.filters, 'date')).toBe(false)
+    expect(q.filters.date).toBeUndefined()
+  })
+
+  it('still supports the array form exactly as before', () => {
+    expect(parseListQuery(SPEC, { active: 'true' }).filters).toEqual({ active: 'true' })
+    expect(parseListQuery(SPEC, { active: 'maybe' }).filters).toEqual({})
+  })
+})
+
 describe('clampPage', () => {
   it('pulls a page past the end back to the last page', () => {
     const q = parseListQuery(SPEC, { page: '999', per: '25' })
@@ -123,16 +162,18 @@ describe('orderBy', () => {
   // the tiebreaker is actually emitted. This asserts the emitted SQL text
   // directly instead.
   it('always ends the ORDER BY in the tiebreak column', () => {
+    // The tiebreak takes the sort's own direction (asc here), not a fixed
+    // ascending -- see "the tiebreak follows the sort direction" below.
     const asc = renderOrderBy(parseListQuery(SPEC, { sort: 'name' }))
     expect(asc).toContain(SPEC.tiebreak)
-    expect(asc.trim().endsWith(SPEC.tiebreak)).toBe(true)
+    expect(asc.trim().endsWith(`${SPEC.tiebreak} asc`)).toBe(true)
   })
 
   it('holds for both sort directions', () => {
     const asc = renderOrderBy(parseListQuery(SPEC, { sort: 'name' }))
     const desc = renderOrderBy(parseListQuery(SPEC, { sort: '-name' }))
-    expect(asc.trim().endsWith(SPEC.tiebreak)).toBe(true)
-    expect(desc.trim().endsWith(SPEC.tiebreak)).toBe(true)
+    expect(asc.trim().endsWith(`${SPEC.tiebreak} asc`)).toBe(true)
+    expect(desc.trim().endsWith(`${SPEC.tiebreak} desc`)).toBe(true)
     expect(asc).not.toBe(desc)
   })
 
@@ -143,7 +184,62 @@ describe('orderBy', () => {
     const rendered = renderOrderBy(parseListQuery(SPEC, { sort: injected }))
     expect(rendered).not.toContain(injected)
     expect(rendered).toContain(SPEC.sortable[SPEC.defaultSort])
-    expect(rendered.trim().endsWith(SPEC.tiebreak)).toBe(true)
+    expect(rendered.trim().endsWith(`${SPEC.tiebreak} asc`)).toBe(true)
+  })
+})
+
+const NULLABLE: ListSpec<'price' | 'name'> = {
+  sortable: {
+    // A column that is NULLABLE needs its own ordering per direction: nulls
+    // belong at the END whichever way the user sorted, and `nulls last`
+    // cannot be appended after a direction keyword.
+    price: { asc: 'p.price asc nulls last', desc: 'p.price desc nulls last' },
+    name: 'p.name',
+  },
+  defaultSort: 'name',
+  tiebreak: 'p.id',
+}
+
+describe('orderBy with per-direction expressions', () => {
+  it('uses the direction-specific expression verbatim', () => {
+    expect(render(orderBy(NULLABLE, parseListQuery(NULLABLE, { sort: '-price' }))))
+      .toBe('order by p.price desc nulls last, p.id desc')
+    expect(render(orderBy(NULLABLE, parseListQuery(NULLABLE, { sort: 'price' }))))
+      .toBe('order by p.price asc nulls last, p.id asc')
+  })
+
+  it('still appends a direction to a plain string expression', () => {
+    expect(render(orderBy(NULLABLE, parseListQuery(NULLABLE, { sort: '-name' }))))
+      .toBe('order by p.name desc, p.id desc')
+  })
+})
+
+describe('the tiebreak follows the sort direction', () => {
+  it('so one btree index serves both directions', () => {
+    // `created_at desc, id asc` cannot be served by a plain (created_at, id)
+    // index in either scan direction, so Postgres adds a sort node. Matching
+    // the tiebreak to the sort makes the index an exact match both ways --
+    // cheap today because created_at is near-unique, and the difference
+    // between an index scan and a sort the moment a LOW-CARDINALITY column
+    // like status or role is declared sortable.
+    expect(render(orderBy(NULLABLE, parseListQuery(NULLABLE, { sort: '-name' }))))
+      .toMatch(/, p\.id desc$/)
+    expect(render(orderBy(NULLABLE, parseListQuery(NULLABLE, { sort: 'name' }))))
+      .toMatch(/, p\.id asc$/)
+  })
+})
+
+describe('the default sort may itself be descending', () => {
+  it('keeps that direction when an unknown column falls back', () => {
+    // The branch phase 1 never exercised: defaultSort carrying a '-'.
+    const spec: ListSpec<'created' | 'name'> = {
+      sortable: { created: 't.created_at', name: 't.name' },
+      defaultSort: '-created',
+      tiebreak: 't.id',
+    }
+    const q = parseListQuery(spec, { sort: 'salary' })
+    expect(q.sort).toBe('created')
+    expect(q.desc).toBe(true)
   })
 })
 

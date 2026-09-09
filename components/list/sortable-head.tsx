@@ -8,12 +8,12 @@ import type { ListQuery, ListSpec } from '@/lib/list-query'
  * this is navigation and the browser should treat it as such -- middle-click,
  * open in a new tab and back all work for free.
  */
-export function SortableHead({
+export function SortableHead<K extends string>({
   column, label, spec, query, params,
 }: {
-  column: string
+  column: K
   label: string
-  spec: ListSpec
+  spec: ListSpec<K>
   query: ListQuery
   params: Params
 }) {

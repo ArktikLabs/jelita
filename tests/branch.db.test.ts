@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { PLANS } from '../scripts/seed-plans.mjs'
+import { BRANCH_LIST, listBranches } from '../lib/branch'
+import { parseListQuery } from '../lib/list-query'
 
 /**
  * Branch schema, the seeding trigger/backfill, and the branch_entitlement
@@ -152,6 +154,79 @@ describe('getBranchStatus: closed beats over_cap', () => {
     expect(await getBranchStatus(capHolderBranch, ORG2)).toBe('ok')
     await pool.query(`update branch_profiles set active = false where team_id = $1`, [capHolderBranch])
     expect(await getBranchStatus(capHolderBranch, ORG2)).toBe('closed')
+  })
+})
+
+describe('listBranches paging', () => {
+  const q = (params: Record<string, string> = {}) => parseListQuery(BRANCH_LIST, params)
+
+  beforeAll(async () => {
+    // Cascades to branch_profiles, branch_hours and branch_entitlement --
+    // nothing after this point in the file depends on vt_branch_t1/t2.
+    await pool.query(`delete from teams where organization_id = $1`, [ORG])
+    // 60 rows, deliberately duplicate-named: a non-unique sort column is what
+    // makes paging non-deterministic without a tiebreaker.
+    for (let i = 0; i < 60; i++) {
+      await pool.query(
+        `insert into teams (id, name, organization_id, created_at)
+         values ($1, 'Sama Persis', $2, now())`,
+        [`br_pg_${String(i).padStart(3, '0')}`, ORG])
+    }
+    // ORG2 was created by the 'getBranchStatus' describe above -- reused here
+    // rather than creating a third organization just for tenant scoping.
+    await pool.query(`
+      insert into teams (id, name, organization_id, created_at)
+      values ('br_pg_foreign', 'Sama Persis', $1, now())`, [ORG2])
+  })
+
+  it('returns one page and the true total', async () => {
+    const r = await listBranches(ORG, q())
+    expect(r.rows).toHaveLength(25)
+    expect(r.total).toBe(60)
+    expect(r.pages).toBe(3)
+    expect(r.page).toBe(1)
+  })
+
+  it('pages through 60 identical names without repeating or losing one', async () => {
+    const seen = new Set<string>()
+    for (const page of ['1', '2', '3']) {
+      const r = await listBranches(ORG, q({ page }))
+      for (const row of r.rows) seen.add(row.teamId)
+    }
+    expect(seen.size, 'every row seen exactly once across three pages').toBe(60)
+  })
+
+  it('clamps a page past the end to the last page', async () => {
+    const r = await listBranches(ORG, q({ page: '999' }))
+    expect(r.page).toBe(3)
+    expect(r.rows).toHaveLength(10)
+  })
+
+  it('counts only the rows the search matches', async () => {
+    await pool.query(`update teams set name = 'Unik' where id = $1`, ['br_pg_000'])
+    const r = await listBranches(ORG, q({ q: 'Unik' }))
+    expect(r.total).toBe(1)
+    expect(r.rows).toHaveLength(1)
+  })
+
+  it('never returns another salon\'s branches', async () => {
+    const r = await listBranches(ORG, q())
+    expect(r.total).toBe(60)
+    expect(r.rows.map((x) => x.teamId)).not.toContain('br_pg_foreign')
+  })
+
+  // Task 5: branches didn't declare a filter for its own `active` column
+  // (branch_profiles.active, not a column of `teams`) -- one of the two
+  // four-resource gaps found while building the FilterBar.
+  it('filters to just the active or inactive rows', async () => {
+    await pool.query(`update branch_profiles set active = false where team_id = $1`, ['br_pg_000'])
+    const inactive = await listBranches(ORG, q({ active: 'false' }))
+    expect(inactive.total).toBe(1)
+    expect(inactive.rows.map((x) => x.teamId)).toEqual(['br_pg_000'])
+
+    const active = await listBranches(ORG, q({ active: 'true' }))
+    expect(active.total).toBe(59)
+    expect(active.rows.map((x) => x.teamId)).not.toContain('br_pg_000')
   })
 })
 

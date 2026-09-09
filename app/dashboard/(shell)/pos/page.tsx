@@ -6,7 +6,7 @@ import { bookableServices, getBooking } from '@/lib/booking'
 import { CUSTOMER_LIST, getCustomer, listCustomers } from '@/lib/customer'
 import { parseListQuery } from '@/lib/list-query'
 import { salonSettings } from '@/lib/service'
-import { listStaff } from '@/lib/staff'
+import { staffOf } from '@/lib/staff'
 import { sellableProducts } from '@/lib/inventory'
 import { buttonVariants } from '@/components/ui/button'
 import { Cart } from './cart'
@@ -32,7 +32,7 @@ export default async function PosPage({
     bookableServices(organizationId, branchId),
     sellableProducts(organizationId, branchId),
     salonSettings(organizationId),
-    listStaff(organizationId),
+    staffOf(organizationId),
   ])
   // Services and retail products in one list: §5.2's cart holds both, and the
   // cart itself does not care which until it posts.

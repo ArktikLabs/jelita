@@ -1,5 +1,9 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
+import {
+  clampPage, orderBy, paginate, toResult,
+  type ListQuery, type ListResult, type ListSpec,
+} from './list-query'
 
 export type BranchRow = {
   teamId: string
@@ -18,12 +22,28 @@ export type HourRow = {
   closesAt: string
 }
 
+const rowsToBranches = (rows: Record<string, unknown>[]): BranchRow[] =>
+  rows.map((r) => ({
+    teamId: r.team_id as string,
+    name: r.name as string,
+    address: (r.address as string) ?? null,
+    phone: (r.phone as string) ?? null,
+    active: r.active as boolean,
+    withinCap: r.within_cap as boolean,
+    staffCount: Number(r.staff_count),
+  }))
+
 /**
- * Branches of one salon, oldest first. Pass `teamId` to narrow to one branch —
- * the organizationId scoping is in the query either way, so a bare id from the
- * client can never reach another tenant's branch.
+ * Branches of one salon, oldest first -- unpaged. Pass `teamId` to narrow to
+ * one branch -- the organizationId scoping is in the query either way, so a
+ * bare id from the client can never reach another tenant's branch.
+ *
+ * The building block for everything that needs EVERY branch rather than one
+ * page of them: the branch switcher, the staff forms' branch dropdown, the
+ * per-branch override loop and the branch-cap check all iterate the whole
+ * set, not a page of it.
  */
-export async function listBranches(
+export async function branchesOf(
   organizationId: string, teamId?: string,
 ): Promise<BranchRow[]> {
   const { rows } = await db.execute(sql`
@@ -44,15 +64,76 @@ export async function listBranches(
      where t.organization_id = ${organizationId}
        ${teamId === undefined ? sql`` : sql`and t.id = ${teamId}`}
      order by t.created_at, t.id`)
-  return (rows as Record<string, unknown>[]).map((r) => ({
-    teamId: r.team_id as string,
-    name: r.name as string,
-    address: (r.address as string) ?? null,
-    phone: (r.phone as string) ?? null,
-    active: r.active as boolean,
-    withinCap: r.within_cap as boolean,
-    staffCount: Number(r.staff_count),
-  }))
+  return rowsToBranches(rows as Record<string, unknown>[])
+}
+
+/** What a URL may ask of the branches list. */
+export const BRANCH_LIST: ListSpec<'name'> = {
+  sortable: { name: 't.name' },
+  defaultSort: 'name',
+  tiebreak: 't.id',
+  searchable: true,
+  // `active` lives on branch_profiles, not on `teams` itself -- see the
+  // `where` fragment and the count query's join below. Same column customers,
+  // products, services and staff carry; branches was one of the two gaps
+  // found while building the FilterBar (Task 5).
+  filters: { active: ['true', 'false'] },
+}
+
+/**
+ * One page of a salon's branches.
+ *
+ * The count query now joins `branch_profiles`: `where` reaches `p.active`
+ * once the filter above is set, and teams<->branch_profiles is 1:1 (every
+ * team is seeded exactly one profile row) so the join changes no count, only
+ * what columns are in scope for it.
+ */
+export async function listBranches(
+  organizationId: string, query: ListQuery,
+): Promise<ListResult<BranchRow>> {
+  const term = (query.q ?? '').trim()
+  const like = `%${term.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
+
+  const where = sql`
+    where t.organization_id = ${organizationId}
+      ${term === '' ? sql`` : sql`and t.name ilike ${like}`}
+      ${query.filters.active === undefined
+        ? sql``
+        : sql`and p.active = ${query.filters.active === 'true'}`}`
+
+  const fetch = async (q: ListQuery) => {
+    const { rows } = await db.execute(sql`
+      select t.id as team_id, t.name, p.address, p.phone, p.active,
+             coalesce(e.within_cap, false) as within_cap,
+             (select count(*) from staff_profiles s
+                join members m on m.user_id = s.user_id
+                              and m.organization_id = s.organization_id
+               where s.team_id = t.id
+                 and s.organization_id = t.organization_id
+                 and s.active and is_stationed(m.role))::int as staff_count
+        from teams t
+        join branch_profiles p on p.team_id = t.id
+        left join branch_entitlement e on e.team_id = t.id
+        ${where} ${orderBy(BRANCH_LIST, q)} ${paginate(q)}`)
+    return rowsToBranches(rows as Record<string, unknown>[])
+  }
+
+  const [rows, countRows] = await Promise.all([
+    fetch(query),
+    db.execute(sql`
+      select count(*)::int as n
+        from teams t
+        join branch_profiles p on p.team_id = t.id
+        ${where}`),
+  ])
+  const total = (countRows.rows[0] as { n: number }).n
+
+  const clamped = clampPage(query, total)
+  return toResult(
+    clamped.page === query.page ? rows : await fetch(clamped),
+    total,
+    clamped,
+  )
 }
 
 /**
@@ -60,7 +141,7 @@ export async function listBranches(
  * bare `getBranch(teamId)` must be impossible to use across tenants.
  */
 export async function getBranch(teamId: string, organizationId: string) {
-  const [profile] = await listBranches(organizationId, teamId)
+  const [profile] = await branchesOf(organizationId, teamId)
   if (!profile) return null
   const { rows } = await db.execute(sql`
     select weekday, closed, opens_at, closes_at from branch_hours

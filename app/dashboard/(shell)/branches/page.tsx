@@ -1,16 +1,28 @@
 import Link from 'next/link'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { listBranches } from '@/lib/branch'
+import { BRANCH_LIST, listBranches } from '@/lib/branch'
+import { parseListQuery } from '@/lib/list-query'
+import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
+import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 
-export default async function BranchesPage() {
+export default async function BranchesPage({
+  searchParams,
+}: {
+  searchParams: Promise<Params>
+}) {
   await requirePagePermission({ branch: ['update'] })
   const { organizationId } = await requirePageOrg()
-  const branches = await listBranches(organizationId)
+  const params = await searchParams
+  const query = parseListQuery(BRANCH_LIST, params)
+  const branches = await listBranches(organizationId, query)
 
   return (
     <div className="space-y-6">
@@ -21,10 +33,19 @@ export default async function BranchesPage() {
         </Link>
       </div>
 
+      <form className="max-w-sm">
+        {preservedFields(params, ['q']).map(([name, value]) => (
+          <input key={name} type="hidden" name={name} value={value} />
+        ))}
+        <Input name="q" defaultValue={query.q ?? ''} placeholder="Cari nama cabang" />
+      </form>
+
+      <FilterBar spec={BRANCH_LIST} query={query} params={params} />
+
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Nama</TableHead>
+            <SortableHead column="name" label="Nama" spec={BRANCH_LIST} query={query} params={params} />
             <TableHead>Alamat</TableHead>
             <TableHead>Telepon</TableHead>
             <TableHead>Status</TableHead>
@@ -32,7 +53,23 @@ export default async function BranchesPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {branches.map((b) => {
+          {branches.rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={5} className="text-muted-foreground">
+                {query.q || Object.keys(query.filters).length > 0 ? (
+                  <>
+                    Tidak ada cabang yang cocok dengan pencarian ini.{' '}
+                    <Link href={listHref(params, clearFilters(BRANCH_LIST))} className="underline">
+                      Hapus filter
+                    </Link>
+                  </>
+                ) : (
+                  'Belum ada cabang.'
+                )}
+              </TableCell>
+            </TableRow>
+          )}
+          {branches.rows.map((b) => {
             const status = !b.active
               ? { label: 'Nonaktif', variant: 'secondary' as const }
               : b.withinCap
@@ -56,6 +93,8 @@ export default async function BranchesPage() {
           })}
         </TableBody>
       </Table>
+
+      <Pagination result={branches} params={params} />
     </div>
   )
 }

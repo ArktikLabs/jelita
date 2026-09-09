@@ -2,11 +2,12 @@ import Link from 'next/link'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { CUSTOMER_LIST, listCustomers } from '@/lib/customer'
 import { parseListQuery } from '@/lib/list-query'
-import { listHref, preservedFields, type Params } from '@/lib/list-url'
+import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -47,6 +48,8 @@ export default async function CustomersPage({
         <Input name="q" defaultValue={q ?? ''} placeholder="Cari nama atau nomor" />
       </form>
 
+      <FilterBar spec={CUSTOMER_LIST} query={query} params={params} />
+
       <Table>
         <TableHeader>
           <TableRow>
@@ -63,7 +66,7 @@ export default async function CustomersPage({
                 {query.q || Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
-                    <Link href={listHref(params, { q: null, active: null })} className="underline">
+                    <Link href={listHref(params, clearFilters(CUSTOMER_LIST))} className="underline">
                       Hapus filter
                     </Link>
                   </>

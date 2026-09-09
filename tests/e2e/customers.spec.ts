@@ -221,8 +221,16 @@ test.describe('the URL controls', () => {
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard/customers?q=Budi')
     await page.getByRole('link', { name: /Nama/ }).click()
-    await expect(page).toHaveURL(/q=Budi/)
-    await expect(page).toHaveURL(/sort=/)
+    // ONE predicate requiring both at once, not two chained toHaveURL calls:
+    // the goto URL above already contains q=Budi, so a first assertion
+    // checking only that would trivially match the STALE pre-navigation URL
+    // before the sort link's own navigation has landed, and a second
+    // assertion checking only `sort=` would pass however q came out --
+    // between them, a listHref call that dropped q would slip through
+    // undetected. Requiring both on the SAME (post-navigation) URL is what
+    // this test exists to catch.
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('q') === 'Budi' && url.searchParams.get('sort') !== null)
   })
 
   test('searching resets the page', async ({ page }) => {
@@ -242,7 +250,47 @@ test.describe('the URL controls', () => {
     await page.goto('/dashboard/customers?active=false')
     await page.locator('input[name="q"]').fill('Budi')
     await page.locator('input[name="q"]').press('Enter')
-    await expect(page).toHaveURL(/active=false/)
+    // ONE predicate requiring both at once: `active=false` is already true on
+    // the pre-navigation goto URL above, so checking it alone would pass
+    // without the search's own hidden `active` field ever doing its job.
+    // Requiring `q=Budi` too -- true only once the submit has actually
+    // landed -- is what makes this assert something new.
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('active') === 'false' && url.searchParams.get('q') === 'Budi')
+  })
+
+  // Task 5's FilterBar: the `active` enum filter is a segmented set of
+  // links, each routing through listHref -- so, same as every other control
+  // on this page, choosing one preserves the sort and resets the page.
+  test('filtering keeps the sort', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?sort=-created')
+    await page.getByRole('link', { name: 'Aktif', exact: true }).click()
+    // ONE predicate requiring both at once, not two chained toHaveURL calls:
+    // the goto URL above already contains `sort=-created`, so a first
+    // assertion checking only that would trivially pass on the STALE
+    // pre-navigation URL before the click's own navigation has landed --
+    // exactly the false pass this test exists to catch (verified against a
+    // broken listHref call, which this masked on the first try).
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('sort') === '-created' && url.searchParams.get('active') === 'true')
+  })
+
+  test('filtering resets the page', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?page=3')
+    await page.getByRole('link', { name: 'Aktif', exact: true }).click()
+    await expect(page).not.toHaveURL(/page=/)
+  })
+
+  // The brief's own warning: a filter at its default must not appear in the
+  // URL at all -- "Semua" clears it entirely rather than writing e.g.
+  // `active=` or the default value back in.
+  test('clearing the filter drops it from the URL entirely, not just to its default', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?active=true')
+    await page.getByRole('link', { name: 'Semua' }).click()
+    await expect(page).not.toHaveURL(/active=/)
   })
 
   // A native GET submit replaces the WHOLE query string with only the form's
@@ -253,7 +301,13 @@ test.describe('the URL controls', () => {
     await page.goto('/dashboard/customers?sort=-created')
     await page.locator('input[name="q"]').fill('Budi')
     await page.locator('input[name="q"]').press('Enter')
-    await expect(page).toHaveURL(/sort=-created/)
+    // ONE predicate requiring both at once, same reasoning as the two tests
+    // above: `sort=-created` is already true on the pre-navigation goto URL,
+    // so pairing it with `q=Budi` -- true only once the search has actually
+    // submitted -- is what makes the assertion prove the sort survived a
+    // REAL search rather than just describing the URL it started from.
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('sort') === '-created' && url.searchParams.get('q') === 'Budi')
   })
 
   test('a page past the end shows the last page, not an empty table', async ({ page }) => {

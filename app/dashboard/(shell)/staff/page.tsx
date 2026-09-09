@@ -1,10 +1,15 @@
 import Link from 'next/link'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { listStaff } from '@/lib/staff'
-import { listBranches } from '@/lib/branch'
+import { STAFF_LIST, listStaff } from '@/lib/staff'
+import { branchesOf } from '@/lib/branch'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
+import { parseListQuery } from '@/lib/list-query'
+import { clearFilters, listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
+import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -19,22 +24,22 @@ const ROLE_LABEL: Record<string, string> = {
 export default async function StaffPage({
   searchParams,
 }: {
-  searchParams: Promise<{ branch?: string }>
+  searchParams: Promise<Params>
 }) {
   await requirePagePermission({ staff: ['read'] })
   const { organizationId } = await requirePageOrg()
-  const { branch } = await searchParams
+  const params = await searchParams
+  const query = parseListQuery(STAFF_LIST, params)
 
   // Only owner and admin hold staff:read, so there is no partial-visibility
   // case here — everyone who reaches this page sees the whole roster.
   const [staff, branches, entitlements, used] = await Promise.all([
-    listStaff(organizationId),
-    listBranches(organizationId),
+    listStaff(organizationId, query),
+    branchesOf(organizationId),
     getEntitlements(organizationId),
     countResource(organizationId, 'staff'),
   ])
   const cap = entitlements.caps.staff
-  const rows = branch ? staff.filter((s) => s.teamId === branch) : staff
 
   return (
     <div className="space-y-6">
@@ -57,26 +62,23 @@ export default async function StaffPage({
         </div>
       </div>
 
-      <form className="flex items-center gap-2">
-        <select
-          name="branch"
-          defaultValue={branch ?? ''}
-          className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm"
-        >
-          <option value="">Semua cabang</option>
-          {branches.map((b) => (
-            <option key={b.teamId} value={b.teamId}>{b.name}</option>
-          ))}
-        </select>
-        <button type="submit" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
-          Filter
-        </button>
-      </form>
+      <FilterBar
+        spec={STAFF_LIST}
+        query={query}
+        params={params}
+        controls={{
+          branch: {
+            type: 'select',
+            placeholder: 'Semua cabang',
+            options: branches.map((b) => ({ value: b.teamId, label: b.name })),
+          },
+        }}
+      />
 
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Nama</TableHead>
+            <SortableHead column="name" label="Nama" spec={STAFF_LIST} query={query} params={params} />
             <TableHead>Email</TableHead>
             <TableHead>Peran</TableHead>
             <TableHead>Cabang</TableHead>
@@ -84,7 +86,23 @@ export default async function StaffPage({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((s) => (
+          {staff.rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={5} className="text-muted-foreground">
+                {Object.keys(query.filters).length > 0 ? (
+                  <>
+                    Tidak ada staf yang cocok dengan filter ini.{' '}
+                    <Link href={listHref(params, clearFilters(STAFF_LIST))} className="underline">
+                      Hapus filter
+                    </Link>
+                  </>
+                ) : (
+                  'Belum ada staf.'
+                )}
+              </TableCell>
+            </TableRow>
+          )}
+          {staff.rows.map((s) => (
             <TableRow key={s.userId}>
               <TableCell className="font-medium">{s.name}</TableCell>
               <TableCell>{s.email}</TableCell>
@@ -99,6 +117,8 @@ export default async function StaffPage({
           ))}
         </TableBody>
       </Table>
+
+      <Pagination result={staff} params={params} />
     </div>
   )
 }

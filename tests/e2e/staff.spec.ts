@@ -1427,3 +1427,108 @@ test.describe.serial('/dashboard/staff/import -- bulk creation', () => {
     })
   })
 })
+
+/**
+ * Task 5's FilterBar on /dashboard/staff: `active` is the same segmented-link
+ * control as customers.spec.ts's "the URL controls" suite; `branch` is the
+ * validator-backed one -- a GET form (a native submit replaces the whole
+ * query string with only its own named inputs, so it needs preservedFields,
+ * not listHref) -- folded out of a bare, un-contracted `?branch=` read
+ * (Task 5's scope point (a)). Modelled directly on that suite's fixture
+ * shape, cut down to what proves the mechanics rather than paging depth,
+ * which tests/staff.db.test.ts's own paging describe already covers.
+ */
+test.describe('the URL controls', () => {
+  const CTRL_DOMAIN = 'staffurl.local'
+  const CTRL_SLUG = 'staffurl'
+
+  let owner: Awaited<ReturnType<typeof createSalon>>['ctx']
+  let orgId: string
+  let branchAId: string
+  const ownerCookies = async () => (await owner.storageState()).cookies
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug like 'staffurl%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${CTRL_DOMAIN}`])
+
+    const salon = await createSalon(pool, {
+      name: 'Ctrl Owner', email: `owner@${CTRL_DOMAIN}`, password: PW,
+      salon: 'Ctrl Salon', slug: CTRL_SLUG,
+    })
+    owner = salon.ctx
+    orgId = salon.organizationId
+    // The free plan's staff cap (3) would refuse the owner plus the two
+    // stylists seeded below.
+    await setPlan(orgId, 'business')
+
+    const branch = await owner.post('/api/auth/organization/create-team',
+      { data: { name: 'Cabang Ctrl', organizationId: orgId } })
+    branchAId = (await branch.json()).id
+
+    // Two stylists sharing a name, one placed at the branch -- enough to
+    // give the `branch` filter real work without paging-scale fixtures
+    // (those already live in tests/staff.db.test.ts's `listStaff filters`
+    // describe).
+    for (let i = 0; i < 2; i++) {
+      const id = `e2e_sturl_${i}`
+      await pool.query(`
+        insert into users (id, name, email, email_verified, created_at, updated_at)
+        values ($1, 'Budi Santoso', $2, true, now(), now())`, [id, `${id}@${CTRL_DOMAIN}`])
+      await pool.query(`
+        insert into members (id, user_id, organization_id, role, created_at)
+        values ($1, $2, $3, 'stylist', now())`, [`${id}_m`, id, orgId])
+    }
+    await pool.query(`
+      update staff_profiles set team_id = $1
+       where organization_id = $2 and user_id = 'e2e_sturl_0'`, [branchAId, orgId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await pool.query(`delete from organizations where slug like 'staffurl%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${CTRL_DOMAIN}`])
+  })
+
+  // A single predicate requiring every condition AT ONCE, not several
+  // chained toHaveURL calls: goto's own URL already satisfies some of them
+  // (sort=-name, page=1, active=true depending on the test), so a first
+  // assertion checking only one would trivially pass on the STALE
+  // pre-navigation URL before the click/submit's own navigation has landed
+  // -- a false pass this suite caught once against a deliberately broken
+  // listHref call and had to be rewritten this way to actually catch.
+  test('choosing a branch keeps the sort and resets the page', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/staff?sort=-name&page=2')
+    await page.locator('select[name="branch"]').selectOption(branchAId)
+    await page.getByRole('button', { name: 'Filter' }).click()
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('sort') === '-name'
+      && url.searchParams.get('branch') === branchAId
+      && !url.searchParams.has('page'))
+  })
+
+  test('choosing a branch resets an existing page number', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/staff?page=2')
+    await page.locator('select[name="branch"]').selectOption(branchAId)
+    await page.getByRole('button', { name: 'Filter' }).click()
+    await expect(page).not.toHaveURL(/page=/)
+  })
+
+  test('the active filter is a link, and it keeps the sort too', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/staff?sort=-name')
+    await page.getByRole('link', { name: 'Aktif', exact: true }).click()
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('sort') === '-name' && url.searchParams.get('active') === 'true')
+  })
+
+  test('picking a branch keeps the active filter already set', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/staff?active=true')
+    await page.locator('select[name="branch"]').selectOption(branchAId)
+    await page.getByRole('button', { name: 'Filter' }).click()
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('active') === 'true' && url.searchParams.get('branch') === branchAId)
+  })
+})

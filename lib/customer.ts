@@ -34,7 +34,7 @@ const rowsToCustomers = (rows: Record<string, unknown>[]): CustomerRow[] =>
  * (organization_id, name). Nothing else is sortable, because nothing else is
  * indexed -- see §3.2.
  */
-export const CUSTOMER_LIST: ListSpec = {
+export const CUSTOMER_LIST: ListSpec<'name' | 'created'> = {
   sortable: { name: 'c.name', created: 'c.created_at' },
   defaultSort: 'name',
   tiebreak: 'c.id',

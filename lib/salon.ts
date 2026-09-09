@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
-import { listBranches } from './branch'
+import { branchesOf } from './branch'
 import type { CurrencyCode } from './money'
 
 /**
@@ -69,20 +69,20 @@ export async function resolveSalon(slug: string): Promise<PublicSalon | null> {
  * read-only. Offering those would take bookings for a branch the salon cannot
  * operate -- worse than not showing it at all (spec 2.5).
  *
- * Built on listBranches rather than a second query, so the cap rule has one
+ * Built on branchesOf rather than a second query, so the cap rule has one
  * definition; the narrowing to PublicBranch is what keeps the rest off the
  * wire.
  *
  * `active` is REDUNDANT today and kept anyway: branch_entitlement ranks only
  * active branches (0008_branch_tables.sql), so a closed one has no row and
- * listBranches coalesces its within_cap to false. That coupling is invisible
+ * branchesOf coalesces its within_cap to false. That coupling is invisible
  * from here, and it is the view's to change -- this filter stays correct on
  * its own terms either way. It therefore has no break evidence and cannot:
  * "closed but within cap" is unrepresentable. The view's guarantee is asserted
  * directly in tests/salon.db.test.ts instead, where it CAN fail.
  */
 export async function bookableBranches(organizationId: string): Promise<PublicBranch[]> {
-  const branches = await listBranches(organizationId)
+  const branches = await branchesOf(organizationId)
   const open = branches.filter((b) => b.active && b.withinCap)
   if (open.length === 0) return []
 
