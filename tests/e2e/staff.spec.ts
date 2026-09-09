@@ -177,6 +177,22 @@ test.describe.serial('provisioning: POST /api/staff (the JSON route)', () => {
     expect(teamMember).toHaveLength(1)
   })
 
+  // Task 4 (spec §5): the detail page's audit line, and its suppression rule.
+  // provisionStaff inserts the row and assignBranch (lib/staff.ts) updates it
+  // moments later with the SAME actor -- that pairing is exactly what this
+  // test exercises, since it provisions a stylist WITH a branchId.
+  test('the detail page names who created it, and does not show a redundant diubah line', async () => {
+    const email = `assign-stylist-2@${DOMAIN}`
+    const made = await owner.post('/api/staff',
+      { data: { name: 'Stf Assign Stylist Two', email, password: PW, role: 'stylist', branchId } })
+    expect(made.status(), await made.text()).toBe(201)
+    const stylistId = (await made.json()).user.id
+
+    const detail = await getPage(owner, `/dashboard/staff/${stylistId}`)
+    expect(detail.html).toContain('Dibuat oleh Stf Assign Owner')
+    expect(detail.html).not.toContain('Diubah oleh')
+  })
+
   test('provisioning without a branchId leaves staff_profiles.team_id null', async () => {
     const email = `assign-admin@${DOMAIN}`
     const made = await owner.post('/api/staff',

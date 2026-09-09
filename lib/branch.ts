@@ -152,7 +152,37 @@ export async function getBranch(teamId: string, organizationId: string) {
     opensAt: String(r.opens_at).slice(0, 5),
     closesAt: String(r.closes_at).slice(0, 5),
   }))
-  return { profile, hours }
+
+  // Task 4's audit trail (spec §5). No fallback for a null created_by: every
+  // branch is either seeded by the `teams` trigger with no actor of its own
+  // (completeBranchCreation stamps one right after, but the default team a
+  // fresh salon starts with never goes through that call) or created by a
+  // signed-in owner/admin -- there is no third, nameable context to guess at.
+  const { rows: auditRows } = await db.execute(sql`
+    select cb.name as created_by_name, to_char(p.created_at, 'DD-MM-YYYY') as created_display,
+           ub.name as updated_by_name, to_char(p.updated_at, 'DD-MM-YYYY') as updated_display,
+           (p.updated_by is not null and (
+             p.updated_by is distinct from p.created_by
+             or extract(epoch from p.updated_at - p.created_at) > 10
+           )) as show_updated,
+           delb.name as deleted_by_name, to_char(p.deleted_at, 'DD-MM-YYYY') as deleted_display
+      from branch_profiles p
+      join teams t on t.id = p.team_id
+      left join users cb on cb.id = p.created_by
+      left join users ub on ub.id = p.updated_by
+      left join users delb on delb.id = p.deleted_by
+     where p.team_id = ${teamId} and t.organization_id = ${organizationId}`)
+  const a = auditRows[0] as Record<string, unknown>
+  const audit = {
+    createdByName: (a.created_by_name as string) ?? null,
+    createdAt: a.created_display as string,
+    updatedByName: a.show_updated ? (a.updated_by_name as string) : null,
+    updatedAt: a.updated_display as string,
+    deletedByName: (a.deleted_by_name as string) ?? null,
+    deletedAt: (a.deleted_display as string) ?? null,
+  }
+
+  return { profile, hours, audit }
 }
 
 /**

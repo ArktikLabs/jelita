@@ -490,13 +490,20 @@ export async function getSale(transactionId: string, organizationId: string) {
            c.name as customer_name, c.phone as customer_phone,
            r.id as reversed_by_id,
            (s.closed_at is not null) as shift_closed,
-           tm.name as branch_name, bp.address as branch_address, bp.phone as branch_phone
+           tm.name as branch_name, bp.address as branch_address, bp.phone as branch_phone,
+           -- Task 4: who rang this up -- or, for a reversal row, who voided
+           -- the original (migration 0035: "the reversal is its own row
+           -- with its own created_by"). Never null in practice -- checkout
+           -- and voidSale both require a real actor -- but a NULL here would
+           -- just omit the line, same as everywhere else this task touches.
+           cb.name as created_by_name
       from transactions t
       left join customers c on c.id = t.customer_id
       left join transactions r on r.reverses_id = t.id
       left join shifts s on s.id = t.shift_id
       join teams tm on tm.id = t.team_id
       left join branch_profiles bp on bp.team_id = t.team_id
+      left join users cb on cb.id = t.created_by
      where t.id = ${transactionId} and t.organization_id = ${organizationId}`)
   const r = rows[0] as Record<string, unknown> | undefined
   if (!r) return null
@@ -518,6 +525,7 @@ export async function getSale(transactionId: string, organizationId: string) {
     branchName: r.branch_name as string,
     branchAddress: (r.branch_address as string) ?? null,
     branchPhone: (r.branch_phone as string) ?? null,
+    createdByName: (r.created_by_name as string) ?? null,
     lines: (lines.rows as Record<string, unknown>[]).map((l) => ({
       name: l.name as string,
       unitPrice: Number(l.unit_price),

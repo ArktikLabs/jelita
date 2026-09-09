@@ -2,10 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import {
-  createCustomer, deactivateCustomer, reactivateCustomer, updateCustomer,
+  createCustomer, deactivateCustomer, findOrCreateByPhone, getCustomer,
+  reactivateCustomer, updateCustomer,
 } from '../lib/customer'
 import {
-  createService, deactivateService, reactivateService, updateService,
+  createService, deactivateService, getService, reactivateService, updateService,
 } from '../lib/service'
 
 /**
@@ -198,5 +199,101 @@ describe('services: the actor threaded through create/update/deactivate', () => 
     expect(row.active).toBe(true)
     expect(row.deleted_at).toBeNull()
     expect(row.deleted_by).toBeNull()
+  })
+})
+
+/**
+ * Task 4: the audit columns Tasks 1-3 wrote are now readable off getCustomer
+ * and getService -- a name, a date, and the "diubah" suppression rule (spec
+ * §5, Task 4's brief). Same "customers and services stand in for the six"
+ * scope as the describe block above.
+ */
+describe('Task 4: getCustomer surfaces the audit trail', () => {
+  it('names who created it, with nothing to report before any edit', async () => {
+    const c = await createCustomer({ organizationId: ORG, name: 'Baru', actorUserId: ACTOR })
+    const got = await getCustomer(c.id, ORG)
+    expect(got!.audit.createdByName).toBe('Aktor Satu')
+    expect(got!.audit.updatedByName).toBeNull()
+  })
+
+  it('suppresses the diubah line for the same actor updating seconds after creation', async () => {
+    const c = await createCustomer({ organizationId: ORG, name: 'Baru', actorUserId: ACTOR })
+    await updateCustomer(c.id, ORG, { name: 'Baru 2' }, ACTOR)
+    const got = await getCustomer(c.id, ORG)
+    expect(got!.audit.updatedByName).toBeNull()
+  })
+
+  it('shows the diubah line when a DIFFERENT actor makes the edit, however soon', async () => {
+    const c = await createCustomer({ organizationId: ORG, name: 'Baru', actorUserId: ACTOR })
+    await updateCustomer(c.id, ORG, { name: 'Baru 2' }, OTHER_ACTOR)
+    const got = await getCustomer(c.id, ORG)
+    expect(got!.audit.updatedByName).toBe('Aktor Dua')
+  })
+
+  it('shows the diubah line for the SAME actor once real time has passed', async () => {
+    const c = await createCustomer({ organizationId: ORG, name: 'Baru', actorUserId: ACTOR })
+    // Backdating created_at, not touching updated_at directly: a bare
+    // UPDATE of updated_at would just be overwritten by touch_updated_at
+    // (Task 1's trigger) the moment the row is next written.
+    await pool.query(
+      `update customers set created_at = now() - interval '1 hour' where id = $1`, [c.id])
+    await updateCustomer(c.id, ORG, { name: 'Baru 2' }, ACTOR)
+    const got = await getCustomer(c.id, ORG)
+    expect(got!.audit.updatedByName).toBe('Aktor Satu')
+  })
+
+  it('shows the deactivation line even when there was no content edit at all', async () => {
+    const c = await createCustomer({ organizationId: ORG, name: 'Baru', actorUserId: ACTOR })
+    await deactivateCustomer(c.id, ORG, OTHER_ACTOR)
+    const got = await getCustomer(c.id, ORG)
+    expect(got!.audit.deletedByName).toBe('Aktor Dua')
+    // deactivateCustomer deliberately does not touch updated_by (Task 3) --
+    // a "last touched by" reading only updated_by would miss this event.
+    expect(got!.audit.updatedByName).toBeNull()
+  })
+
+  it("renders a public-booking customer's null creator as something honest, not a name", async () => {
+    const found = await findOrCreateByPhone(
+      ORG, { name: 'Publik', phone: '081200000099', actorUserId: null })
+    const got = await getCustomer(found.id, ORG)
+    // The page supplies the "Dibuat dari halaman booking" fallback text for
+    // a null createdByName -- this only proves the raw name comes back null,
+    // never a broken join guessing at a person.
+    expect(got!.audit.createdByName).toBeNull()
+  })
+})
+
+describe('Task 4: getService surfaces the audit trail', () => {
+  const create = (actorUserId: string) => createService({
+    organizationId: ORG, name: `Audit Svc ${crypto.randomUUID()}`,
+    durationMinutes: 30, price: 50000, currency: 'IDR', actorUserId,
+  })
+
+  it('suppresses the diubah line for the immediate same-actor update', async () => {
+    const created = await create(ACTOR)
+    await updateService(
+      created!.id, ORG,
+      { name: `Diubah ${crypto.randomUUID()}`, categoryId: null, durationMinutes: 45, price: 60000 },
+      ACTOR)
+    const got = await getService(created!.id, ORG)
+    expect(got!.audit.updatedByName).toBeNull()
+  })
+
+  it('shows the diubah line for a different actor', async () => {
+    const created = await create(ACTOR)
+    await updateService(
+      created!.id, ORG,
+      { name: `Diubah ${crypto.randomUUID()}`, categoryId: null, durationMinutes: 45, price: 60000 },
+      OTHER_ACTOR)
+    const got = await getService(created!.id, ORG)
+    expect(got!.audit.updatedByName).toBe('Aktor Dua')
+  })
+
+  it('shows the deactivation line, independent of the diubah line', async () => {
+    const created = await create(ACTOR)
+    await deactivateService(created!.id, ORG, OTHER_ACTOR)
+    const got = await getService(created!.id, ORG)
+    expect(got!.audit.deletedByName).toBe('Aktor Dua')
+    expect(got!.audit.updatedByName).toBeNull()
   })
 })

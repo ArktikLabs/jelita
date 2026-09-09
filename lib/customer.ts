@@ -159,13 +159,50 @@ export async function reactivateCustomer(
      where id = ${customerId} and organization_id = ${organizationId}`)
 }
 
-/** Scoped by organizationId in the query, so a bare id cannot cross tenants. */
+/**
+ * Scoped by organizationId in the query, so a bare id cannot cross tenants.
+ *
+ * `audit` is Task 4's surface for spec §5: who created/changed/deactivated
+ * this row, and when. `updatedByName` is already null here -- not just
+ * absent -- when there is no real edit to report: nobody has touched the
+ * row since creation, OR the only touch is the SAME actor within seconds of
+ * creating it (the tail of a create flow, not a second event worth its own
+ * line). `createdByName` is null for a customer made through the public
+ * booking page (findOrCreateByPhone's `actorUserId: null` branch) -- the
+ * only write path into this table with no signed-in person behind it.
+ */
 export async function getCustomer(customerId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
-    select id, name, phone, notes, active, to_char(created_at, 'YYYY-MM-DD') as created_at
-      from customers
-     where id = ${customerId} and organization_id = ${organizationId}`)
-  return rowsToCustomers(rows as Record<string, unknown>[])[0] ?? null
+    select c.id, c.name, c.phone, c.notes, c.active,
+           to_char(c.created_at, 'YYYY-MM-DD') as created_at,
+           cb.name as created_by_name, to_char(c.created_at, 'DD-MM-YYYY') as created_display,
+           ub.name as updated_by_name, to_char(c.updated_at, 'DD-MM-YYYY') as updated_display,
+           -- Suppressed only when it's the same actor AND within a few
+           -- seconds of creation -- a real edit by the creator, an hour or a
+           -- year later, is still a "diubah" line worth showing.
+           (c.updated_by is not null and (
+             c.updated_by is distinct from c.created_by
+             or extract(epoch from c.updated_at - c.created_at) > 10
+           )) as show_updated,
+           delb.name as deleted_by_name, to_char(c.deleted_at, 'DD-MM-YYYY') as deleted_display
+      from customers c
+      left join users cb on cb.id = c.created_by
+      left join users ub on ub.id = c.updated_by
+      left join users delb on delb.id = c.deleted_by
+     where c.id = ${customerId} and c.organization_id = ${organizationId}`)
+  const r = rows[0] as Record<string, unknown> | undefined
+  if (!r) return null
+  return {
+    ...rowsToCustomers([r])[0],
+    audit: {
+      createdByName: (r.created_by_name as string) ?? null,
+      createdAt: r.created_display as string,
+      updatedByName: r.show_updated ? (r.updated_by_name as string) : null,
+      updatedAt: r.updated_display as string,
+      deletedByName: (r.deleted_by_name as string) ?? null,
+      deletedAt: (r.deleted_display as string) ?? null,
+    },
+  }
 }
 
 /**

@@ -248,9 +248,52 @@ export async function staffOf(
   return rowsToStaff(rows as Record<string, unknown>[])
 }
 
+/**
+ * Task 4's audit trail (spec §5), added to `getStaff` alone -- `staffOf`
+ * itself stays untouched so the roster list (and every other caller that
+ * iterates the whole staff table) does not pay for three extra joins it
+ * never reads.
+ *
+ * No fallback for a null created_by: every write path into `staff_profiles`
+ * (provisionStaff, called by the dashboard form, the JSON API and the CSV
+ * import loop alike) requires a signed-in actor, so a null one only ever
+ * comes from the seed script's direct `members` insert -- no nameable
+ * context, hence omitted rather than guessed.
+ *
+ * `updatedByName` is suppressed when it is the SAME actor who created the
+ * row within a few seconds -- provisionStaff inserts the row and then
+ * assignBranch updates it immediately after (same function, same actor), so
+ * a naive "updated_at moved" check would print a "diubah" line for every
+ * single hire.
+ */
 export async function getStaff(userId: string, organizationId: string) {
   const [row] = await staffOf(organizationId, userId)
-  return row ?? null
+  if (!row) return null
+
+  const { rows: auditRows } = await db.execute(sql`
+    select cb.name as created_by_name, to_char(s.created_at, 'DD-MM-YYYY') as created_display,
+           ub.name as updated_by_name, to_char(s.updated_at, 'DD-MM-YYYY') as updated_display,
+           (s.updated_by is not null and (
+             s.updated_by is distinct from s.created_by
+             or extract(epoch from s.updated_at - s.created_at) > 10
+           )) as show_updated,
+           delb.name as deleted_by_name, to_char(s.deleted_at, 'DD-MM-YYYY') as deleted_display
+      from staff_profiles s
+      left join users cb on cb.id = s.created_by
+      left join users ub on ub.id = s.updated_by
+      left join users delb on delb.id = s.deleted_by
+     where s.user_id = ${userId} and s.organization_id = ${organizationId}`)
+  const a = auditRows[0] as Record<string, unknown> | undefined
+  const audit = {
+    createdByName: (a?.created_by_name as string) ?? null,
+    createdAt: (a?.created_display as string) ?? '',
+    updatedByName: a?.show_updated ? (a.updated_by_name as string) : null,
+    updatedAt: (a?.updated_display as string) ?? '',
+    deletedByName: (a?.deleted_by_name as string) ?? null,
+    deletedAt: (a?.deleted_display as string) ?? null,
+  }
+
+  return { ...row, audit }
 }
 
 /**

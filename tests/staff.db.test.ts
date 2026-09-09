@@ -806,3 +806,112 @@ describe('every staff_profiles row with a branch has a matching team_members row
     expect(pairing.n).toBe(0)
   })
 })
+
+/**
+ * Task 4: getStaff's audit trail (spec §5). Raw SQL against staff_profiles
+ * for the fixture, same as the dual-role describe block above -- provisioning
+ * a real login through better-auth is what the e2e suite already does for
+ * the exact provisionStaff-then-assignBranch suppression scenario
+ * (tests/e2e/staff.spec.ts, "provisioning a stylist with a branchId").
+ */
+describe('Task 4: getStaff surfaces the audit trail', () => {
+  const ORG = 'vt_staff_audit_org'
+  const USER = 'vt_staff_audit_user'
+  const ACTOR = 'vt_staff_audit_actor'
+  const OTHER = 'vt_staff_audit_other'
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = any($1)`, [[USER, ACTOR, OTHER]])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Staff Audit Test', 'vt-staff-audit', now())`, [ORG])
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, 'VT Audit Staff', 'vt-staff-audit@test.local', true, now(), now()),
+             ($2, 'VT Audit Actor', 'vt-staff-audit-actor@test.local', true, now(), now()),
+             ($3, 'VT Audit Other', 'vt-staff-audit-other@test.local', true, now(), now())`,
+      [USER, ACTOR, OTHER])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'admin', now())`, [`${USER}_m`, USER, ORG])
+    // A second, active owner -- ACTOR itself, never actually staffed anywhere
+    // in this org -- so deactivating USER's staff_profiles row below does not
+    // trip the last-active-owner guard (migration 0025), which is not what
+    // this describe block is testing.
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now())`, [`${ACTOR}_m`, ACTOR, ORG])
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = any($1)`, [[USER, ACTOR, OTHER]])
+  })
+
+  it('names who created the row, with nothing to report before any edit', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1 where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.createdByName).toBe('VT Audit Actor')
+    expect(staff!.audit.updatedByName).toBeNull()
+  })
+
+  it('suppresses the diubah line when the SAME actor touches the row seconds after creating it', async () => {
+    // Mirrors provisionStaff + assignBranch (lib/staff.ts): insert, then a
+    // same-actor update moments later -- the exact shape Task 4's brief
+    // calls out as noise, not a real edit.
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 second'
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    // A separate statement, deliberately: touch_updated_at (Task 1) stamps
+    // updated_at = now() itself, so it cannot be set directly in the same
+    // UPDATE as created_at above.
+    await pool.query(
+      `update staff_profiles set updated_by = $1 where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBeNull()
+  })
+
+  it('shows the diubah line when a DIFFERENT actor changes the row moments later', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 second'
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    await pool.query(
+      `update staff_profiles set updated_by = $1 where user_id = $2 and organization_id = $3`,
+      [OTHER, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBe('VT Audit Other')
+  })
+
+  it('shows the diubah line for the SAME actor once real time has passed', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 hour'
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    await pool.query(
+      `update staff_profiles set updated_by = $1 where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBe('VT Audit Actor')
+  })
+
+  it('shows the deactivation line, independent of the diubah line', async () => {
+    // updated_by reset to null: this describe block reuses one row across
+    // tests, and deactivateStaff (Task 3) deliberately never sets updated_by
+    // -- this test isolates that state rather than inheriting it from
+    // whichever test ran before it.
+    await pool.query(
+      `update staff_profiles set created_by = $1, updated_by = null,
+              deleted_by = $2, deleted_at = now(), active = false
+        where user_id = $3 and organization_id = $4`,
+      [ACTOR, OTHER, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.deletedByName).toBe('VT Audit Other')
+    expect(staff!.audit.updatedByName).toBeNull()
+  })
+})

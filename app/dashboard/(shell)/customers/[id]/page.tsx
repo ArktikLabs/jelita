@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { customerProfile, getCustomer } from '@/lib/customer'
 import { CustomerDetailForm, CustomerStatusForm } from './customer-detail-forms'
+import { AuditTrail } from '@/components/audit-trail'
 import Link from 'next/link'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -41,6 +42,20 @@ export default async function CustomerDetailPage({
           Kasir
         </Link>
       </div>
+
+      <AuditTrail
+        created={{
+          by: customer.audit.createdByName,
+          fallback: 'Dibuat dari halaman booking',
+          at: customer.audit.createdAt,
+        }}
+        updated={customer.audit.updatedByName
+          ? { by: customer.audit.updatedByName, at: customer.audit.updatedAt }
+          : null}
+        deactivated={!customer.active && customer.audit.deletedByName
+          ? { by: customer.audit.deletedByName, at: customer.audit.deletedAt! }
+          : null}
+      />
 
       <div className="grid gap-4 sm:grid-cols-4">
         <Stat label="Total belanja" value={formatMoney(profile.spend, currency)} />

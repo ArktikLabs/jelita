@@ -290,7 +290,14 @@ export async function listPerformers(
  */
 export async function getService(
   serviceId: string, organizationId: string,
-): Promise<{ service: ServiceRow; overrides: OverrideRow[]; performers: PerformerCandidate[] } | null> {
+): Promise<{
+  service: ServiceRow; overrides: OverrideRow[]; performers: PerformerCandidate[]
+  audit: {
+    createdByName: string | null; createdAt: string
+    updatedByName: string | null; updatedAt: string
+    deletedByName: string | null; deletedAt: string | null
+  }
+} | null> {
   const [service] = await servicesOf(organizationId, serviceId)
   if (!service) return null
 
@@ -312,7 +319,34 @@ export async function getService(
 
   const performers = await listPerformers(serviceId, organizationId)
 
-  return { service, overrides, performers }
+  // Task 4's audit trail (spec §5). No fallback for a null created_by here:
+  // unlike customers' public booking page, every write path into `services`
+  // requires a signed-in actor (createService's `actorUserId: string`), so a
+  // null one only ever comes from the seed script -- no context worth naming.
+  const { rows: auditRows } = await db.execute(sql`
+    select cb.name as created_by_name, to_char(s.created_at, 'DD-MM-YYYY') as created_display,
+           ub.name as updated_by_name, to_char(s.updated_at, 'DD-MM-YYYY') as updated_display,
+           (s.updated_by is not null and (
+             s.updated_by is distinct from s.created_by
+             or extract(epoch from s.updated_at - s.created_at) > 10
+           )) as show_updated,
+           delb.name as deleted_by_name, to_char(s.deleted_at, 'DD-MM-YYYY') as deleted_display
+      from services s
+      left join users cb on cb.id = s.created_by
+      left join users ub on ub.id = s.updated_by
+      left join users delb on delb.id = s.deleted_by
+     where s.id = ${serviceId} and s.organization_id = ${organizationId}`)
+  const a = auditRows[0] as Record<string, unknown>
+  const audit = {
+    createdByName: (a.created_by_name as string) ?? null,
+    createdAt: a.created_display as string,
+    updatedByName: a.show_updated ? (a.updated_by_name as string) : null,
+    updatedAt: a.updated_display as string,
+    deletedByName: (a.deleted_by_name as string) ?? null,
+    deletedAt: (a.deleted_display as string) ?? null,
+  }
+
+  return { service, overrides, performers, audit }
 }
 
 /**

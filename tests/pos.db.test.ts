@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { TRANSACTION_LIST, checkout, closeShift, currentShift, listSales, voidSale } from '../lib/pos'
+import {
+  TRANSACTION_LIST, checkout, closeShift, currentShift, getSale, listSales, voidSale,
+} from '../lib/pos'
 import { parseListQuery } from '../lib/list-query'
 import { commissionFor, commissionRecap } from '../lib/commission'
 import {
@@ -1180,5 +1182,54 @@ describe('listSales paging', () => {
     await insertSale({ org: LIST_ORG2, team: LIST_TEAM2, completedAt: '2027-05-01 09:00' })
     const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01' }))
     expect(r.total).toBe(1)
+  })
+})
+
+/**
+ * Task 4: getSale surfaces who rang the sale up (spec §5). The receipt page
+ * itself already prints completed_at, so this only proves the NAME comes
+ * back correctly -- the page decides where/whether to render it.
+ */
+describe('Task 4: getSale surfaces who rang it up', () => {
+  const CASHIER = 'pos_audit_cashier'
+  const VOIDER = 'pos_audit_voider'
+
+  beforeAll(async () => {
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, 'Pos Audit Cashier', 'pos-audit-cashier@pos.local', true, now(), now()),
+             ($2, 'Pos Audit Voider', 'pos-audit-voider@pos.local', true, now(), now())
+      on conflict (id) do nothing`, [CASHIER, VOIDER])
+  })
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+  })
+
+  it('names the cashier who rang it up', async () => {
+    const { id } = await checkout({
+      organizationId: ORG, teamId: TEAM, userId: CASHIER, method: 'cash',
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+    })
+    const sale = await getSale(id, ORG)
+    expect(sale!.createdByName).toBe('Pos Audit Cashier')
+  })
+
+  it("names who voided it on the REVERSAL row, not the original sale's cashier", async () => {
+    // Migration 0035: "who voided a sale is already recorded: the reversal
+    // is its own row with its own created_by" -- so the original sale's
+    // createdByName must stay the cashier even after it is voided.
+    const { id } = await checkout({
+      organizationId: ORG, teamId: TEAM, userId: CASHIER, method: 'cash',
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+    })
+    const { id: reversalId } = await voidSale(id, ORG, VOIDER)
+
+    const original = await getSale(id, ORG)
+    expect(original!.createdByName).toBe('Pos Audit Cashier')
+
+    const reversal = await getSale(reversalId, ORG)
+    expect(reversal!.createdByName).toBe('Pos Audit Voider')
   })
 })
