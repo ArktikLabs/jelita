@@ -99,6 +99,45 @@ describe('parseListQuery', () => {
   })
 })
 
+const DATE_SPEC: ListSpec<'completed'> = {
+  sortable: { completed: 't.completed_at' },
+  defaultSort: 'completed',
+  tiebreak: 't.id',
+  // Legal by SHAPE, not by membership -- transactions' own re-expression of
+  // the page's old `/^\d{4}-\d{2}-\d{2}$/` regex, now living in the contract.
+  filters: { date: (raw: string) => (/^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null) },
+}
+
+describe('parseListQuery with a validator filter', () => {
+  it('keeps a value the validator accepts', () => {
+    expect(parseListQuery(DATE_SPEC, { date: '2026-09-09' }).filters)
+      .toEqual({ date: '2026-09-09' })
+  })
+
+  it('drops a malformed date rather than passing it through', () => {
+    expect(parseListQuery(DATE_SPEC, { date: '09/09/2026' }).filters).toEqual({})
+  })
+
+  it('drops an injection attempt the same way -- there is nothing to escape', () => {
+    const q = parseListQuery(DATE_SPEC, { date: "2026-09-09'; drop table transactions --" })
+    expect(q.filters).toEqual({})
+  })
+
+  it('leaves the filter ABSENT, not present-and-empty, when the validator returns null', () => {
+    // The one that matters: a resource's `where` fragment tests
+    // `filters.date === undefined` to mean "no restriction". A validator that
+    // instead stored '' or the rejected raw value would make that test lie.
+    const q = parseListQuery(DATE_SPEC, { date: 'not-a-date' })
+    expect(Object.hasOwn(q.filters, 'date')).toBe(false)
+    expect(q.filters.date).toBeUndefined()
+  })
+
+  it('still supports the array form exactly as before', () => {
+    expect(parseListQuery(SPEC, { active: 'true' }).filters).toEqual({ active: 'true' })
+    expect(parseListQuery(SPEC, { active: 'maybe' }).filters).toEqual({})
+  })
+})
+
 describe('clampPage', () => {
   it('pulls a page past the end back to the last page', () => {
     const q = parseListQuery(SPEC, { page: '999', per: '25' })

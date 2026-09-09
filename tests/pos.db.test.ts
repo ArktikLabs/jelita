@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { checkout, closeShift, currentShift, voidSale } from '../lib/pos'
+import { TRANSACTION_LIST, checkout, closeShift, currentShift, listSales, voidSale } from '../lib/pos'
+import { parseListQuery } from '../lib/list-query'
 import { commissionFor, commissionRecap } from '../lib/commission'
 import {
   customerProfile, parsePointsValue, pointsBalance, pointsFor,
@@ -1039,5 +1040,145 @@ describe('pointsFor', () => {
   it('earns nothing without a rule', () => {
     expect(pointsFor(150000, { kind: null, value: null })).toBe(0)
     expect(pointsFor(150000, { kind: 'spend', value: 0 })).toBe(0)
+  })
+})
+
+describe('listSales paging', () => {
+  // Own org/team, own fixture rows -- inserted directly rather than through
+  // checkout(), same reasoning as customers.db.test.ts's paging fixtures:
+  // exact-count assertions need a dataset nothing else can touch, and the
+  // ledger guarantees checkout() exists to protect are not what this suite
+  // is testing.
+  const LIST_ORG = 'vt_pos_list_org'
+  const LIST_ORG2 = 'vt_pos_list_org2'
+  const LIST_TEAM = 'vt_pos_list_team'
+  const LIST_TEAM2 = 'vt_pos_list_team2'
+  const q = (params: Record<string, string> = {}) => parseListQuery(TRANSACTION_LIST, params)
+
+  let invoiceNo = 0
+  let txnId = 0
+  const insertSale = (
+    { org = LIST_ORG, team = LIST_TEAM, completedAt = '2027-05-01 10:00', reversesId = null as string | null } = {},
+  ) => {
+    const id = `vt_pos_list_${txnId++}`
+    const total = reversesId ? -150000 : 150000
+    return pool.query(
+      `insert into transactions (id, organization_id, team_id, status, reverses_id,
+                                 subtotal, discount, total, currency, invoice_no, completed_at)
+       values ($1, $2, $3, ${reversesId ? "'reversal'" : "'completed'"}, $4,
+               $5, 0, $5, 'IDR', $6, $7::timestamptz)`,
+      [id, org, team, reversesId, total, ++invoiceNo, completedAt])
+      .then(() => id)
+  }
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = any($1)`, [[LIST_ORG, LIST_ORG2]])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'VT Pos List', 'vt-pos-list', now()),
+             ($2, 'VT Pos List 2', 'vt-pos-list-2', now())`, [LIST_ORG, LIST_ORG2])
+    await pool.query(`
+      insert into teams (id, name, organization_id, created_at)
+      values ($1, 'Cabang List', $2, now()), ($3, 'Cabang List 2', $4, now())`,
+      [LIST_TEAM, LIST_ORG, LIST_TEAM2, LIST_ORG2])
+  })
+
+  afterAll(async () => {
+    // TRUNCATE first: deleting the organization cascades into these settled
+    // rows, which the immutability trigger refuses -- same reason the
+    // top-level afterAll does this.
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from organizations where id = any($1)`, [[LIST_ORG, LIST_ORG2]])
+  })
+
+  it('returns one page and the true total', async () => {
+    for (let i = 0; i < 30; i++) {
+      await insertSale({ completedAt: `2027-05-01 ${String(10 + (i % 12)).padStart(2, '0')}:00` })
+    }
+    const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01' }))
+    expect(r.rows).toHaveLength(25)
+    expect(r.total).toBe(30)
+    expect(r.pages).toBe(2)
+    expect(r.page).toBe(1)
+  })
+
+  it('pages through 30 sales without repeating or losing one', async () => {
+    for (let i = 0; i < 30; i++) {
+      await insertSale({ completedAt: `2027-05-01 10:${String(i).padStart(2, '0')}` })
+    }
+    const seen = new Set<string>()
+    for (const page of ['1', '2']) {
+      const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01', page }))
+      for (const row of r.rows) seen.add(row.id)
+    }
+    expect(seen.size, 'every row seen exactly once across two pages').toBe(30)
+  })
+
+  it('clamps a page past the end to the last page', async () => {
+    for (let i = 0; i < 30; i++) await insertSale({ completedAt: '2027-05-01 10:00' })
+    const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01', page: '999' }))
+    expect(r.page).toBe(2)
+    expect(r.rows).toHaveLength(5)
+  })
+
+  it('keeps the existing ?date behaviour: only that day\'s sales', async () => {
+    await insertSale({ completedAt: '2027-05-01 09:00' })
+    await insertSale({ completedAt: '2027-05-01 23:00' })
+    await insertSale({ completedAt: '2027-05-02 09:00' })
+    const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01' }))
+    expect(r.total).toBe(2)
+  })
+
+  it('an absent date restricts nothing, same as any other absent filter', async () => {
+    await insertSale({ completedAt: '2027-05-01 09:00' })
+    await insertSale({ completedAt: '2027-05-02 09:00' })
+    const r = await listSales(LIST_ORG, LIST_TEAM, q())
+    expect(r.total).toBe(2)
+  })
+
+  it('drops a malformed date rather than letting it reach SQL -- it behaves like no filter', async () => {
+    await insertSale({ completedAt: '2027-05-01 09:00' })
+    await insertSale({ completedAt: '2027-05-02 09:00' })
+    // parseListQuery already proves this value never makes it into `filters`
+    // (tests/list-query.test.ts); this proves the consequence downstream --
+    // listSales does not throw and does not silently show zero rows, it shows
+    // every date, because the filter that would have restricted it is absent.
+    const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: "2027-05-01'; drop table transactions --" }))
+    expect(r.total).toBe(2)
+  })
+
+  it('the reversal join does not inflate the count -- transactions_reverses is 1:1', async () => {
+    const original = await insertSale({ completedAt: '2027-05-01 09:00' })
+    await insertSale({ completedAt: '2027-05-01 10:00', reversesId: original })
+    const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01' }))
+    // Two rows: the original and its reversal, each counted once -- not
+    // fanned out by the `left join transactions r on r.reverses_id = t.id`.
+    expect(r.total).toBe(2)
+    expect(r.rows).toHaveLength(2)
+    expect(new Set(r.rows.map((row) => row.id)).size).toBe(2)
+    expect(r.rows.find((row) => row.id === original)?.reversedById).not.toBeNull()
+  })
+
+  it('sorts by invoice number when asked, ascending or descending', async () => {
+    const a = await insertSale({ completedAt: '2027-05-01 09:00' })
+    const b = await insertSale({ completedAt: '2027-05-01 10:00' })
+    const asc = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01', sort: 'invoice' }))
+    const desc = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01', sort: '-invoice' }))
+    expect(asc.rows.map((r) => r.id)).toEqual([a, b])
+    expect(desc.rows.map((r) => r.id)).toEqual([b, a])
+  })
+
+  it('defaults to newest completed_at first', async () => {
+    const a = await insertSale({ completedAt: '2027-05-01 09:00' })
+    const b = await insertSale({ completedAt: '2027-05-01 10:00' })
+    const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01' }))
+    expect(r.rows.map((row) => row.id)).toEqual([b, a])
+  })
+
+  it('never returns another branch\'s or another salon\'s sales', async () => {
+    await insertSale({ completedAt: '2027-05-01 09:00' })
+    await insertSale({ org: LIST_ORG2, team: LIST_TEAM2, completedAt: '2027-05-01 09:00' })
+    const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01' }))
+    expect(r.total).toBe(1)
   })
 })

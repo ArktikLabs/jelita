@@ -10,6 +10,12 @@ const PER_PAGE = [25, 50, 100] as const
  *  that forced this. */
 type SortExpr = string | { asc: string; desc: string }
 
+/** What a filter accepts. The array form is the common case -- a fixed set of
+ *  values -- and stays as it was. The function form is for values that are
+ *  legal by SHAPE rather than by membership: a date, an id, a month. It
+ *  returns the value to use, or null to drop the filter. */
+export type FilterRule = readonly string[] | ((raw: string) => string | null)
+
 export type ListSpec<K extends string = string> = {
   /**
    * Public sort name -> the SQL expression to order by.
@@ -29,8 +35,8 @@ export type ListSpec<K extends string = string> = {
   /** The unique column appended to every ORDER BY. See §3.3. */
   tiebreak: string
   searchable?: boolean
-  /** Filter name -> the values it accepts. Anything else is dropped. */
-  filters?: Record<string, readonly string[]>
+  /** Filter name -> the rule it must satisfy. Anything else is dropped. */
+  filters?: Record<string, FilterRule>
 }
 
 export type ListQuery = {
@@ -89,9 +95,19 @@ export function parseListQuery<K extends string>(spec: ListSpec<K>, params: Para
   const q = rawQ === '' ? null : rawQ
 
   const filters: Record<string, string> = {}
-  for (const [name, allowed] of Object.entries(spec.filters ?? {})) {
-    const value = one(params[name])
-    if (value !== undefined && allowed.includes(value)) filters[name] = value
+  for (const [name, rule] of Object.entries(spec.filters ?? {})) {
+    const raw = one(params[name])
+    if (raw === undefined) continue
+    // Array form: membership. Function form: the validator's own verdict --
+    // returning the value to keep or null to drop it. Either way the result
+    // is bound as a PARAMETER by whoever builds the query's SQL next; nothing
+    // returned here is ever handed to sql.raw.
+    const value = typeof rule === 'function' ? rule(raw) : (rule.includes(raw) ? raw : null)
+    // A rule that rejects the raw value leaves the filter ABSENT, not
+    // present with an empty or invalid string -- so a resource's `where`
+    // fragment can keep treating "not in filters" as "no restriction" for
+    // every filter, exactly as it did before validators existed.
+    if (value !== null) filters[name] = value
   }
 
   return { page, perPage, sort, desc, q, filters }
