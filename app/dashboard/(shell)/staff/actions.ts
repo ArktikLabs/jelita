@@ -86,12 +86,22 @@ async function branchWriteError(
   return null
 }
 
-/** Does the actor's own `members.role` for this org contain 'owner'? */
+/**
+ * Does the actor's own `members.role` for this org contain 'owner'?
+ *
+ * `string_agg` over every row, not `limit 1` -- `members` carries no unique
+ * on (user_id, organization_id) by design (migration 0010_services.sql), so
+ * a dual-membership actor's `limit 1` with no `order by` could land on their
+ * weaker row and read as not-an-owner despite a real owner row sitting right
+ * next to it. Same shape as `staffOf` (lib/staff.ts), which every
+ * owner-protection check here compares the target against -- this is the
+ * actor-side read, and it has to agree with that one.
+ */
 async function isOwner(userId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
-    select role from members where user_id = ${userId} and organization_id = ${organizationId}
-     limit 1`)
-  return ((rows[0] as { role: string } | undefined)?.role ?? '').split(',').includes('owner')
+    select string_agg(role, ',' order by role) as role from members
+     where user_id = ${userId} and organization_id = ${organizationId}`)
+  return ((rows[0] as { role: string | null } | undefined)?.role ?? '').split(',').includes('owner')
 }
 
 /**

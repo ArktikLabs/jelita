@@ -526,6 +526,89 @@ test.describe.serial('a person with two membership rows: demoting them must not 
 })
 
 /**
+ * Fix 2 (crud-phase-3 review): `isOwner` (app/dashboard/(shell)/staff/actions.ts)
+ * did `select role from members ... limit 1` with no `order by` -- the exact
+ * shape `memberIdsFor` above was already fixed to stop using, left behind in
+ * its sibling. It gates every owner-protection check (role change,
+ * deactivation, password reset), so a genuine owner holding two rows was
+ * refused acting on a fellow owner whenever the arbitrary pick landed on
+ * their WEAKER row.
+ *
+ * Deactivation, not the role-change form: updateStaffRoleAction's write goes
+ * through better-auth's own updateMemberRole, which resolves the ACTING
+ * member through its own (separately ambiguous, see the self-demotion block
+ * below) lookup -- confounding a role-change test with a second, unrelated
+ * race. deactivateStaffAction never calls into better-auth at all; the only
+ * thing standing between a dual-membership owner and deactivating a co-owner
+ * is this app's own `isOwner` gate, which is what this test isolates.
+ *
+ * Reproduced with the same fixture shape as the describe block above --
+ * 'admin' inserted first, 'owner' second, which this Postgres reliably
+ * returns in insertion order for `limit 1` with no `order by` (see that
+ * block's own comment) -- except this time the dual-membership person is the
+ * ACTOR, deactivating a genuine second owner. `staffOf` (lib/staff.ts)
+ * already reads this person's roles as the union via `string_agg`, so before
+ * this fix the actor-side check disagreed with how the target side is read.
+ */
+test.describe.serial('a dual-membership owner acting on a fellow owner must not be refused for it', () => {
+  let owner: Awaited<ReturnType<typeof client>>
+  let orgId: string
+  let dualCtx: Awaited<ReturnType<typeof client>>
+  let dualUserId: string
+  let coOwnerUserId: string
+
+  test.beforeAll(async () => {
+    ;({ ctx: owner, organizationId: orgId } = await createSalon(pool, {
+      name: 'Stf Dual Actor Owner', email: `dual-actor-owner@${DOMAIN}`, password: PW,
+      salon: 'Stf Check Dual Actor', slug: 'staffcheck-dualactor',
+    }))
+    await setPlan(orgId, 'business')
+
+    // A genuine second owner -- no login needed, this person never signs in
+    // here, only their `members.role` is read by the actor-side check.
+    const coOwner = await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values (gen_random_uuid()::text, 'Stf Dual Co Owner', $1, true, now(), now())
+      returning id`, [`dual-co-owner@${DOMAIN}`])
+    coOwnerUserId = coOwner.rows[0].id
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values (gen_random_uuid()::text, $1, $2, 'owner', now())`, [coOwnerUserId, orgId])
+
+    // The dual-membership actor: a real login, with an 'admin' row inserted
+    // BEFORE the 'owner' row -- the exact insertion order the fixture above
+    // documents as the one `limit 1` with no `order by` reliably mis-picks.
+    const email = `dual-actor@${DOMAIN}`
+    dualUserId = await createLogin(pool, { name: 'Stf Dual Actor', email, password: PW })
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'admin', now())`, [`${dualUserId}_m_admin`, dualUserId, orgId])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now())`, [`${dualUserId}_m_owner`, dualUserId, orgId])
+
+    dualCtx = await signIn(email, PW)
+    await dualCtx.post('/api/auth/organization/set-active', { data: { organizationId: orgId } })
+  })
+  test.afterAll(async () => {
+    await owner.dispose()
+    await dualCtx.dispose()
+  })
+
+  test('the dual-membership owner can deactivate a fellow owner, not refused with "Hanya pemilik"', async () => {
+    const res = await submitForm(dualCtx, `/dashboard/staff/${coOwnerUserId}`,
+      'Nonaktifkan staf</button>', { userId: coOwnerUserId })
+    expect(res.status, res.html).toBe(200)
+    expect(res.html).not.toContain('Hanya pemilik yang dapat menonaktifkan pemilik.')
+
+    const { rows: [after] } = await pool.query(
+      `select active from staff_profiles where user_id = $1 and organization_id = $2`,
+      [coOwnerUserId, orgId])
+    expect(after?.active, 'the co-owner was actually deactivated, not merely unrefused').toBe(false)
+  })
+})
+
+/**
  * Fix-round finding: the multi-row loop above (memberIdsFor's docstring)
  * cannot be one transaction, so a failure partway through can leave some of
  * a person's rows on the new role and some not -- while the old code
