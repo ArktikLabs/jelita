@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { STAFF_LIST, listStaff } from '../lib/staff'
+import { STAFF_LIST, listStaff, staffOf } from '../lib/staff'
 import { parseListQuery } from '../lib/list-query'
 
 /**
@@ -587,6 +587,18 @@ describe('listStaff paging', () => {
     // twice at the cost of someone else falling off the page.
     expect(r.rows.filter((s) => s.userId === staffA)).toHaveLength(1)
     expect(r.rows).toHaveLength(25)
+  })
+
+  // staffOf is the unpaged building block the calendar's lane list and the
+  // POS performer picker both read directly (no page, no count) -- it has
+  // the exact same members-join fan-out as listStaff's page query, and a
+  // picker showing the same stylist twice is worse than a wrong count: the
+  // person choosing has no way to tell the two entries apart. Reuses the
+  // duplicate-membership row the previous test left in place, rather than
+  // inserting its own.
+  it('staffOf also returns the person once, not twice', async () => {
+    const all = await staffOf(LIST_ORG)
+    expect(all.filter((s) => s.userId === ids[0])).toHaveLength(1)
   })
 })
 

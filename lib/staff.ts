@@ -212,19 +212,19 @@ export async function assignBranch(
  * iterate every staff member, not a page -- narrowing either to page 1 of the
  * staff list would silently hide anyone past it.
  *
- * NOTE (pre-existing, not introduced by this function): `members` carries no
- * unique constraint on (user_id, organization_id) by design (migration
- * 0010_services.sql), so a person with two membership rows appears twice
- * here too. `listStaff` below dedups for the paged list; this unpaged path
- * does not, matching its behaviour before this split. Worth fixing if it
- * ever bites a real roster -- flagged in the task report, left alone here to
- * keep this change to the split it asks for.
+ * Same GROUP BY dedup as `listStaff` below, and for the same reason: `members`
+ * carries no unique on (user_id, organization_id) by design (migration
+ * 0010_services.sql), so a person with two membership rows would otherwise
+ * come back twice here too -- worse than a wrong count, because a picker
+ * showing the same stylist twice gives whoever is choosing no way to tell the
+ * two entries apart. See listStaff's docstring for why GROUP BY (not relying
+ * on Postgres's PK-only functional-dependency inference) and why MIN(m.role).
  */
 export async function staffOf(
   organizationId: string, userId?: string,
 ): Promise<StaffRow[]> {
   const { rows } = await db.execute(sql`
-    select u.id as user_id, u.name, u.email, m.role,
+    select u.id as user_id, u.name, u.email, min(m.role) as role,
            s.team_id, t.name as branch_name, s.active
       from members m
       join users u on u.id = m.user_id
@@ -233,6 +233,7 @@ export async function staffOf(
       left join teams t on t.id = s.team_id
      where m.organization_id = ${organizationId}
        ${userId === undefined ? sql`` : sql`and u.id = ${userId}`}
+     group by u.id, u.name, u.email, s.team_id, t.name, s.active
      order by u.name, u.id`)
   return rowsToStaff(rows as Record<string, unknown>[])
 }
