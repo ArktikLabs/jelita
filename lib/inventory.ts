@@ -1,6 +1,10 @@
 import { sql } from 'drizzle-orm'
 import { db } from './db'
 import { pgCode } from './pg-error'
+import {
+  clampPage, orderBy, paginate, toResult,
+  type ListQuery, type ListResult, type ListSpec,
+} from './list-query'
 
 /**
  * Stock, as a ledger.
@@ -22,19 +26,8 @@ export type ProductRow = {
   low: boolean
 }
 
-/** Products with this branch's on-hand. */
-export async function listProducts(
-  organizationId: string, teamId: string,
-): Promise<ProductRow[]> {
-  const { rows } = await db.execute(sql`
-    select p.id, p.name, p.sku, p.kind, p.price, p.reorder_level, p.active,
-           h.on_hand, h.low
-      from products p
-      join stock_on_hand h
-        on h.product_id = p.id and h.team_id = ${teamId}
-     where p.organization_id = ${organizationId}
-     order by p.name, p.id`)
-  return (rows as Record<string, unknown>[]).map((r) => ({
+const rowsToProducts = (rows: Record<string, unknown>[]): ProductRow[] =>
+  rows.map((r) => ({
     id: r.id as string,
     name: r.name as string,
     sku: (r.sku as string) ?? null,
@@ -45,18 +38,102 @@ export async function listProducts(
     onHand: Number(r.on_hand),
     low: r.low as boolean,
   }))
+
+/**
+ * Every product of one branch, with its on-hand -- unpaged. The building
+ * block for sellableProducts, lowStock and the products page's own
+ * "every product" needs (the low-stock banner and the stock-adjust form's
+ * dropdown): those must never be narrowed to one page of the list, or a
+ * low-stock item sitting on page 2 would silently stop being flagged.
+ */
+export async function productsOf(
+  organizationId: string, teamId: string,
+): Promise<ProductRow[]> {
+  const { rows } = await db.execute(sql`
+    select p.id, p.name, p.sku, p.kind, p.price, p.reorder_level, p.active,
+           h.on_hand, h.low
+      from products p
+      join stock_on_hand h
+        on h.product_id = p.id and h.team_id = ${teamId}
+     where p.organization_id = ${organizationId}
+     order by p.name, p.id`)
+  return rowsToProducts(rows as Record<string, unknown>[])
+}
+
+/** What a URL may ask of the products list. `stock` is deliberately absent:
+ *  it comes from the `stock_on_hand` view, not a column, so no index can back
+ *  ordering by it (§3.2) -- sorting by it would need its own design. */
+export const PRODUCT_LIST: ListSpec<'name' | 'sku' | 'price'> = {
+  sortable: {
+    name: 'p.name',
+    sku: 'p.sku',
+    // price is nullable -- internal-use stock carries none. `nulls last` in
+    // BOTH directions, or a null-priced product would jump from last to
+    // first depending only on which way you sorted, reading as data
+    // corruption to whoever is looking at it.
+    price: { asc: 'p.price asc nulls last', desc: 'p.price desc nulls last' },
+  },
+  defaultSort: 'name',
+  tiebreak: 'p.id',
+  searchable: true,
+}
+
+/**
+ * One page of a branch's products, with this branch's on-hand.
+ *
+ * The count and the page query run in PARALLEL against the SAME `where`
+ * fragment -- see listCustomers for why that pairing matters.
+ */
+export async function listProducts(
+  organizationId: string, teamId: string, query: ListQuery,
+): Promise<ListResult<ProductRow>> {
+  const term = (query.q ?? '').trim()
+  const like = `%${term.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
+
+  const where = sql`
+    where p.organization_id = ${organizationId}
+      ${term === '' ? sql`` : sql`and p.name ilike ${like}`}`
+
+  const fetch = async (q: ListQuery) => {
+    const { rows } = await db.execute(sql`
+      select p.id, p.name, p.sku, p.kind, p.price, p.reorder_level, p.active,
+             h.on_hand, h.low
+        from products p
+        join stock_on_hand h
+          on h.product_id = p.id and h.team_id = ${teamId}
+        ${where} ${orderBy(PRODUCT_LIST, q)} ${paginate(q)}`)
+    return rowsToProducts(rows as Record<string, unknown>[])
+  }
+
+  const [rows, countRows] = await Promise.all([
+    fetch(query),
+    db.execute(sql`
+      select count(*)::int as n
+        from products p
+        join stock_on_hand h
+          on h.product_id = p.id and h.team_id = ${teamId}
+        ${where}`),
+  ])
+  const total = (countRows.rows[0] as { n: number }).n
+
+  const clamped = clampPage(query, total)
+  return toResult(
+    clamped.page === query.page ? rows : await fetch(clamped),
+    total,
+    clamped,
+  )
 }
 
 /** What a POS cart may sell: active retail products, with their price. */
 export async function sellableProducts(organizationId: string, teamId: string) {
-  return (await listProducts(organizationId, teamId))
+  return (await productsOf(organizationId, teamId))
     .filter((p) => p.active && p.kind === 'retail')
 }
 
 /** Every product at or below its reorder level, across the branch. PRD §5.4's
  *  low-stock alert. */
 export async function lowStock(organizationId: string, teamId: string) {
-  return (await listProducts(organizationId, teamId)).filter((p) => p.active && p.low)
+  return (await productsOf(organizationId, teamId)).filter((p) => p.active && p.low)
 }
 
 /**

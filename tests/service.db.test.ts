@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool, Client } from 'pg'
 import { TEST_DATABASE_URL } from './db'
+import { SERVICE_LIST, listServices } from '../lib/service'
+import { parseListQuery } from '../lib/list-query'
 
 /**
  * Services catalogue schema, the seeding trigger/backfill, cross-tenant FK
@@ -315,5 +317,62 @@ describe('service creation vs. currency change: never both land', () => {
       await curClient.end()
       await svcClient.end()
     }
+  })
+})
+
+describe('listServices paging', () => {
+  const q = (params: Record<string, string> = {}) => parseListQuery(SERVICE_LIST, params)
+
+  beforeAll(async () => {
+    // Wipes vt_svc_s1 (seeded by earlier describes in this file) along with
+    // it -- nothing after this point depends on that fixture, and the exact
+    // total below needs ORG to hold nothing else.
+    await pool.query(`delete from services where organization_id = $1`, [ORG])
+    // 60 rows, distinctly NAMED -- services_org_name_lower forbids two
+    // services sharing a case-insensitive name within one salon -- but with
+    // the SAME price, so sorting by price (below) is exactly the case a
+    // non-unique sort column needs a tiebreaker for.
+    for (let i = 0; i < 60; i++) {
+      await pool.query(
+        `insert into services (id, organization_id, name, duration_minutes, price)
+         values ($1, $2, $3, 30, 50000)`,
+        [`svc_pg_${String(i).padStart(3, '0')}`, ORG, `Layanan Page ${String(i).padStart(3, '0')}`])
+    }
+  })
+
+  it('returns one page and the true total', async () => {
+    const r = await listServices(ORG, q())
+    expect(r.rows).toHaveLength(25)
+    expect(r.total).toBe(60)
+    expect(r.pages).toBe(3)
+    expect(r.page).toBe(1)
+  })
+
+  it('pages through 60 same-priced rows without repeating or losing one', async () => {
+    const seen = new Set<string>()
+    for (const page of ['1', '2', '3']) {
+      const r = await listServices(ORG, q({ sort: 'price', page }))
+      for (const row of r.rows) seen.add(row.id)
+    }
+    expect(seen.size, 'every row seen exactly once across three pages').toBe(60)
+  })
+
+  it('clamps a page past the end to the last page', async () => {
+    const r = await listServices(ORG, q({ page: '999' }))
+    expect(r.page).toBe(3)
+    expect(r.rows).toHaveLength(10)
+  })
+
+  it('counts only the rows the search matches', async () => {
+    await pool.query(`update services set name = 'Unik' where id = $1`, ['svc_pg_000'])
+    const r = await listServices(ORG, q({ q: 'Unik' }))
+    expect(r.total).toBe(1)
+    expect(r.rows).toHaveLength(1)
+  })
+
+  it('never returns another salon\'s services', async () => {
+    const r = await listServices(ORG, q())
+    expect(r.total).toBe(60)
+    expect(r.rows.map((x) => x.id)).not.toContain('vt_svc_s2')
   })
 })

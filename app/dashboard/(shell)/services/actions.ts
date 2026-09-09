@@ -7,7 +7,7 @@ import { db } from '@/lib/db'
 import { PlanError, requireQuota } from '@/lib/plan/entitlements'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { salonCurrency, listPerformers } from '@/lib/service'
-import { listBranches } from '@/lib/branch'
+import { branchesOf } from '@/lib/branch'
 import { parseMoney, isCurrencyCode } from '@/lib/money'
 import { formError, type FormState } from '@/lib/form-state'
 
@@ -178,7 +178,7 @@ export async function updateServiceAction(
  * row per weekday). Validated all-or-nothing before any write: a rejected
  * row must not leave earlier branches written while later ones are refused.
  *
- * The team ids this loop writes come from listBranches(organizationId), this
+ * The team ids this loop writes come from branchesOf(organizationId), this
  * org's own branches -- NEVER from a teamId embedded in the submitted field
  * name. A price-<foreignTeamId> field in the POST body is simply never read,
  * so an override naming another salon's branch is refused by construction:
@@ -193,7 +193,7 @@ export async function setBranchOverrideAction(
   if (!serviceId || !(await ownedService(serviceId, organizationId))) return NOT_FOUND
 
   const currency = await salonCurrency(organizationId)
-  const branches = await listBranches(organizationId)
+  const branches = await branchesOf(organizationId)
 
   // Iterating THIS list, not the submitted field names, is the whole guard:
   // a price-<foreignTeamId>/offered-<foreignTeamId> pair a client tacked on

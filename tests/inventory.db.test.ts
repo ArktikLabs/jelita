@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { listProducts, lowStock, recordMovement, sellableProducts } from '../lib/inventory'
+import { PRODUCT_LIST, listProducts, lowStock, recordMovement, sellableProducts } from '../lib/inventory'
+import { parseListQuery } from '../lib/list-query'
 import { checkout, voidSale } from '../lib/pos'
 
 /**
@@ -25,8 +26,18 @@ const TOWEL = 'inv_towel'
 const FOREIGN_PRODUCT = 'inv_foreign'
 const SERVICE = 'inv_service'
 
-const onHand = async (productId = SHAMPOO, teamId = TEAM) =>
-  (await listProducts(ORG, teamId)).find((p) => p.id === productId)!.onHand
+// Read directly off the view, not through listProducts: on-hand is a
+// property of (product, team), and listProducts is now the PAGINATED list --
+// a product sitting on page 2 would make this helper fail with "not found"
+// for a reason that has nothing to do with the ledger.
+const q = (params: Record<string, string> = {}) => parseListQuery(PRODUCT_LIST, params)
+
+const onHand = async (productId = SHAMPOO, teamId = TEAM) => {
+  const { rows } = await pool.query(
+    `select on_hand from stock_on_hand where product_id = $1 and team_id = $2`,
+    [productId, teamId])
+  return Number(rows[0].on_hand)
+}
 
 beforeAll(async () => {
   await pool.query(`delete from organizations where id = any($1)`, [[ORG, ORG2]])
@@ -268,5 +279,72 @@ describe('what the database refuses outright', () => {
     })
     // reorder_level is 2, on-hand is now 2 -- AT the level counts as low.
     expect((await lowStock(ORG, TEAM)).map((p) => p.id)).toContain(SHAMPOO)
+  })
+
+  it('sorts by price with the price-less products last, both directions', async () => {
+    // products.price is nullable. Without `nulls last` on both directions the
+    // null-priced rows sit at opposite ends depending on the sort, which reads
+    // as data corruption to the person looking at it. TOWEL is 'internal' and
+    // already carries no price (the beforeEach fixture), so the update below
+    // is a no-op -- kept anyway so this test reads the same as the brief's.
+    const NO_PRICE = TOWEL
+    await pool.query(`update products set price = null where id = $1`, [NO_PRICE])
+    const asc = await listProducts(ORG, TEAM, q({ sort: 'price' }))
+    const desc = await listProducts(ORG, TEAM, q({ sort: '-price' }))
+    expect(asc.rows.at(-1)!.id).toBe(NO_PRICE)
+    expect(desc.rows.at(-1)!.id).toBe(NO_PRICE)
+  })
+})
+
+describe('listProducts paging', () => {
+  // The outer beforeEach (above) truncates products for ORG/ORG2 and reseeds
+  // SHAMPOO/TOWEL/FOREIGN_PRODUCT before EVERY test in this file -- this
+  // nested beforeEach runs after it and replaces ORG's two rows with 60
+  // duplicate-named ones, so the paging assertions below see exactly the
+  // fixture they expect, nothing borrowed from the ledger tests above.
+  beforeEach(async () => {
+    await pool.query(`delete from products where organization_id = $1`, [ORG])
+    for (let i = 0; i < 60; i++) {
+      await pool.query(
+        `insert into products (id, organization_id, name, kind, price, reorder_level)
+         values ($1, $2, 'Sama Persis', 'retail', $3, 0)`,
+        [`inv_pg_${String(i).padStart(3, '0')}`, ORG, 10000 + i])
+    }
+  })
+
+  it('returns one page and the true total', async () => {
+    const r = await listProducts(ORG, TEAM, q())
+    expect(r.rows).toHaveLength(25)
+    expect(r.total).toBe(60)
+    expect(r.pages).toBe(3)
+    expect(r.page).toBe(1)
+  })
+
+  it('pages through 60 identical names without repeating or losing one', async () => {
+    const seen = new Set<string>()
+    for (const page of ['1', '2', '3']) {
+      const r = await listProducts(ORG, TEAM, q({ page }))
+      for (const row of r.rows) seen.add(row.id)
+    }
+    expect(seen.size, 'every row seen exactly once across three pages').toBe(60)
+  })
+
+  it('clamps a page past the end to the last page', async () => {
+    const r = await listProducts(ORG, TEAM, q({ page: '999' }))
+    expect(r.page).toBe(3)
+    expect(r.rows).toHaveLength(10)
+  })
+
+  it('counts only the rows the search matches', async () => {
+    await pool.query(`update products set name = 'Unik' where id = $1`, ['inv_pg_000'])
+    const r = await listProducts(ORG, TEAM, q({ q: 'Unik' }))
+    expect(r.total).toBe(1)
+    expect(r.rows).toHaveLength(1)
+  })
+
+  it('never returns another salon\'s products', async () => {
+    const r = await listProducts(ORG, TEAM, q())
+    expect(r.total).toBe(60)
+    expect(r.rows.map((x) => x.id)).not.toContain(FOREIGN_PRODUCT)
   })
 })

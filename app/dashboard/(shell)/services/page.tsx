@@ -1,10 +1,15 @@
 import Link from 'next/link'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { listServices, salonCurrency, type ServiceRow } from '@/lib/service'
+import { SERVICE_LIST, listServices, salonCurrency } from '@/lib/service'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
 import { formatMoney } from '@/lib/money'
+import { parseListQuery } from '@/lib/list-query'
+import { listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { SortableHead } from '@/components/list/sortable-head'
+import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
@@ -12,29 +17,26 @@ import { CategoryCreateForm } from './category-form'
 
 const UNCATEGORISED = 'Tanpa kategori'
 
-export default async function ServicesPage() {
+export default async function ServicesPage({
+  searchParams,
+}: {
+  searchParams: Promise<Params>
+}) {
   // §5.1: this reads with service:['update'], not ['read'] -- front desk and
   // stylists hold ['read'] too, and catalogue management is not their
   // screen (reading a price belongs to POS and booking instead).
   await requirePagePermission({ service: ['update'] })
   const { organizationId } = await requirePageOrg()
+  const params = await searchParams
+  const query = parseListQuery(SERVICE_LIST, params)
 
   const [services, entitlements, used, currency] = await Promise.all([
-    listServices(organizationId),
+    listServices(organizationId, query),
     getEntitlements(organizationId),
     countResource(organizationId, 'services'),
     salonCurrency(organizationId),
   ])
   const cap = entitlements.caps.services
-
-  // listServices already orders by category name (nulls last), so grouping
-  // into a Map in that same order needs no re-sort here.
-  const groups = new Map<string, ServiceRow[]>()
-  for (const s of services) {
-    const key = s.categoryName ?? UNCATEGORISED
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key)!.push(s)
-  }
 
   return (
     <div className="space-y-6">
@@ -54,39 +56,57 @@ export default async function ServicesPage() {
 
       <CategoryCreateForm />
 
-      {groups.size === 0 ? (
-        <p className="text-sm text-muted-foreground">Belum ada layanan.</p>
-      ) : (
-        [...groups.entries()].map(([category, rows]) => (
-          <div key={category} className="space-y-2">
-            <h2 className="text-sm font-medium text-muted-foreground">{category}</h2>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Nama</TableHead>
-                  <TableHead>Durasi</TableHead>
-                  <TableHead>Harga</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((s) => (
-                  <TableRow key={s.id}>
-                    <TableCell className="font-medium">{s.name}</TableCell>
-                    <TableCell>{s.durationMinutes} menit</TableCell>
-                    <TableCell>{formatMoney(s.price, currency)}</TableCell>
-                    <TableCell>
-                      <Badge variant={s.active ? 'default' : 'secondary'}>
-                        {s.active ? 'Aktif' : 'Nonaktif'}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        ))
-      )}
+      <form className="max-w-sm">
+        {preservedFields(params, ['q']).map(([name, value]) => (
+          <input key={name} type="hidden" name={name} value={value} />
+        ))}
+        <Input name="q" defaultValue={query.q ?? ''} placeholder="Cari nama layanan" />
+      </form>
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <SortableHead column="name" label="Nama" spec={SERVICE_LIST} query={query} params={params} />
+            <TableHead>Kategori</TableHead>
+            <TableHead>Durasi</TableHead>
+            <SortableHead column="price" label="Harga" spec={SERVICE_LIST} query={query} params={params} />
+            <TableHead>Status</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {services.rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={5} className="text-muted-foreground">
+                {query.q ? (
+                  <>
+                    Tidak ada layanan yang cocok dengan pencarian ini.{' '}
+                    <Link href={listHref(params, { q: null })} className="underline">
+                      Hapus filter
+                    </Link>
+                  </>
+                ) : (
+                  'Belum ada layanan.'
+                )}
+              </TableCell>
+            </TableRow>
+          )}
+          {services.rows.map((s) => (
+            <TableRow key={s.id}>
+              <TableCell className="font-medium">{s.name}</TableCell>
+              <TableCell>{s.categoryName ?? UNCATEGORISED}</TableCell>
+              <TableCell>{s.durationMinutes} menit</TableCell>
+              <TableCell>{formatMoney(s.price, currency)}</TableCell>
+              <TableCell>
+                <Badge variant={s.active ? 'default' : 'secondary'}>
+                  {s.active ? 'Aktif' : 'Nonaktif'}
+                </Badge>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+
+      <Pagination result={services} params={params} />
     </div>
   )
 }

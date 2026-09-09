@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { salonSettings, listServices } from '@/lib/service'
+import { salonSettings, servicesOf } from '@/lib/service'
 import { toAmountInput } from '@/lib/money'
 import {
   BrandingCard, CurrencyCard, PointsCard, ShiftCard, SlotGridCard,
@@ -16,7 +16,7 @@ export default async function SettingsPage() {
   const { organizationId } = await requirePageOrg()
   const [salon, services] = await Promise.all([
     salonSettings(organizationId),
-    listServices(organizationId),
+    servicesOf(organizationId),
   ])
   const { currency, slotMinutes } = salon
   const { rows } = await db.execute(sql`

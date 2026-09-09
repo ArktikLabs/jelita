@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { listStaff } from '@/lib/staff'
-import { listBranches } from '@/lib/branch'
+import { branchesOf } from '@/lib/branch'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -29,7 +29,7 @@ export default async function StaffPage({
   // case here — everyone who reaches this page sees the whole roster.
   const [staff, branches, entitlements, used] = await Promise.all([
     listStaff(organizationId),
-    listBranches(organizationId),
+    branchesOf(organizationId),
     getEntitlements(organizationId),
     countResource(organizationId, 'staff'),
   ])

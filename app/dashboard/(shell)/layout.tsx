@@ -5,7 +5,7 @@ import { db } from '@/lib/db'
 import { requirePageOrg } from '@/lib/session'
 import { visibleNav } from '@/lib/nav'
 import { auth } from '@/lib/auth'
-import { listBranches } from '@/lib/branch'
+import { branchesOf } from '@/lib/branch'
 import { branchLabel } from '@/lib/branch-label'
 import { buttonVariants } from '@/components/ui/button'
 import { BranchSwitcher } from './branch-switcher'
@@ -30,8 +30,8 @@ export default async function AppLayout({
   // and lock state on every page — the very table spec §8 guards /branches to
   // keep from them. They get one row, resolved and rendered on the server.
   const branches = canSwitch
-    ? await listBranches(session.organizationId)
-    : activeTeamId ? await listBranches(session.organizationId, activeTeamId) : []
+    ? await branchesOf(session.organizationId)
+    : activeTeamId ? await branchesOf(session.organizationId, activeTeamId) : []
   // Narrowed for the same reason the non-switching roles get one row: props to
   // a client component are serialized into the RSC payload of EVERY page,
   // rendered or not. The switcher needs an id and a label; address, phone and
