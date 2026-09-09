@@ -187,6 +187,12 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     // "Dibuat oleh -", which would read as a missing name.
     const res = await owner.get(`/dashboard/customers/${sariId}`)
     const html = await res.text()
+    // Anchor the absence: on a 500 or a redirect BOTH strings below are
+    // absent too, so without a positive assertion first this test would
+    // pass on a page that never rendered. The earlier buggy version had
+    // this by accident -- it asserted the fallback text was present --
+    // and rewriting it to two negatives took the anchor away with it.
+    expect(html).toContain('Sari Wijaya')
     expect(html).not.toContain('Dibuat oleh')
     // The specific regression: an earlier version guessed "the booking
     // page" for ANY null actor, which is false for a row like this one
