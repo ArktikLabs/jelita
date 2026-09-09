@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { STAFF_LIST, getStaff, listStaff, staffOf } from '../lib/staff'
+import { STAFF_LIST, deactivateStaff, getStaff, listStaff, staffOf } from '../lib/staff'
 import { setBaseSalary } from '../lib/payroll'
 import { parseListQuery } from '../lib/list-query'
 
@@ -914,6 +914,27 @@ describe('Task 4: getStaff surfaces the audit trail', () => {
     const staff = await getStaff(USER, ORG)
     expect(staff!.audit.deletedByName).toBe('VT Audit Other')
     expect(staff!.audit.updatedByName).toBeNull()
+  })
+
+  // Fix 3 (crud-phase-3 review): the test above proved getStaff's read of
+  // deleted_by, but nothing proved deactivateStaff (lib/staff.ts:438) is the
+  // one WRITING it correctly -- every other test in this describe block sets
+  // deleted_by by hand, via raw SQL. Swapping actorUserId for userId there
+  // (recording the deactivated person as the author of their own
+  // deactivation) would pass the entire suite today. Round-trip through the
+  // real function instead, with a distinct actor, the same way
+  // branch.db.test.ts already does for deactivateBranch.
+  it('deactivateStaff itself stamps the ACTOR, not the target, as deleted_by', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = null, updated_by = null,
+              deleted_by = null, deleted_at = null, active = true
+        where user_id = $1 and organization_id = $2`,
+      [USER, ORG])
+    const closed = await deactivateStaff(USER, ORG, ACTOR)
+    expect(closed).toBe(true)
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.deletedByName).toBe('VT Audit Actor')
+    expect(staff!.audit.deletedByName).not.toBe('VT Audit Staff')
   })
 
   // Fix 1 (crud-phase-3 review): setBaseSalary (lib/payroll.ts) is a write
