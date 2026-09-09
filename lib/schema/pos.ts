@@ -1,7 +1,7 @@
 import {
   bigint, char, index, integer, pgTable, text, timestamp, unique,
 } from 'drizzle-orm/pg-core'
-import { organizations } from './auth'
+import { organizations, users } from './auth'
 
 /**
  * A sale. `open` is the cart; `completed` is money; `reversal` is a void.
@@ -40,6 +40,11 @@ export const transactions = pgTable('transactions', {
   total: bigint('total', { mode: 'number' }).notNull().default(0),
   currency: char('currency', { length: 3 }).notNull(),
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // created_by ONLY: a settled row is immutable by trigger
+  // (transactions_settled_immutable), so updated_by could never be written,
+  // and who voided a sale is already recorded -- the reversal is its own row
+  // with its own created_by.
+  createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

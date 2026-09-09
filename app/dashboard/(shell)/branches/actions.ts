@@ -187,7 +187,7 @@ export async function deactivateBranchAction(
        order by p.team_id
          for update of p
     )
-    update branch_profiles set active = false, deactivated_at = now(), updated_at = now()
+    update branch_profiles set active = false, deleted_at = now(), updated_at = now()
      where team_id = ${teamId}
        and team_id in (select team_id from live)
        and (select count(*) from live) > 1
@@ -220,7 +220,7 @@ export async function reactivateBranchAction(
   if (!teamId) return NOT_FOUND
   if (!await ownedBranch(teamId, organizationId)) return NOT_FOUND
   await db.execute(sql`
-    update branch_profiles set active = true, deactivated_at = null, updated_at = now()
+    update branch_profiles set active = true, deleted_at = null, updated_at = now()
      where team_id = ${teamId}
        and exists (select 1 from teams
                     where id = ${teamId} and organization_id = ${organizationId})`)

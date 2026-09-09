@@ -1,7 +1,7 @@
 import {
   bigint, boolean, char, index, integer, pgTable, smallint, text, timestamp, unique,
 } from 'drizzle-orm/pg-core'
-import { organizations } from './auth'
+import { organizations, users } from './auth'
 
 export const salonProfiles = pgTable('salon_profiles', {
   organizationId: text('organization_id').primaryKey()
@@ -75,6 +75,15 @@ export const services = pgTable('services', {
   /** Overrides the salon default for this service. */
   commissionKind: text('commission_kind'),
   commissionValue: integer('commission_value'),
+  // NULLABLE and undefaulted: a public booking, the seed and the cron all
+  // write without a signed-in user, and NULL means "not a person" rather
+  // than "we forgot" (Task 2 threads the actor through the write paths).
+  createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  // WHEN a record stopped being offered, and by whom. Not "hide this row" --
+  // `active` remains the single truth for that.
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  deletedBy: text('deleted_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

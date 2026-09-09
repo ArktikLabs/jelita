@@ -1015,7 +1015,7 @@ test.describe.serial('departure: the last owner, and the ownerless-salon guards 
     expect(await activeOf('stf_owner2')).toBe(false)
 
     await pool.query(`
-      update staff_profiles set active = true, deactivated_at = null
+      update staff_profiles set active = true, deleted_at = null
        where user_id = 'stf_owner2' and organization_id = $1`, [orgId])
   })
 

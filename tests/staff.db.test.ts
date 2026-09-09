@@ -299,7 +299,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
        where organization_id = $1 and user_id in ($2, $3)`,
       [OWNERS_ORG, 'vt_staff_owner1', 'vt_staff_owner2'])
     await pool.query(`
-      update staff_profiles set active = true, deactivated_at = null
+      update staff_profiles set active = true, deleted_at = null
        where organization_id = $1`, [OWNERS_ORG])
   }
 

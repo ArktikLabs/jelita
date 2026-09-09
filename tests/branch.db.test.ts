@@ -104,7 +104,7 @@ describe('branch_entitlement ranks active branches only', () => {
 
   it('deactivating the older branch leaves the live one operable', async () => {
     await pool.query(`
-      update branch_profiles set active = false, deactivated_at = now()
+      update branch_profiles set active = false, deleted_at = now()
        where team_id = 'vt_branch_t1'`)
     const rows = await within()
     expect(rows).toHaveLength(1)

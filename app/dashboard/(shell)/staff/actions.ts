@@ -593,7 +593,7 @@ export async function deactivateStaffAction(
          for update of s, m
     )
     update staff_profiles
-       set active = false, deactivated_at = now(), updated_at = now()
+       set active = false, deleted_at = now(), updated_at = now()
      where user_id = ${userId} and organization_id = ${organizationId}
        and active
        and (user_id not in (select user_id from owners)
@@ -660,7 +660,7 @@ export async function reactivateStaffAction(
 
   await db.execute(sql`
     update staff_profiles
-       set active = true, deactivated_at = null, updated_at = now()
+       set active = true, deleted_at = null, updated_at = now()
      where user_id = ${userId} and organization_id = ${organizationId}`)
   revalidateStaff(userId)
   return { done: true }
