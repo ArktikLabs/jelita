@@ -235,9 +235,20 @@ evidence for a control that preserves the sort on filtering: the broken
 `listHref` call passed 3 of 3 against the old two-assertion shape. The fix is
 one predicate that requires every condition on a single URL read (see
 `filtering keeps the sort` in `tests/e2e/customers.spec.ts`), not two
-sequential `toHaveURL` calls. Three tests in that same file still use the old
-shape -- `sorting keeps the search`, `searching keeps the active filter`,
-`searching keeps the sort` -- known and not yet fixed.
+sequential `toHaveURL` calls. `sorting keeps the search`, in that same file,
+still uses the old two-call shape -- known and not yet fixed.
+
+The same failure has a single-assertion disguise, and two more tests in that
+file wear it: `searching keeps the active filter` and `searching keeps the
+sort` each `goto` a URL that already contains the value their one and only
+`toHaveURL` then checks for (`?active=false` .. `/active=false/`, `?sort=-created`
+.. `/sort=-created/`). A single loose-regex assertion is no safer than a
+chained one when the pre-navigation URL already satisfies it -- Playwright
+resolves on the first poll that matches, which can be the stale one, so
+either test would pass even if the search actually dropped the filter or the
+sort. Recorded as a second instance of the same trap, not a second trap: the
+fix is the same one used in `filtering keeps the sort`, a predicate that
+requires a value the pre-navigation URL does NOT already carry.
 
 **A DB-level paging test cannot prove a tiebreaker.** First recorded on
 customers: paging through 60 duplicate-named rows and asserting every id is
