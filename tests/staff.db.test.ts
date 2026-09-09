@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { STAFF_LIST, getStaff, listStaff, staffOf } from '../lib/staff'
+import { setBaseSalary } from '../lib/payroll'
 import { parseListQuery } from '../lib/list-query'
 
 /**
@@ -913,5 +914,21 @@ describe('Task 4: getStaff surfaces the audit trail', () => {
     const staff = await getStaff(USER, ORG)
     expect(staff!.audit.deletedByName).toBe('VT Audit Other')
     expect(staff!.audit.updatedByName).toBeNull()
+  })
+
+  // Fix 1 (crud-phase-3 review): setBaseSalary (lib/payroll.ts) is a write
+  // site on this very table, and it took no actor at all -- an owner editing
+  // "Gaji pokok" left updated_by null, so this exact audit block reported the
+  // record unchanged. Proven the same way the rest of this describe block
+  // does: through the real write function, not a raw SQL stand-in for it.
+  it('names the editor after setBaseSalary, the same as any other write to this table', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 hour',
+              updated_by = null
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    await setBaseSalary(USER, ORG, 5000000, OTHER)
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBe('VT Audit Other')
   })
 })

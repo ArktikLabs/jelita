@@ -117,7 +117,7 @@ const sell = (staffUserId: string, completedAt: string) => checkout({
 
 describe('the recap', () => {
   it('is base + commission - deductions', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     await sell(SINTA, '2027-09-06 10:00')
     await addDeduction({
@@ -131,7 +131,7 @@ describe('the recap', () => {
   })
 
   it('distinguishes NOT SALARIED from salaried at zero', async () => {
-    await setBaseSalary(RINA, ORG, 0)
+    await setBaseSalary(RINA, ORG, 0, SINTA)
     const r = await recap()
     // null and 0 must not collapse: an owner who set one by accident should be
     // able to tell which they did.
@@ -242,7 +242,7 @@ describe('a person with two membership rows is not paid twice', () => {
   })
 
   it('appears once, with one salary, in the OPEN-month recap', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     // The second row, reachable the way the docstring above describes --
     // any role works, since it is the JOIN fan-out that duplicates the row,
@@ -258,7 +258,7 @@ describe('a person with two membership rows is not paid twice', () => {
   })
 
   it('appears once, with one salary, in a CLOSED month\'s snapshot too', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     // Closed FIRST, with Sinta still holding just one row -- payroll_run_lines
     // carries its own unique(run_id, user_id), so closing legitimately snapshots
@@ -295,14 +295,14 @@ describe('what the database refuses', () => {
   })
 
   it('refuses a negative base salary', async () => {
-    await expect(setBaseSalary(SINTA, ORG, -1)).rejects.toThrow('BAD_AMOUNT')
+    await expect(setBaseSalary(SINTA, ORG, -1, SINTA)).rejects.toThrow('BAD_AMOUNT')
   })
 
   it('refuses another salon\'s staff', async () => {
     await expect(addDeduction({
       organizationId: ORG, userId: OUTSIDER, month: MONTH, amount: 1000, actorUserId: SINTA,
     })).rejects.toThrow('NOT_FOUND')
-    await expect(setBaseSalary(OUTSIDER, ORG, 100)).rejects.toThrow('NOT_FOUND')
+    await expect(setBaseSalary(OUTSIDER, ORG, 100, SINTA)).rejects.toThrow('NOT_FOUND')
   })
 
   it('cannot remove another salon\'s deduction', async () => {
@@ -320,7 +320,7 @@ describe('closing a month', () => {
   const close = () => closePayrollMonth(ORG, MONTH, SINTA)
 
   it('snapshots exactly what the screen showed', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     await addDeduction({
       organizationId: ORG, userId: SINTA, month: MONTH, amount: 150000, actorUserId: SINTA,
@@ -339,12 +339,12 @@ describe('closing a month', () => {
   })
 
   it('stops later changes from rewriting it', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     await close()
 
     // Everything that could have moved the number, moved.
-    await setBaseSalary(SINTA, ORG, 9000000)
+    await setBaseSalary(SINTA, ORG, 9000000, SINTA)
     await sell(SINTA, '2027-09-20 10:00')
 
     expect((await recap())[SINTA]).toMatchObject({
@@ -353,7 +353,7 @@ describe('closing a month', () => {
   })
 
   it('keeps "not salaried" distinct from zero in the snapshot too', async () => {
-    await setBaseSalary(RINA, ORG, 0)
+    await setBaseSalary(RINA, ORG, 0, SINTA)
     await close()
     const r = await recap()
     expect(r[SINTA].baseSalary).toBeNull()

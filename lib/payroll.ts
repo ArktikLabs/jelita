@@ -212,12 +212,13 @@ export async function removeDeduction(
 }
 
 export async function setBaseSalary(
-  userId: string, organizationId: string, baseSalary: number | null,
+  userId: string, organizationId: string, baseSalary: number | null, actorUserId: string,
 ): Promise<void> {
   let rowCount: number | null
   try {
     ({ rowCount } = await db.execute(sql`
-      update staff_profiles set base_salary = ${baseSalary}, updated_at = now()
+      update staff_profiles
+         set base_salary = ${baseSalary}, updated_at = now(), updated_by = ${actorUserId}
        where user_id = ${userId} and organization_id = ${organizationId}`))
   } catch (e) {
     // Translated here for the same reason addDeduction does it: drizzle wraps
