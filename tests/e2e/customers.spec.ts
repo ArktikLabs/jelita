@@ -252,8 +252,14 @@ test.describe('the URL controls', () => {
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard/customers?sort=-created')
     await page.getByRole('link', { name: 'Aktif', exact: true }).click()
-    await expect(page).toHaveURL(/sort=-created/)
-    await expect(page).toHaveURL(/active=true/)
+    // ONE predicate requiring both at once, not two chained toHaveURL calls:
+    // the goto URL above already contains `sort=-created`, so a first
+    // assertion checking only that would trivially pass on the STALE
+    // pre-navigation URL before the click's own navigation has landed --
+    // exactly the false pass this test exists to catch (verified against a
+    // broken listHref call, which this masked on the first try).
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('sort') === '-created' && url.searchParams.get('active') === 'true')
   })
 
   test('filtering resets the page', async ({ page }) => {

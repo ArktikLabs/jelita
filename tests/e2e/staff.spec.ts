@@ -1489,13 +1489,22 @@ test.describe('the URL controls', () => {
     await pool.query(`delete from users where email like $1`, [`%@${CTRL_DOMAIN}`])
   })
 
+  // A single predicate requiring every condition AT ONCE, not several
+  // chained toHaveURL calls: goto's own URL already satisfies some of them
+  // (sort=-name, page=1, active=true depending on the test), so a first
+  // assertion checking only one would trivially pass on the STALE
+  // pre-navigation URL before the click/submit's own navigation has landed
+  // -- a false pass this suite caught once against a deliberately broken
+  // listHref call and had to be rewritten this way to actually catch.
   test('choosing a branch keeps the sort and resets the page', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
-    await page.goto('/dashboard/staff?sort=-name&page=1')
+    await page.goto('/dashboard/staff?sort=-name&page=2')
     await page.locator('select[name="branch"]').selectOption(branchAId)
     await page.getByRole('button', { name: 'Filter' }).click()
-    await expect(page).toHaveURL(/sort=-name/)
-    await expect(page).toHaveURL(new RegExp(`branch=${branchAId}`))
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('sort') === '-name'
+      && url.searchParams.get('branch') === branchAId
+      && !url.searchParams.has('page'))
   })
 
   test('choosing a branch resets an existing page number', async ({ page }) => {
@@ -1510,8 +1519,8 @@ test.describe('the URL controls', () => {
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard/staff?sort=-name')
     await page.getByRole('link', { name: 'Aktif', exact: true }).click()
-    await expect(page).toHaveURL(/sort=-name/)
-    await expect(page).toHaveURL(/active=true/)
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('sort') === '-name' && url.searchParams.get('active') === 'true')
   })
 
   test('picking a branch keeps the active filter already set', async ({ page }) => {
@@ -1519,7 +1528,7 @@ test.describe('the URL controls', () => {
     await page.goto('/dashboard/staff?active=true')
     await page.locator('select[name="branch"]').selectOption(branchAId)
     await page.getByRole('button', { name: 'Filter' }).click()
-    await expect(page).toHaveURL(/active=true/)
-    await expect(page).toHaveURL(new RegExp(`branch=${branchAId}`))
+    await expect(page).toHaveURL((url) =>
+      url.searchParams.get('active') === 'true' && url.searchParams.get('branch') === branchAId)
   })
 })
