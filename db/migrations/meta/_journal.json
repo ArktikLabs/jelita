@@ -232,6 +232,13 @@
       "when": 1788852706066,
       "tag": "0032_customers_list_index",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788918084300,
+      "tag": "0033_customers_created_index_direction",
+      "breakpoints": true
     }
   ]
 }
