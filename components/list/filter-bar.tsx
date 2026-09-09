@@ -70,6 +70,13 @@ export function FilterBar<K extends string>({
   const formFilters = entries
     .filter((e) => typeof e[1] === 'function')
     .map(([name]) => name)
+  // Only a WIRED filter is this form's to own: preservedFields' `own` list
+  // means "this form renders an input for it", and an unwired one renders
+  // none (see the `!control` branch below) -- excluding it from
+  // preservedFields too would drop it from the URL on every submit with
+  // nothing to carry it forward, the exact silently-dropped-parameter bug
+  // this component exists to prevent, just inverted.
+  const wiredFormFilters = formFilters.filter((name) => controls?.[name] !== undefined)
 
   return (
     <div className="flex flex-wrap items-end gap-4">
@@ -100,14 +107,16 @@ export function FilterBar<K extends string>({
 
       {formFilters.length > 0 && (
         <form className="flex items-end gap-2">
-          {preservedFields(params, formFilters).map(([n, v]) => (
+          {preservedFields(params, wiredFormFilters).map(([n, v]) => (
             <input key={n} type="hidden" name={n} value={v} />
           ))}
           {formFilters.map((name) => {
             const control = controls?.[name]
             // A function-form filter with no control wired by the page has
             // nothing to render -- rather than guess a widget for a shape it
-            // knows nothing about.
+            // knows nothing about. It's still carried forward as a hidden
+            // field via wiredFormFilters above (it's simply not in that
+            // list), same as any other parameter this form doesn't own.
             if (!control) return null
 
             if (control.type === 'date') {
