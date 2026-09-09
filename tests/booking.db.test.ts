@@ -27,7 +27,22 @@ const CUSTOMER = 'bkg_customer'
 const FOREIGN_CUSTOMER = 'bkg_customer_foreign'
 const SERVICE = 'bkg_service'
 
-const DAY = '2026-09-09'
+/**
+ * A Wednesday, FAR in the future, and both halves of that matter.
+ *
+ * Far future: listSlots drops slots whose start has already passed, so a DAY
+ * anywhere near today rots hour by hour as the day advances and then stays
+ * dead. This file was pinned to 2026-09-09 and every booking test began
+ * failing with SLOT_TAKEN once that afternoon arrived -- 20 of 63, looking
+ * exactly like a flaky suite rather than an expired fixture.
+ *
+ * Wednesday: WEDNESDAY below keys both hours tables, so a computed "today +
+ * n days" would break whenever it landed on another weekday. The two must
+ * agree, which is why this is a literal rather than a calculation.
+ *
+ * Matches the date the e2e suites already use for the same reason.
+ */
+const DAY = '2027-05-12'
 
 let n = 0
 const book = (
