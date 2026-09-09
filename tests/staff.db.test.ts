@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
+import { STAFF_LIST, listStaff } from '../lib/staff'
+import { parseListQuery } from '../lib/list-query'
 
 /**
  * Staff schema, the seeding trigger/backfill, the countResource('staff') SQL
@@ -496,6 +498,95 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
       update members set role = 'owner'
        where organization_id = $1 and user_id in ('vt_staff_owner1', 'vt_staff_owner2')`,
       [OWNERS_ORG])
+  })
+})
+
+describe('listStaff paging', () => {
+  // Own org and own users, not the fixtures above: the paging assertions need
+  // an exact roster size (30), and reusing FIXTURE_USER_IDS would make that
+  // count a moving target as earlier describe blocks add and remove people.
+  const LIST_ORG = 'vt_staff_list_org'
+  const ids = Array.from({ length: 30 }, (_, i) => `vt_staff_list_${String(i).padStart(3, '0')}`)
+  const q = (params: Record<string, string> = {}) => parseListQuery(STAFF_LIST, params)
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [LIST_ORG])
+    await pool.query(`delete from users where id = any($1)`, [ids])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Staff List Test', 'vt-staff-list', now())`, [LIST_ORG])
+    // The free plan's staff cap (3, see migration 0026's seat-cap trigger)
+    // would refuse this fixture's 30 rows -- move to the uncapped 'business'
+    // plan (no plan_limits row for a resource means unlimited).
+    await pool.query(`
+      update subscriptions set plan_id = (select id from plans where key = 'business')
+       where organization_id = $1`, [LIST_ORG])
+    // 30 rows, and DELIBERATELY duplicated names -- same reasoning as
+    // customers.db.test.ts's paging fixture: a non-unique sort column is what
+    // makes paging non-deterministic without a tiebreaker.
+    for (const id of ids) {
+      await pool.query(`
+        insert into users (id, name, email, email_verified, created_at, updated_at)
+        values ($1, 'Sama Persis', $2, true, now(), now())`, [id, `${id}@test.local`])
+      await pool.query(`
+        insert into members (id, user_id, organization_id, role, created_at)
+        values ($1, $2, $3, 'stylist', now())`, [`${id}_m`, id, LIST_ORG])
+    }
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [LIST_ORG])
+    await pool.query(`delete from users where id = any($1)`, [ids])
+  })
+
+  it('returns one page and the true total', async () => {
+    const r = await listStaff(LIST_ORG, q())
+    expect(r.rows).toHaveLength(25)
+    expect(r.total).toBe(30)
+    expect(r.pages).toBe(2)
+    expect(r.page).toBe(1)
+  })
+
+  it('pages through 30 identical names without repeating or losing one', async () => {
+    // Proves paging returns every row of THIS dataset exactly once. As
+    // customers.db.test.ts's equivalent test notes, this does NOT prove the
+    // tiebreaker is present -- see tests/list-query.test.ts's `orderBy` suite
+    // for that.
+    const seen = new Set<string>()
+    for (const page of ['1', '2']) {
+      const r = await listStaff(LIST_ORG, q({ page }))
+      for (const row of r.rows) seen.add(row.userId)
+    }
+    expect(seen.size, 'every row seen exactly once across two pages').toBe(30)
+  })
+
+  it('clamps a page past the end to the last page', async () => {
+    const r = await listStaff(LIST_ORG, q({ page: '999' }))
+    expect(r.page).toBe(2)
+    expect(r.rows).toHaveLength(5)
+  })
+
+  // members carries no unique on (user_id, organization_id) -- deliberately,
+  // per migration 0010. A plain count(*) over the members join therefore
+  // reports one person twice, and the list header would say "1-25 dari 31"
+  // above 25 rows. This is the only one of the six resources where that is
+  // possible (spec §3.2's correction, Task 6).
+  it('counts a person once even with two membership rows', async () => {
+    const baseline = (await listStaff(LIST_ORG, q())).total
+    const staffA = ids[0]
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'stylist', now())`, [`${staffA}_m2`, staffA, LIST_ORG])
+
+    const r = await listStaff(LIST_ORG, q())
+    expect(r.total, 'the person is counted once').toBe(baseline)
+    // The page query needs the same de-duplication as the count: not just an
+    // unchanged total, but the doubly-membered person appearing exactly once
+    // among the actual rows (ids[0] sorts first under the name tie -- see the
+    // paging fixture's comment -- so it is always on this first page), not
+    // twice at the cost of someone else falling off the page.
+    expect(r.rows.filter((s) => s.userId === staffA)).toHaveLength(1)
+    expect(r.rows).toHaveLength(25)
   })
 })
 

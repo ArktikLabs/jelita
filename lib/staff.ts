@@ -6,6 +6,10 @@ import { db } from './db'
 import { ASSIGNABLE_ROLES, type SalonRole } from './permissions'
 import { PlanError, requireQuota } from './plan/entitlements'
 import { getBranchStatus } from './plan/branch'
+import {
+  clampPage, orderBy, paginate, toResult,
+  type ListQuery, type ListResult, type ListSpec,
+} from './list-query'
 
 export type StaffRow = {
   userId: string
@@ -16,6 +20,17 @@ export type StaffRow = {
   branchName: string | null
   active: boolean
 }
+
+const rowsToStaff = (rows: Record<string, unknown>[]): StaffRow[] =>
+  rows.map((r) => ({
+    userId: r.user_id as string,
+    name: r.name as string,
+    email: r.email as string,
+    role: r.role as string,
+    teamId: (r.team_id as string) ?? null,
+    branchName: (r.branch_name as string) ?? null,
+    active: (r.active as boolean) ?? true,
+  }))
 
 export async function provisionStaff(input: {
   organizationId: string
@@ -187,9 +202,25 @@ export async function assignBranch(
   return updated
 }
 
-/** Staff of one salon. Pass userId to narrow to one; the org scoping is in
- *  the query either way, so a bare id from the client cannot cross tenants. */
-export async function listStaff(
+/**
+ * Staff of one salon, unpaged. Pass userId to narrow to one; the org scoping
+ * is in the query either way, so a bare id from the client cannot cross
+ * tenants.
+ *
+ * The building block for everything that needs the WHOLE roster rather than
+ * one page of it: the calendar's lane list and the POS performer picker both
+ * iterate every staff member, not a page -- narrowing either to page 1 of the
+ * staff list would silently hide anyone past it.
+ *
+ * NOTE (pre-existing, not introduced by this function): `members` carries no
+ * unique constraint on (user_id, organization_id) by design (migration
+ * 0010_services.sql), so a person with two membership rows appears twice
+ * here too. `listStaff` below dedups for the paged list; this unpaged path
+ * does not, matching its behaviour before this split. Worth fixing if it
+ * ever bites a real roster -- flagged in the task report, left alone here to
+ * keep this change to the split it asks for.
+ */
+export async function staffOf(
   organizationId: string, userId?: string,
 ): Promise<StaffRow[]> {
   const { rows } = await db.execute(sql`
@@ -203,18 +234,95 @@ export async function listStaff(
      where m.organization_id = ${organizationId}
        ${userId === undefined ? sql`` : sql`and u.id = ${userId}`}
      order by u.name, u.id`)
-  return (rows as Record<string, unknown>[]).map((r) => ({
-    userId: r.user_id as string,
-    name: r.name as string,
-    email: r.email as string,
-    role: r.role as string,
-    teamId: (r.team_id as string) ?? null,
-    branchName: (r.branch_name as string) ?? null,
-    active: (r.active as boolean) ?? true,
-  }))
+  return rowsToStaff(rows as Record<string, unknown>[])
 }
 
 export async function getStaff(userId: string, organizationId: string) {
-  const [row] = await listStaff(organizationId, userId)
+  const [row] = await staffOf(organizationId, userId)
   return row ?? null
+}
+
+/**
+ * What a URL may ask of the staff list.
+ *
+ * `name` is the only sortable column, and even it is an exception to §3.2's
+ * "only if an index supports it" rule: it orders by `users.name`, and `users`
+ * is not tenant-partitioned (better-auth's own table, shared across every
+ * salon), so there is no `(organization_id, name)` index to build for it and
+ * never will be -- every staff list is a join-then-sort by construction, not
+ * an index range scan. No other column here has index support either
+ * (`members` is indexed only on organization_id and user_id, `staff_profiles`
+ * carries no index beyond its unique constraint), so nothing else is
+ * declared sortable. §3.2's table needs a correction for this; Task 6 makes
+ * it.
+ */
+export const STAFF_LIST: ListSpec<'name'> = {
+  sortable: { name: 'u.name' },
+  defaultSort: 'name',
+  tiebreak: 'u.id',
+}
+
+/**
+ * One page of a salon's staff.
+ *
+ * `count(DISTINCT m.user_id)`, not `count(*)`: staff is the one list of the
+ * six where the join can return more than one row per person -- `members`
+ * carries no unique on (user_id, organization_id) by design (see staffOf
+ * above), so a plain `count(*)` here would report one person twice. Every
+ * other list in this codebase joins 1:1 and uses `count(*)`; this is the
+ * exception, and `tests/staff.db.test.ts`'s two-membership-row test is what
+ * keeps it from silently regressing back to `count(*)`.
+ *
+ * The page query needs the same de-duplication: GROUP BY m.user_id (plus the
+ * other selected columns, since only `staff_profiles` -- not `members` --
+ * carries a uniqueness guarantee per person, and Postgres only infers
+ * functional dependence from a table's PRIMARY KEY, not from an arbitrary
+ * unique constraint). Where two membership rows disagree, MIN(m.role) is an
+ * arbitrary but deterministic pick -- not a product decision, there simply
+ * is no "right" role to show for one person holding two membership rows in
+ * the same salon.
+ *
+ * `branchId` filters to one branch, same as the page's old client-side
+ * `?branch=` filter -- now applied in SQL instead of after fetching the
+ * whole roster, since fetching is now paged.
+ */
+export async function listStaff(
+  organizationId: string, query: ListQuery, branchId?: string,
+): Promise<ListResult<StaffRow>> {
+  const where = sql`
+    where m.organization_id = ${organizationId}
+      ${branchId === undefined ? sql`` : sql`and s.team_id = ${branchId}`}`
+
+  const fetch = async (q: ListQuery) => {
+    const { rows } = await db.execute(sql`
+      select u.id as user_id, u.name, u.email, min(m.role) as role,
+             s.team_id, t.name as branch_name, s.active
+        from members m
+        join users u on u.id = m.user_id
+        left join staff_profiles s
+          on s.user_id = m.user_id and s.organization_id = m.organization_id
+        left join teams t on t.id = s.team_id
+        ${where}
+       group by u.id, u.name, u.email, s.team_id, t.name, s.active
+       ${orderBy(STAFF_LIST, q)} ${paginate(q)}`)
+    return rowsToStaff(rows as Record<string, unknown>[])
+  }
+
+  const [rows, countRows] = await Promise.all([
+    fetch(query),
+    db.execute(sql`
+      select count(distinct m.user_id)::int as n
+        from members m
+        left join staff_profiles s
+          on s.user_id = m.user_id and s.organization_id = m.organization_id
+        ${where}`),
+  ])
+  const total = (countRows.rows[0] as { n: number }).n
+
+  const clamped = clampPage(query, total)
+  return toResult(
+    clamped.page === query.page ? rows : await fetch(clamped),
+    total,
+    clamped,
+  )
 }

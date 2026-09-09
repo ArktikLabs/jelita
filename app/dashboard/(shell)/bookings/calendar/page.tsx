@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { requirePagePermission, requirePageOrg, requireBranch } from '@/lib/session'
 import { branchOpenWindow, listBookingsBetween } from '@/lib/booking'
-import { listStaff } from '@/lib/staff'
+import { staffOf } from '@/lib/staff'
 import { buttonVariants } from '@/components/ui/button'
 import { CalendarGrid, type Block, type Lane } from './calendar-grid'
 
@@ -57,7 +57,7 @@ export default async function CalendarPage({
   const from = week ? weekStart(date) : date
   const to = week ? addDays(from, 7) : addDays(from, 1)
 
-  const staff = (await listStaff(organizationId))
+  const staff = (await staffOf(organizationId))
     .filter((s) => s.active && s.teamId === branchId)
   const staffUserId = staff.some((s) => s.userId === q.staffUserId)
     ? q.staffUserId!
