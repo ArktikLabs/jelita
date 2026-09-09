@@ -6,7 +6,7 @@ import { PRODUCT_LIST, listProducts, productsOf } from '@/lib/inventory'
 import { salonSettings } from '@/lib/service'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
 import { parseListQuery } from '@/lib/list-query'
-import { listHref, preservedFields, type Params } from '@/lib/list-url'
+import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { SortableHead } from '@/components/list/sortable-head'
@@ -91,7 +91,7 @@ export default async function ProductsPage({
                 {query.q || Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada produk yang cocok dengan pencarian ini.{' '}
-                    <Link href={listHref(params, { q: null, active: null })} className="underline">
+                    <Link href={listHref(params, clearFilters(PRODUCT_LIST))} className="underline">
                       Hapus filter
                     </Link>
                   </>

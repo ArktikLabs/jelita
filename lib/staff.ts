@@ -218,13 +218,15 @@ export async function assignBranch(
  * come back twice here too -- worse than a wrong count, because a picker
  * showing the same stylist twice gives whoever is choosing no way to tell the
  * two entries apart. See listStaff's docstring for why GROUP BY (not relying
- * on Postgres's PK-only functional-dependency inference) and why MIN(m.role).
+ * on Postgres's PK-only functional-dependency inference) and why
+ * string_agg(m.role, ',' order by m.role), not MIN(m.role).
  */
 export async function staffOf(
   organizationId: string, userId?: string,
 ): Promise<StaffRow[]> {
   const { rows } = await db.execute(sql`
-    select u.id as user_id, u.name, u.email, min(m.role) as role,
+    select u.id as user_id, u.name, u.email,
+           string_agg(m.role, ',' order by m.role) as role,
            s.team_id, t.name as branch_name, s.active
       from members m
       join users u on u.id = m.user_id
@@ -295,10 +297,16 @@ export const STAFF_LIST: ListSpec<'name'> = {
  * other selected columns, since only `staff_profiles` -- not `members` --
  * carries a uniqueness guarantee per person, and Postgres only infers
  * functional dependence from a table's PRIMARY KEY, not from an arbitrary
- * unique constraint). Where two membership rows disagree, MIN(m.role) is an
- * arbitrary but deterministic pick -- not a product decision, there simply
- * is no "right" role to show for one person holding two membership rows in
- * the same salon.
+ * unique constraint). Where two membership rows disagree, `role` is every
+ * role joined with `,` (string_agg ... order by m.role) -- not a pick of one.
+ * `members.role` is itself comma-separated, so every consumer already
+ * `.split(',')`s this column; collapsing to one role (MIN or otherwise) would
+ * silently drop membership a person actually holds -- MIN specifically once
+ * made a second, weaker membership row (e.g. 'admin') hide an 'owner' row
+ * behind it, since MIN is alphabetical and 'admin' < 'owner'. See
+ * `app/dashboard/(shell)/staff/actions.ts`'s owner guards, which depend on
+ * `role.split(',').includes('owner')` being true whenever ANY of a person's
+ * rows says owner.
  *
  * `query.filters.branch` narrows to one branch, same as the page's old
  * client-side `?branch=` filter -- now applied in SQL instead of after
@@ -318,7 +326,8 @@ export async function listStaff(
 
   const fetch = async (q: ListQuery) => {
     const { rows } = await db.execute(sql`
-      select u.id as user_id, u.name, u.email, min(m.role) as role,
+      select u.id as user_id, u.name, u.email,
+             string_agg(m.role, ',' order by m.role) as role,
              s.team_id, t.name as branch_name, s.active
         from members m
         join users u on u.id = m.user_id

@@ -4,7 +4,7 @@ import { STAFF_LIST, listStaff } from '@/lib/staff'
 import { branchesOf } from '@/lib/branch'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
 import { parseListQuery } from '@/lib/list-query'
-import { listHref, type Params } from '@/lib/list-url'
+import { clearFilters, listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { SortableHead } from '@/components/list/sortable-head'
@@ -92,7 +92,7 @@ export default async function StaffPage({
                 {Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada staf yang cocok dengan filter ini.{' '}
-                    <Link href={listHref(params, { branch: null, active: null })} className="underline">
+                    <Link href={listHref(params, clearFilters(STAFF_LIST))} className="underline">
                       Hapus filter
                     </Link>
                   </>

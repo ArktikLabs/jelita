@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { BRANCH_LIST, listBranches } from '@/lib/branch'
 import { parseListQuery } from '@/lib/list-query'
-import { listHref, preservedFields, type Params } from '@/lib/list-url'
+import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -59,7 +59,7 @@ export default async function BranchesPage({
                 {query.q || Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada cabang yang cocok dengan pencarian ini.{' '}
-                    <Link href={listHref(params, { q: null, active: null })} className="underline">
+                    <Link href={listHref(params, clearFilters(BRANCH_LIST))} className="underline">
                       Hapus filter
                     </Link>
                   </>

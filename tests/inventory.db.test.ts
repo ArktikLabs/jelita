@@ -287,6 +287,14 @@ describe('what the database refuses outright', () => {
     // as data corruption to the person looking at it. TOWEL is 'internal' and
     // already carries no price (the beforeEach fixture), so the update below
     // is a no-op -- kept anyway so this test reads the same as the brief's.
+    //
+    // The DESC half is the one with teeth: Postgres defaults to NULLS FIRST
+    // for DESC, so `desc.rows.at(-1)` proves the explicit `nulls last` in
+    // PRODUCT_LIST's price sortable expression is actually there. The ASC
+    // assertion below cannot make the same claim -- Postgres already defaults
+    // to NULLS LAST for ASC, so it passes identically with `nulls last`
+    // deleted from the asc expression. Kept for documentation/symmetry with
+    // the brief, not as a regression guard on that clause.
     const NO_PRICE = TOWEL
     await pool.query(`update products set price = null where id = $1`, [NO_PRICE])
     const asc = await listProducts(ORG, TEAM, q({ sort: 'price' }))
@@ -346,6 +354,20 @@ describe('listProducts paging', () => {
     const r = await listProducts(ORG, TEAM, q())
     expect(r.total).toBe(60)
     expect(r.rows.map((x) => x.id)).not.toContain(FOREIGN_PRODUCT)
+
+    // The assertions above hold even with `p.organization_id = ${organizationId}`
+    // deleted from listProducts's WHERE clause -- that clause is not what
+    // confines FOREIGN_PRODUCT out. `stock_on_hand` is itself defined as
+    // `from products p join teams t on t.organization_id = p.organization_id`
+    // (0022_inventory.sql), so it only ever pairs a product with a team of
+    // ITS OWN org -- `h.team_id = ${teamId}` alone already excludes every
+    // other org's products before the WHERE clause runs. TEAM_OTHER (ORG2's
+    // own team) exercises that mechanism directly: ORG's products can never
+    // appear against it, because no stock_on_hand row pairs them with a team
+    // outside ORG. A view change that dropped the teams join's org match
+    // would turn this into 60, not 0.
+    const crossOrg = await listProducts(ORG, TEAM_OTHER, q())
+    expect(crossOrg.total).toBe(0)
   })
 
   // Task 5: products didn't declare a filter for its own `active` column --

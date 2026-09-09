@@ -5,7 +5,7 @@ import { auth } from '@/lib/auth'
 import { TRANSACTION_LIST, listSales, openShift } from '@/lib/pos'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
 import { parseListQuery } from '@/lib/list-query'
-import { type Params } from '@/lib/list-url'
+import { clearFilters, listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { SortableHead } from '@/components/list/sortable-head'
@@ -77,7 +77,23 @@ export default async function TransactionsPage({
       />
 
       {sales.rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Belum ada transaksi hari itu.</p>
+        <p className="text-sm text-muted-foreground">
+          {/* query.filters.date, not the resolved `date` above: `date` always
+              has a value (the page's own today-default), so it can't tell
+              "nothing happened today" from "you picked a date with nothing on
+              it" apart -- only the RAW filter, undefined when the user never
+              chose one, can. */}
+          {query.filters.date === undefined ? (
+            'Belum ada transaksi hari itu.'
+          ) : (
+            <>
+              Tidak ada transaksi yang cocok dengan filter ini.{' '}
+              <Link href={listHref(params, clearFilters(TRANSACTION_LIST))} className="underline">
+                Hapus filter
+              </Link>
+            </>
+          )}
+        </p>
       ) : (
         <Table>
           <TableHeader>

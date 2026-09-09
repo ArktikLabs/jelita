@@ -51,3 +51,17 @@ export function preservedFields(params: Params, own: string[]): [string, string]
   }
   return fields
 }
+
+/**
+ * The `changes` a "Hapus filter" link passes to `listHref`: clear `q` and
+ * every filter the resource's spec declares.
+ *
+ * Derived from the spec rather than hand-enumerated (`{ q: null, active:
+ * null }` at each call site, once per resource): a filter added to a spec
+ * and forgotten at one of these call sites would silently stop being
+ * cleared, and this was the last control on the six list pages still naming
+ * its target fields by hand instead of routing through the contract.
+ */
+export function clearFilters(spec: { filters?: Record<string, unknown> }): Record<string, null> {
+  return { q: null, ...Object.fromEntries(Object.keys(spec.filters ?? {}).map((k) => [k, null])) }
+}
