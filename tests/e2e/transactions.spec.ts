@@ -92,8 +92,12 @@ test("a voided sale's reversal names who voided it -- the original's own line st
   await page.goto(`/dashboard/transactions/${reversal.id}`)
   await expect(page.getByText('Dibatalkan oleh Txn Audit Owner')).toBeVisible()
 
-  // created_by on the ORIGINAL sale never changes when it is voided -- it
-  // must still name the cashier, not whoever clicked "Batalkan".
+  // created_by on the ORIGINAL sale never changes when it is voided -- the
+  // page still labels it "Dicatat oleh" (created), not relabelled to the
+  // cancellation above. This fixture has one user playing both cashier and
+  // voider, so it cannot tell "still the cashier" apart from "still Txn
+  // Audit Owner"; that half -- created_by surviving a void with a DIFFERENT
+  // voider -- is covered by tests/pos.db.test.ts:1216-1234.
   await page.goto(`/dashboard/transactions/${saleId}`)
   await expect(page.getByText('Dicatat oleh Txn Audit Owner')).toBeVisible()
 })
