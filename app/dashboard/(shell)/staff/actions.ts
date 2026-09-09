@@ -484,18 +484,46 @@ export async function updateStaffRoleAction(
   const memberIds = await memberIdsFor(userId, organizationId)
   if (memberIds.length === 0) return NOT_FOUND
 
-  try {
-    // updateMemberRole takes one memberId per call -- apply the SAME role to
-    // every row this person holds, not just one. See memberIdsFor's docstring
-    // for why a single, nondeterministically-chosen row was the bug.
-    for (const memberId of memberIds) {
+  // updateMemberRole takes one memberId per call -- apply the SAME role to
+  // every row this person holds, not just one (memberIdsFor's docstring
+  // explains why a single, nondeterministically-chosen row was the bug this
+  // loop replaces). It cannot be one transaction: better-auth writes through
+  // its own connection, not this file's `db` (the same reason the
+  // LAST_OWNER_MSG comment above gives for the whole action not being one
+  // either), so a concurrent edit removing one of this person's rows -- or
+  // any other transient failure -- between calls can leave some rows on the
+  // new role and some not.
+  //
+  // Every one of these writes is the SAME role, applied identically and
+  // idempotently to each row -- there is nothing here to compensate the way
+  // importStaffAction (above) undoes a created user, so aborting on the
+  // first failure buys nothing and costs the truth: the earlier iterations
+  // already committed on better-auth's own connection regardless of whether
+  // this function keeps going, so stopping early does not prevent a partial
+  // write -- it just prevents the caller from being TOLD about one. Keep
+  // going, then report accurately: full success only when every row
+  // converged, otherwise how many did, not a blanket "nothing happened".
+  let lastError: unknown
+  let failed = 0
+  for (const memberId of memberIds) {
+    try {
       await auth.api.updateMemberRole({
         body: { memberId, organizationId, role },
         headers: await headers(),
       })
+    } catch (e) {
+      failed += 1
+      lastError = e
     }
-  } catch (e) {
-    return { error: formError(e, 'Gagal mengubah peran.') }
+  }
+  if (failed === memberIds.length) {
+    return { error: formError(lastError, 'Gagal mengubah peran.') }
+  }
+  if (failed > 0) {
+    return {
+      error: `Peran berhasil diubah untuk ${memberIds.length - failed} dari ${memberIds.length} `
+        + 'catatan keanggotaan orang ini; sisanya gagal. Periksa perannya sebelum mencoba lagi.',
+    }
   }
   // The return value is the assignment, not decoration: assignBranch reports
   // false when no profile row matched, and reporting success on a demotion
