@@ -178,14 +178,20 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     expect(html).toContain('Dibuat oleh Cust Owner')
   })
 
-  test('a customer with no creator on record names the booking page, never a raw dash', async () => {
-    // sariId was seeded directly above with no created_by -- the one real
-    // write path into `customers` with no signed-in actor behind it
-    // (findOrCreateByPhone's public-booking branch).
+  test('a customer with no creator on record shows no created line at all -- never a guess, never a dash', async () => {
+    // sariId was seeded directly above with no created_by. A null actor
+    // there is genuinely ambiguous -- it reads exactly the same for a
+    // public-booking customer (findOrCreateByPhone) as for one the seed
+    // script inserted raw -- so the page must omit the line entirely
+    // rather than assert a source it cannot know, and never fall back to
+    // "Dibuat oleh -", which would read as a missing name.
     const res = await owner.get(`/dashboard/customers/${sariId}`)
     const html = await res.text()
-    expect(html).toContain('Dibuat dari halaman booking')
-    expect(html).not.toContain('Dibuat oleh —')
+    expect(html).not.toContain('Dibuat oleh')
+    // The specific regression: an earlier version guessed "the booking
+    // page" for ANY null actor, which is false for a row like this one
+    // that never went through findOrCreateByPhone at all.
+    expect(html).not.toContain('Dibuat dari halaman booking')
   })
 
   test('a stylist may read the list', async () => {

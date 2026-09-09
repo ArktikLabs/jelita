@@ -167,9 +167,11 @@ export async function reactivateCustomer(
  * absent -- when there is no real edit to report: nobody has touched the
  * row since creation, OR the only touch is the SAME actor within seconds of
  * creating it (the tail of a create flow, not a second event worth its own
- * line). `createdByName` is null for a customer made through the public
- * booking page (findOrCreateByPhone's `actorUserId: null` branch) -- the
- * only write path into this table with no signed-in person behind it.
+ * line). `createdByName` is null both for a customer made through the
+ * public booking page (findOrCreateByPhone's `actorUserId: null` branch)
+ * AND for one the seed script inserted directly -- the column cannot tell
+ * those two apart, so the caller omits the created line entirely rather
+ * than guessing which source it was (see the page).
  */
 export async function getCustomer(customerId: string, organizationId: string) {
   const { rows } = await db.execute(sql`

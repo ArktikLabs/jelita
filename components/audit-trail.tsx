@@ -4,10 +4,14 @@
  * trail -- this is the one place all four (customers, services, staff,
  * branches) render them, so the wording stays identical across pages.
  *
- * `created.by` null with no `fallback` means the actor is genuinely unknown
- * (seed data, a cron) -- the segment is left out entirely rather than
- * printed as "Dibuat oleh —", which would read as a missing name rather
- * than an absent person.
+ * `created.by` null means the actor is genuinely unknown (a public booking,
+ * the seed script, a cron -- the column cannot tell those apart) -- the
+ * segment is left out entirely rather than printed as "Dibuat oleh —",
+ * which would read as a missing name rather than an absent person. No
+ * per-caller fallback text: an earlier version let customers guess "Dibuat
+ * dari halaman booking" for any null actor, but a seeded customer is also
+ * null there, so that guess was sometimes false. Omission is the only
+ * honest option the data supports.
  *
  * `updated` and `deactivated` are each single lines the CALLER decides to
  * pass or withhold:
@@ -21,13 +25,12 @@
 export function AuditTrail({
   created, updated, deactivated,
 }: {
-  created: { by: string | null; fallback?: string; at: string }
+  created: { by: string | null; at: string }
   updated?: { by: string; at: string } | null
   deactivated?: { by: string; at: string } | null
 }) {
   const parts: string[] = []
   if (created.by) parts.push(`Dibuat oleh ${created.by} · ${created.at}`)
-  else if (created.fallback) parts.push(`${created.fallback} · ${created.at}`)
   if (updated) parts.push(`Diubah oleh ${updated.by} · ${updated.at}`)
   if (deactivated) parts.push(`Dinonaktifkan oleh ${deactivated.by} · ${deactivated.at}`)
 

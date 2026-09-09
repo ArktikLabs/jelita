@@ -43,12 +43,14 @@ export default async function CustomerDetailPage({
         </Link>
       </div>
 
+      {/* No fallback for a null createdByName: `created_by` is null both for
+          a public-booking customer (findOrCreateByPhone) and for one the
+          seed script inserted directly -- the column alone cannot tell
+          those apart, so naming either source would sometimes be a false
+          claim. Omitted entirely, same as branches/services/staff, rather
+          than guessed at. */}
       <AuditTrail
-        created={{
-          by: customer.audit.createdByName,
-          fallback: 'Dibuat dari halaman booking',
-          at: customer.audit.createdAt,
-        }}
+        created={{ by: customer.audit.createdByName, at: customer.audit.createdAt }}
         updated={customer.audit.updatedByName
           ? { by: customer.audit.updatedByName, at: customer.audit.updatedAt }
           : null}

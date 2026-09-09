@@ -252,13 +252,13 @@ describe('Task 4: getCustomer surfaces the audit trail', () => {
     expect(got!.audit.updatedByName).toBeNull()
   })
 
-  it("renders a public-booking customer's null creator as something honest, not a name", async () => {
+  it("renders a public-booking customer's null creator as no name, never a broken join guessing at one", async () => {
     const found = await findOrCreateByPhone(
       ORG, { name: 'Publik', phone: '081200000099', actorUserId: null })
     const got = await getCustomer(found.id, ORG)
-    // The page supplies the "Dibuat dari halaman booking" fallback text for
-    // a null createdByName -- this only proves the raw name comes back null,
-    // never a broken join guessing at a person.
+    // The page omits the created line entirely for a null createdByName --
+    // it cannot tell this row apart from one the seed script inserted
+    // directly, so no fallback text is honest here (see the page).
     expect(got!.audit.createdByName).toBeNull()
   })
 })
