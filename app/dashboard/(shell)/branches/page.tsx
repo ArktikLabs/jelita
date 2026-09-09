@@ -7,6 +7,7 @@ import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -39,6 +40,8 @@ export default async function BranchesPage({
         <Input name="q" defaultValue={query.q ?? ''} placeholder="Cari nama cabang" />
       </form>
 
+      <FilterBar spec={BRANCH_LIST} query={query} params={params} />
+
       <Table>
         <TableHeader>
           <TableRow>
@@ -53,10 +56,10 @@ export default async function BranchesPage({
           {branches.rows.length === 0 && (
             <TableRow>
               <TableCell colSpan={5} className="text-muted-foreground">
-                {query.q ? (
+                {query.q || Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada cabang yang cocok dengan pencarian ini.{' '}
-                    <Link href={listHref(params, { q: null })} className="underline">
+                    <Link href={listHref(params, { q: null, active: null })} className="underline">
                       Hapus filter
                     </Link>
                   </>

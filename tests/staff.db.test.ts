@@ -602,6 +602,95 @@ describe('listStaff paging', () => {
   })
 })
 
+/**
+ * Task 5: `branch` folded into STAFF_LIST.filters (it used to be a third,
+ * un-contracted parameter -- app/dashboard/(shell)/staff/page.tsx read it off
+ * searchParams directly) and `active` added to match the other four
+ * resources that carry the column. Own fixture, not LIST_ORG above: that
+ * describe's own afterAll deletes LIST_ORG once its tests finish, and these
+ * need a real team to filter by, which LIST_ORG's roster never assigns.
+ */
+describe('listStaff filters', () => {
+  const FILTER_ORG = 'vt_staff_filter_org'
+  const FILTER_TEAM = 'vt_staff_filter_team'
+  const uOwner = 'vt_staff_filter_owner' // active, unassigned -- keeps the salon a valid owner
+  const uA = 'vt_staff_filter_a' // active, assigned to FILTER_TEAM
+  const uB = 'vt_staff_filter_b' // INACTIVE, assigned to FILTER_TEAM
+  const uC = 'vt_staff_filter_c' // active, unassigned
+  const users = [uOwner, uA, uB, uC]
+  const q = (params: Record<string, string> = {}) => parseListQuery(STAFF_LIST, params)
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [FILTER_ORG])
+    await pool.query(`delete from users where id = any($1)`, [users])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Staff Filter Test', 'vt-staff-filter', now())`, [FILTER_ORG])
+    await pool.query(`
+      insert into teams (id, name, organization_id, created_at)
+      values ($1, 'Cabang Filter', $2, now())`, [FILTER_TEAM, FILTER_ORG])
+    // The free plan's staff cap (3) would refuse this fixture's four rows --
+    // same move as the paging describe above.
+    await pool.query(`
+      update subscriptions set plan_id = (select id from plans where key = 'business')
+       where organization_id = $1`, [FILTER_ORG])
+    for (const id of users) {
+      await pool.query(`
+        insert into users (id, name, email, email_verified, created_at, updated_at)
+        values ($1, $1, $2, true, now(), now())`, [id, `${id}@test.local`])
+      await pool.query(`
+        insert into members (id, user_id, organization_id, role, created_at)
+        values ($1, $2, $3, $4, now())`, [`${id}_m`, id, FILTER_ORG, id === uOwner ? 'owner' : 'stylist'])
+    }
+    // The members insert above already fired the seeding trigger, so a
+    // staff_profiles row exists for each with team_id null and active true
+    // (see the schema describe up top) -- assignment and deactivation are
+    // this describe's own job, same division as assignBranch's docstring.
+    // uOwner is left untouched throughout: deactivating uB below fires the
+    // "keep an owner" constraint trigger (migration 0025) for the WHOLE
+    // organization, not just the row being touched, so a fixture with no
+    // active owner at all fails that check for a reason that has nothing to
+    // do with the filter under test here.
+    await pool.query(`
+      update staff_profiles set team_id = $1
+       where organization_id = $2 and user_id = any($3)`, [FILTER_TEAM, FILTER_ORG, [uA, uB]])
+    await pool.query(`
+      update staff_profiles set active = false
+       where organization_id = $1 and user_id = $2`, [FILTER_ORG, uB])
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [FILTER_ORG])
+    await pool.query(`delete from users where id = any($1)`, [users])
+  })
+
+  it('narrows to one branch', async () => {
+    const r = await listStaff(FILTER_ORG, q({ branch: FILTER_TEAM }))
+    expect(r.rows.map((s) => s.userId).sort()).toEqual([uA, uB].sort())
+  })
+
+  it('an id naming no branch at all matches nobody -- the same behaviour the old unchecked ?branch= already had, now reached through the contract', async () => {
+    const r = await listStaff(FILTER_ORG, q({ branch: 'not-a-real-branch' }))
+    expect(r.total).toBe(0)
+  })
+
+  it('narrows to active or inactive staff', async () => {
+    const active = await listStaff(FILTER_ORG, q({ active: 'true' }))
+    expect(active.rows.map((s) => s.userId)).not.toContain(uB)
+    // uOwner is active too (it has to be, per the fixture note above), so
+    // this asserts membership rather than the exact set.
+    expect(active.rows.map((s) => s.userId)).toEqual(expect.arrayContaining([uA, uC]))
+
+    const inactive = await listStaff(FILTER_ORG, q({ active: 'false' }))
+    expect(inactive.rows.map((s) => s.userId)).toEqual([uB])
+  })
+
+  it('combines branch and active', async () => {
+    const r = await listStaff(FILTER_ORG, q({ branch: FILTER_TEAM, active: 'false' }))
+    expect(r.rows.map((s) => s.userId)).toEqual([uB])
+  })
+})
+
 describe('every staff_profiles row with a branch has a matching team_members row (spec §7.14)', () => {
   it('holds across every fixture this file created', async () => {
     const { rows: [pairing] } = await pool.query(`

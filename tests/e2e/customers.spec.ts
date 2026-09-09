@@ -245,6 +245,34 @@ test.describe('the URL controls', () => {
     await expect(page).toHaveURL(/active=false/)
   })
 
+  // Task 5's FilterBar: the `active` enum filter is a segmented set of
+  // links, each routing through listHref -- so, same as every other control
+  // on this page, choosing one preserves the sort and resets the page.
+  test('filtering keeps the sort', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?sort=-created')
+    await page.getByRole('link', { name: 'Aktif', exact: true }).click()
+    await expect(page).toHaveURL(/sort=-created/)
+    await expect(page).toHaveURL(/active=true/)
+  })
+
+  test('filtering resets the page', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?page=3')
+    await page.getByRole('link', { name: 'Aktif', exact: true }).click()
+    await expect(page).not.toHaveURL(/page=/)
+  })
+
+  // The brief's own warning: a filter at its default must not appear in the
+  // URL at all -- "Semua" clears it entirely rather than writing e.g.
+  // `active=` or the default value back in.
+  test('clearing the filter drops it from the URL entirely, not just to its default', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?active=true')
+    await page.getByRole('link', { name: 'Semua' }).click()
+    await expect(page).not.toHaveURL(/active=/)
+  })
+
   // A native GET submit replaces the WHOLE query string with only the form's
   // own named fields -- so a sort with no hidden field to carry it forward is
   // silently reset to the default the moment someone searches.

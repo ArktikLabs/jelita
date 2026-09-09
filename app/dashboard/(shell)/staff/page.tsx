@@ -4,10 +4,11 @@ import { STAFF_LIST, listStaff } from '@/lib/staff'
 import { branchesOf } from '@/lib/branch'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
 import { parseListQuery } from '@/lib/list-query'
-import { listHref, preservedFields, type Params } from '@/lib/list-url'
+import { listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -29,13 +30,11 @@ export default async function StaffPage({
   const { organizationId } = await requirePageOrg()
   const params = await searchParams
   const query = parseListQuery(STAFF_LIST, params)
-  const rawBranch = Array.isArray(params.branch) ? params.branch[0] : params.branch
-  const branch = rawBranch === undefined || rawBranch === '' ? undefined : rawBranch
 
   // Only owner and admin hold staff:read, so there is no partial-visibility
   // case here — everyone who reaches this page sees the whole roster.
   const [staff, branches, entitlements, used] = await Promise.all([
-    listStaff(organizationId, query, branch),
+    listStaff(organizationId, query),
     branchesOf(organizationId),
     getEntitlements(organizationId),
     countResource(organizationId, 'staff'),
@@ -63,24 +62,18 @@ export default async function StaffPage({
         </div>
       </div>
 
-      <form className="flex items-center gap-2">
-        {preservedFields(params, ['branch']).map(([name, value]) => (
-          <input key={name} type="hidden" name={name} value={value} />
-        ))}
-        <select
-          name="branch"
-          defaultValue={branch ?? ''}
-          className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm"
-        >
-          <option value="">Semua cabang</option>
-          {branches.map((b) => (
-            <option key={b.teamId} value={b.teamId}>{b.name}</option>
-          ))}
-        </select>
-        <button type="submit" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
-          Filter
-        </button>
-      </form>
+      <FilterBar
+        spec={STAFF_LIST}
+        query={query}
+        params={params}
+        controls={{
+          branch: {
+            type: 'select',
+            placeholder: 'Semua cabang',
+            options: branches.map((b) => ({ value: b.teamId, label: b.name })),
+          },
+        }}
+      />
 
       <Table>
         <TableHeader>
@@ -96,10 +89,10 @@ export default async function StaffPage({
           {staff.rows.length === 0 && (
             <TableRow>
               <TableCell colSpan={5} className="text-muted-foreground">
-                {branch ? (
+                {Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada staf yang cocok dengan filter ini.{' '}
-                    <Link href={listHref(params, { branch: null })} className="underline">
+                    <Link href={listHref(params, { branch: null, active: null })} className="underline">
                       Hapus filter
                     </Link>
                   </>

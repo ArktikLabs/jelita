@@ -375,4 +375,17 @@ describe('listServices paging', () => {
     expect(r.total).toBe(60)
     expect(r.rows.map((x) => x.id)).not.toContain('vt_svc_s2')
   })
+
+  // Task 5: services didn't declare a filter for its own `active` column --
+  // one of the two four-resource gaps found while building the FilterBar.
+  it('filters to just the active or inactive rows', async () => {
+    await pool.query(`update services set active = false where id = $1`, ['svc_pg_000'])
+    const inactive = await listServices(ORG, q({ active: 'false' }))
+    expect(inactive.total).toBe(1)
+    expect(inactive.rows.map((x) => x.id)).toEqual(['svc_pg_000'])
+
+    const active = await listServices(ORG, q({ active: 'true' }))
+    expect(active.total).toBe(59)
+    expect(active.rows.map((x) => x.id)).not.toContain('svc_pg_000')
+  })
 })

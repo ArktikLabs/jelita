@@ -73,15 +73,20 @@ export const BRANCH_LIST: ListSpec<'name'> = {
   defaultSort: 'name',
   tiebreak: 't.id',
   searchable: true,
+  // `active` lives on branch_profiles, not on `teams` itself -- see the
+  // `where` fragment and the count query's join below. Same column customers,
+  // products, services and staff carry; branches was one of the two gaps
+  // found while building the FilterBar (Task 5).
+  filters: { active: ['true', 'false'] },
 }
 
 /**
  * One page of a salon's branches.
  *
- * The count query is against `teams` alone: every column the `where`
- * fragment touches lives there, and teams<->branch_profiles is 1:1 (every
- * team is seeded exactly one profile row), so joining branch_profiles into
- * the count would cost a join for no change in the number.
+ * The count query now joins `branch_profiles`: `where` reaches `p.active`
+ * once the filter above is set, and teams<->branch_profiles is 1:1 (every
+ * team is seeded exactly one profile row) so the join changes no count, only
+ * what columns are in scope for it.
  */
 export async function listBranches(
   organizationId: string, query: ListQuery,
@@ -91,7 +96,10 @@ export async function listBranches(
 
   const where = sql`
     where t.organization_id = ${organizationId}
-      ${term === '' ? sql`` : sql`and t.name ilike ${like}`}`
+      ${term === '' ? sql`` : sql`and t.name ilike ${like}`}
+      ${query.filters.active === undefined
+        ? sql``
+        : sql`and p.active = ${query.filters.active === 'true'}`}`
 
   const fetch = async (q: ListQuery) => {
     const { rows } = await db.execute(sql`
@@ -112,7 +120,11 @@ export async function listBranches(
 
   const [rows, countRows] = await Promise.all([
     fetch(query),
-    db.execute(sql`select count(*)::int as n from teams t ${where}`),
+    db.execute(sql`
+      select count(*)::int as n
+        from teams t
+        join branch_profiles p on p.team_id = t.id
+        ${where}`),
   ])
   const total = (countRows.rows[0] as { n: number }).n
 

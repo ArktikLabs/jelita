@@ -347,4 +347,17 @@ describe('listProducts paging', () => {
     expect(r.total).toBe(60)
     expect(r.rows.map((x) => x.id)).not.toContain(FOREIGN_PRODUCT)
   })
+
+  // Task 5: products didn't declare a filter for its own `active` column --
+  // one of the two four-resource gaps found while building the FilterBar.
+  it('filters to just the active or inactive rows', async () => {
+    await pool.query(`update products set active = false where id = $1`, ['inv_pg_000'])
+    const inactive = await listProducts(ORG, TEAM, q({ active: 'false' }))
+    expect(inactive.total).toBe(1)
+    expect(inactive.rows.map((x) => x.id)).toEqual(['inv_pg_000'])
+
+    const active = await listProducts(ORG, TEAM, q({ active: 'true' }))
+    expect(active.total).toBe(59)
+    expect(active.rows.map((x) => x.id)).not.toContain('inv_pg_000')
+  })
 })

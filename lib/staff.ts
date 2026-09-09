@@ -8,7 +8,7 @@ import { PlanError, requireQuota } from './plan/entitlements'
 import { getBranchStatus } from './plan/branch'
 import {
   clampPage, orderBy, paginate, toResult,
-  type ListQuery, type ListResult, type ListSpec,
+  type FilterRule, type ListQuery, type ListResult, type ListSpec,
 } from './list-query'
 
 export type StaffRow = {
@@ -257,10 +257,27 @@ export async function getStaff(userId: string, organizationId: string) {
  * declared sortable. §3.2's table needs a correction for this; Task 6 makes
  * it.
  */
+
+/**
+ * `?branch=<team id>`. Legal by SHAPE, not by membership: the legal set is
+ * this salon's own team ids, which are DB data the spec cannot see (unlike
+ * `active`'s fixed true/false). Any non-empty string is accepted -- the WHERE
+ * clause below binds it as a PARAMETER, never `sql.raw`, so an id belonging
+ * to no branch (or to another salon's) simply matches zero rows, exactly the
+ * behaviour the page's old unchecked `?branch=` param already had. Folding
+ * it in here (Task 5) is what lets it be declared instead of read off
+ * searchParams behind the contract's back.
+ */
+const branchFilter: FilterRule = (raw) => (raw === '' ? null : raw)
+
 export const STAFF_LIST: ListSpec<'name'> = {
   sortable: { name: 'u.name' },
   defaultSort: 'name',
   tiebreak: 'u.id',
+  // `active` matches the other four resources that carry the column
+  // (products, services, branches) -- staff was one of the two gaps found
+  // while building the FilterBar (Task 5).
+  filters: { branch: branchFilter, active: ['true', 'false'] },
 }
 
 /**
@@ -283,16 +300,21 @@ export const STAFF_LIST: ListSpec<'name'> = {
  * is no "right" role to show for one person holding two membership rows in
  * the same salon.
  *
- * `branchId` filters to one branch, same as the page's old client-side
- * `?branch=` filter -- now applied in SQL instead of after fetching the
- * whole roster, since fetching is now paged.
+ * `query.filters.branch` narrows to one branch, same as the page's old
+ * client-side `?branch=` filter -- now applied in SQL instead of after
+ * fetching the whole roster, since fetching is now paged, and now DECLARED
+ * on STAFF_LIST rather than a third parameter this function trusted the
+ * caller to have validated itself.
  */
 export async function listStaff(
-  organizationId: string, query: ListQuery, branchId?: string,
+  organizationId: string, query: ListQuery,
 ): Promise<ListResult<StaffRow>> {
   const where = sql`
     where m.organization_id = ${organizationId}
-      ${branchId === undefined ? sql`` : sql`and s.team_id = ${branchId}`}`
+      ${query.filters.branch === undefined ? sql`` : sql`and s.team_id = ${query.filters.branch}`}
+      ${query.filters.active === undefined
+        ? sql``
+        : sql`and s.active = ${query.filters.active === 'true'}`}`
 
   const fetch = async (q: ListQuery) => {
     const { rows } = await db.execute(sql`

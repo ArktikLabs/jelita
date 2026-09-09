@@ -76,6 +76,9 @@ export const PRODUCT_LIST: ListSpec<'name' | 'sku' | 'price'> = {
   defaultSort: 'name',
   tiebreak: 'p.id',
   searchable: true,
+  // Products carries an `active` column same as customers -- undeclared
+  // until Task 5's FilterBar needed a second resource to generalise from.
+  filters: { active: ['true', 'false'] },
 }
 
 /**
@@ -92,7 +95,10 @@ export async function listProducts(
 
   const where = sql`
     where p.organization_id = ${organizationId}
-      ${term === '' ? sql`` : sql`and p.name ilike ${like}`}`
+      ${term === '' ? sql`` : sql`and p.name ilike ${like}`}
+      ${query.filters.active === undefined
+        ? sql``
+        : sql`and p.active = ${query.filters.active === 'true'}`}`
 
   const fetch = async (q: ListQuery) => {
     const { rows } = await db.execute(sql`

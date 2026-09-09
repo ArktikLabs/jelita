@@ -5,10 +5,11 @@ import { auth } from '@/lib/auth'
 import { TRANSACTION_LIST, listSales, openShift } from '@/lib/pos'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
 import { parseListQuery } from '@/lib/list-query'
-import { preservedFields, type Params } from '@/lib/list-url'
+import { type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -68,22 +69,12 @@ export default async function TransactionsPage({
         </div>
       )}
 
-      <form className="flex items-end gap-2">
-        {/* A plain GET submit replaces the whole query string with only its
-            own named inputs -- these hidden fields are what keep the current
-            sort and page size from being silently dropped by picking a date. */}
-        {preservedFields(params, ['date']).map(([name, value]) => (
-          <input key={name} type="hidden" name={name} value={value} />
-        ))}
-        <div className="space-y-2">
-          <label htmlFor="date" className="text-sm font-medium">Tanggal</label>
-          <input
-            id="date" type="date" name="date" defaultValue={date}
-            className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
-          />
-        </div>
-        <button type="submit" className={buttonVariants({ variant: 'outline' })}>Lihat</button>
-      </form>
+      <FilterBar
+        spec={TRANSACTION_LIST}
+        query={query}
+        params={params}
+        controls={{ date: { type: 'date', label: 'Tanggal', value: date } }}
+      />
 
       {sales.rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">Belum ada transaksi hari itu.</p>

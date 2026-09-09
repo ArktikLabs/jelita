@@ -214,6 +214,20 @@ describe('listBranches paging', () => {
     expect(r.total).toBe(60)
     expect(r.rows.map((x) => x.teamId)).not.toContain('br_pg_foreign')
   })
+
+  // Task 5: branches didn't declare a filter for its own `active` column
+  // (branch_profiles.active, not a column of `teams`) -- one of the two
+  // four-resource gaps found while building the FilterBar.
+  it('filters to just the active or inactive rows', async () => {
+    await pool.query(`update branch_profiles set active = false where team_id = $1`, ['br_pg_000'])
+    const inactive = await listBranches(ORG, q({ active: 'false' }))
+    expect(inactive.total).toBe(1)
+    expect(inactive.rows.map((x) => x.teamId)).toEqual(['br_pg_000'])
+
+    const active = await listBranches(ORG, q({ active: 'true' }))
+    expect(active.total).toBe(59)
+    expect(active.rows.map((x) => x.teamId)).not.toContain('br_pg_000')
+  })
 })
 
 describe('branchLabel (pure)', () => {

@@ -10,6 +10,7 @@ import { listHref, preservedFields, type Params } from '@/lib/list-url'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { SortableHead } from '@/components/list/sortable-head'
+import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -70,6 +71,8 @@ export default async function ProductsPage({
         <Input name="q" defaultValue={query.q ?? ''} placeholder="Cari nama produk" />
       </form>
 
+      <FilterBar spec={PRODUCT_LIST} query={query} params={params} />
+
       <Table>
         <TableHeader>
           <TableRow>
@@ -85,10 +88,10 @@ export default async function ProductsPage({
           {page.rows.length === 0 && (
             <TableRow>
               <TableCell colSpan={6} className="text-muted-foreground">
-                {query.q ? (
+                {query.q || Object.keys(query.filters).length > 0 ? (
                   <>
                     Tidak ada produk yang cocok dengan pencarian ini.{' '}
-                    <Link href={listHref(params, { q: null })} className="underline">
+                    <Link href={listHref(params, { q: null, active: null })} className="underline">
                       Hapus filter
                     </Link>
                   </>
