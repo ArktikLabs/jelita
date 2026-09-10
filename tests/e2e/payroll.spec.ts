@@ -89,6 +89,28 @@ test.describe.serial('the payroll recap', () => {
     await expect(page.getByTestId(`net-${stylistId}`)).toContainText('3.000.000')
   })
 
+  test('a stylist who left mid-month is still listed, and marked as gone', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto(`/dashboard/staff/${stylistId}`)
+    await page.locator('#baseSalary').fill('3.000.000')
+    await page.getByRole('button', { name: 'Simpan gaji pokok' }).click()
+    await expect(page.getByText('Gaji pokok disimpan.')).toBeVisible()
+
+    await pool.query(`update staff_profiles set active = false, deleted_at = now()
+                       where user_id = $1 and organization_id = $2`, [stylistId, orgId])
+    await page.goto(`/dashboard/payroll?month=${month()}`)
+    // Anchored on the money first: the row has to be there AND carry what she
+    // is owed. A badge on a row that lost its figures would still be a salon
+    // not paying somebody.
+    await expect(page.getByTestId(`net-${stylistId}`)).toContainText('3.000.000')
+    await expect(page.getByText('Sudah keluar')).toBeVisible()
+
+    await pool.query(`update staff_profiles set active = true, deleted_at = null
+                       where user_id = $1 and organization_id = $2`, [stylistId, orgId])
+    await page.goto(`/dashboard/payroll?month=${month()}`)
+    await expect(page.getByText('Sudah keluar')).toHaveCount(0)
+  })
+
   test('an empty base salary means NOT SALARIED, shown as a dash', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
     await page.goto(`/dashboard/staff/${stylistId}`)

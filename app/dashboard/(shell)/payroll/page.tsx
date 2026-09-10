@@ -2,6 +2,7 @@ import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { listDeductions, payrollRecap, payrollRun } from '@/lib/payroll'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
 import { buttonVariants } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
@@ -86,7 +87,17 @@ export default async function PayrollPage({
         <TableBody>
           {rows.map((r) => (
             <TableRow key={r.userId}>
-              <TableCell className="font-medium">{r.name}</TableCell>
+              <TableCell className="font-medium">
+                {r.name}
+                {/* She is on this list because she worked part of the month
+                    and is owed for it. Without the badge her name reads as a
+                    mistake -- or worse, as somebody still on staff. */}
+                {r.hasLeft && (
+                  <Badge variant="outline" className="ml-2 font-normal">
+                    Sudah keluar
+                  </Badge>
+                )}
+              </TableCell>
               <TableCell data-testid={`base-${r.userId}`}>
                 {/* A dash, not Rp 0: this person is not salaried, which is a
                     different statement from salaried at nothing. */}

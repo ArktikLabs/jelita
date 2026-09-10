@@ -229,6 +229,16 @@ describe('the recap', () => {
     expect(r[SINTA], 'and everyone else still is').toBeDefined()
   })
 
+  it('flags her as departed, so the name is not read as a mistake', async () => {
+    await sell(RINA, `${MONTH.slice(0, 7)}-12 10:00`)
+    await pool.query(`update staff_profiles set active = false, deleted_at = $3
+                       where user_id = $1 and organization_id = $2`,
+      [RINA, ORG, `${MONTH.slice(0, 7)}-20`])
+    const r = await recap()
+    expect(r[RINA].hasLeft, 'she is owed, but she is gone').toBe(true)
+    expect(r[SINTA].hasLeft, 'and everyone still here is not flagged').toBe(false)
+  })
+
   it('drops her from LATER months, once she was gone for the whole of one', async () => {
     await pool.query(`update staff_profiles set active = false, deleted_at = $3
                        where user_id = $1 and organization_id = $2`,
