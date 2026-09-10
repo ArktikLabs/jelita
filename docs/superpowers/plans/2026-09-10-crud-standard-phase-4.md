@@ -331,36 +331,25 @@ In `app/dashboard/(shell)/customers/page.tsx`, beside the existing filter contro
 
 - [ ] **Step 7: Write the e2e assertion**
 
-Append to `tests/e2e/customers.spec.ts`. The load-bearing claim is that the export reflects the *filter*, not the table:
+Append to `tests/e2e/customers.spec.ts`, **inside the existing `test.describe('customer search, scoping, permissions and duplicates', ...)` block at line 41** — that is where `Sari Wijaya` and `Budi Santoso` are seeded (around line 72) and where the `owner` API context lives.
+
+Assert through the API context rather than a browser download. `Content-Disposition` and the cap notice are already covered by `csvResponse`'s unit test; what only an integration test can prove is that the route honours the screen's filter:
 
 ```ts
-test('the export carries the filtered view, not the whole table', async ({ page }) => {
-  await page.context().addCookies(await ownerCookies())
-  await page.goto('/dashboard/customers?q=sari')
-  // Anchor first: the filtered screen really is showing what we think.
-  await expect(page.getByText('Sari Wijaya')).toBeVisible()
-
-  const download = await Promise.all([
-    page.waitForEvent('download'),
-    page.getByRole('link', { name: 'Ekspor CSV' }).click(),
-  ]).then(([d]) => d)
-
-  const stream = await download.createReadStream()
-  const text = await new Promise<string>((resolve, reject) => {
-    let out = ''
-    stream.on('data', (c) => { out += c })
-    stream.on('end', () => resolve(out))
-    stream.on('error', reject)
-  })
-
+test('the export carries the filtered view, not the whole table', async () => {
+  const res = await owner.get('/api/customers/csv?q=sari')
+  expect(res.status()).toBe(200)
+  const text = await res.text()
   expect(text).toContain('Sari Wijaya')
   // The one that matters: a customer the filter excluded must NOT be in the
   // file. Without this, exporting the whole table would pass.
   expect(text).not.toContain('Budi Santoso')
+  // And never another salon's row, whatever the filter says.
+  expect(text).not.toContain('Rahasia Salon Lain')
 })
 ```
 
-`tests/e2e/customers.spec.ts` already seeds `Sari Wijaya` and `Budi Santoso` (around line 72) — reuse them rather than adding fixtures.
+**Do not** use `ownerCookies()` here — it is defined only inside the *other* describe (`'the URL controls'`, line 232) and belongs to a different salon.
 
 - [ ] **Step 8: Run and commit**
 
@@ -463,12 +452,24 @@ With the commit made, remove the `and organization_id = ...` predicate from `lis
   - `export function SelectionProvider({ total, children }: { total: number; children: React.ReactNode })`
   - `export function SelectRow({ id }: { id: string })` — one checkbox
   - `export function SelectAll({ ids }: { ids: string[] })` — the header checkbox, selects this page
-  - `export function SelectionBar({ action, label }: { action: string; label: string })` — the count, the "select all N matching" escalation, and the submit
+  - `export function SelectionBar({ action, label }: { action: (formData: FormData) => Promise<void>; label: string })` — the count, the "select all N matching" escalation, and the submit. **`action` is a Server Action function passed as a prop, not a URL string** — `<form action={fn}>` takes a function in the App Router.
 - The form posts either `ids` (repeated) **or** `allMatching=1` plus the current filter params — never both.
 
 - [ ] **Step 1: Write the failing e2e**
 
 Append to `tests/e2e/customers.spec.ts`:
+
+**The fixture must make the distinction observable.** `perPage`'s allow-list floor is 25 (`lib/list-query.ts:5`), and the customers describe seeds only two customers — so page-selection and all-matching would be identical and the test could never fail. Seed 30 in this describe's `beforeAll` first:
+
+```ts
+// 30, so "this page" (25) and "all matching" are genuinely different numbers.
+// With the fixture's two customers the two modes coincide and the assertion
+// below is unfalsifiable.
+await pool.query(`
+  insert into customers (id, organization_id, name)
+  select 'e2e_bulk_' || g, $1, 'Bulk Pelanggan ' || lpad(g::text, 2, '0')
+    from generate_series(1, 30) g`, [orgId])
+```
 
 ```ts
 test('selecting the page is not the same as selecting everything', async ({ page }) => {
