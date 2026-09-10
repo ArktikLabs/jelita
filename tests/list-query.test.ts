@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { SQL } from 'drizzle-orm'
-import { clampPage, orderBy, parseListQuery, toResult, type ListSpec } from '../lib/list-query'
+import {
+  clampPage,
+  EXPORT_CAP,
+  exportQuery,
+  orderBy,
+  parseListQuery,
+  toResult,
+  wasTruncated,
+  type ListSpec,
+} from '../lib/list-query'
+import { CUSTOMER_LIST } from '../lib/customer'
 
 const SPEC: ListSpec = {
   sortable: { name: 'c.name', created: 'c.created_at' },
@@ -248,5 +258,38 @@ describe('toResult', () => {
     const q = parseListQuery(SPEC, {})
     expect(toResult([], 0, q).pages).toBe(1)
     expect(toResult([], 51, q).pages).toBe(3)
+  })
+})
+
+describe('exportQuery', () => {
+  it('keeps the filters and the sort the screen is showing', () => {
+    const q = exportQuery(CUSTOMER_LIST, { q: 'sari', sort: '-created', active: 'true' })
+    expect(q.q).toBe('sari')
+    expect(q.sort).toBe('created')
+    expect(q.desc).toBe(true)
+    expect(q.filters.active).toBe('true')
+  })
+
+  it('raises perPage to the cap and pins page 1', () => {
+    // The whole point: the screen's 25 must not become the export's 25.
+    const q = exportQuery(CUSTOMER_LIST, { perPage: '25', page: '7' })
+    expect(q.perPage).toBe(EXPORT_CAP)
+    expect(q.page).toBe(1)
+  })
+
+  it('ignores an attempt to raise the cap from the URL', () => {
+    // perPage is attacker-reachable; the cap is not negotiable from a request.
+    const q = exportQuery(CUSTOMER_LIST, { perPage: '999999' })
+    expect(q.perPage).toBe(EXPORT_CAP)
+  })
+
+  it('still refuses an unknown sort, exactly as the list does', () => {
+    const q = exportQuery(CUSTOMER_LIST, { sort: 'salary; drop table users' })
+    expect(q.sort).toBe(CUSTOMER_LIST.defaultSort.replace('-', ''))
+  })
+
+  it('says when a result was truncated', () => {
+    expect(wasTruncated(EXPORT_CAP)).toBe(false)
+    expect(wasTruncated(EXPORT_CAP + 1)).toBe(true)
   })
 })

@@ -114,6 +114,38 @@ export function parseListQuery<K extends string>(spec: ListSpec<K>, params: Para
 }
 
 /**
+ * §8's cap. Not streamed: a salon with more than ten thousand matching rows
+ * is not the case this product is for, and a streamed response is a different
+ * shape of code to get wrong.
+ *
+ * ponytail: capped, not streamed. Ceiling: the 10.001st row is not exported.
+ * Upgrade path: stream the response.
+ */
+export const EXPORT_CAP = 10_000
+
+/**
+ * The same query the screen is showing, over every matching row instead of one
+ * page.
+ *
+ * A function rather than `{ ...query, perPage: 10_000 }` at six call sites:
+ * `perPage` carries no trace of the allow-list it came from, so six copies is
+ * six chances for one of them to drift.
+ *
+ * `page` is pinned to 1 because an offset into an un-paged result is a way to
+ * silently export the wrong rows -- exporting from page 7 would skip the first
+ * 60.000.
+ */
+export function exportQuery<K extends string>(
+  spec: ListSpec<K>,
+  params: Record<string, string | string[] | undefined>,
+): ListQuery {
+  return { ...parseListQuery(spec, params), page: 1, perPage: EXPORT_CAP }
+}
+
+/** Whether the cap actually bit, given a ListResult's `total`. */
+export const wasTruncated = (total: number) => total > EXPORT_CAP
+
+/**
  * `sql.raw` is safe here and nowhere else: the expression comes from the
  * spec's own values, which are written in our source, and the request only
  * chose WHICH key to look up.
