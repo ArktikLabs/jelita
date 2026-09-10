@@ -190,14 +190,23 @@ export async function updateService(
      where id = ${serviceId} and organization_id = ${organizationId}`)
 }
 
-/** `active` stays the single truth for visibility -- this only stamps WHEN
- *  and BY WHOM the service stopped being offered. */
+/**
+ * `active` stays the single truth for visibility -- this only stamps WHEN
+ * and BY WHOM the service stopped being offered.
+ *
+ * Returns whether a row actually changed -- `returning id` the same way
+ * deactivateBranch/deactivateStaff do -- so an id from another org, or one
+ * that never existed, is reported honestly rather than rounded into "done"
+ * (Fix 5, phase 4 review).
+ */
 export async function deactivateService(
   serviceId: string, organizationId: string, actorUserId: string,
-): Promise<void> {
-  await db.execute(sql`
+): Promise<boolean> {
+  const { rows } = await db.execute(sql`
     update services set active = false, deleted_at = now(), deleted_by = ${actorUserId}
-     where id = ${serviceId} and organization_id = ${organizationId}`)
+     where id = ${serviceId} and organization_id = ${organizationId}
+    returning id`)
+  return rows.length > 0
 }
 
 /** A live row must not still claim a deletion date -- both deletion columns

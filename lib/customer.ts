@@ -136,13 +136,20 @@ export async function updateCustomer(
 /**
  * `active` stays the single truth for visibility (spec) -- this only stamps
  * WHEN and BY WHOM the customer stopped being offered.
+ *
+ * Returns whether a row actually changed -- `returning id` the same way
+ * deactivateBranch/deactivateStaff do -- so an id from another org, or one
+ * that never existed, is reported honestly rather than rounded into "done"
+ * (Fix 5, phase 4 review).
  */
 export async function deactivateCustomer(
   customerId: string, organizationId: string, actorUserId: string,
-): Promise<void> {
-  await db.execute(sql`
+): Promise<boolean> {
+  const { rows } = await db.execute(sql`
     update customers set active = false, deleted_at = now(), deleted_by = ${actorUserId}
-     where id = ${customerId} and organization_id = ${organizationId}`)
+     where id = ${customerId} and organization_id = ${organizationId}
+    returning id`)
+  return rows.length > 0
 }
 
 /**

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool, Client } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { SERVICE_LIST, listServices } from '../lib/service'
+import { SERVICE_LIST, deactivateService, listServices } from '../lib/service'
 import { parseListQuery } from '../lib/list-query'
 
 /**
@@ -107,6 +107,46 @@ describe('cross-tenant rows are unrepresentable', () => {
     await expect(pool.query(`
       insert into service_staff (service_id, user_id, organization_id)
       values ('vt_svc_s1', 'vt_svc_u2', $1)`, [ORG])).rejects.toThrow()
+  })
+})
+
+/**
+ * Fix 5 (phase 4 review): the bulk action discarded deactivateService's
+ * result with `.then(() => true)`, so an id from another org (or one that
+ * never existed) reported "1 dinonaktifkan" having changed nothing --
+ * branches and staff already re-read to tell a real update from a no-op
+ * (lib/branch.ts, lib/staff.ts); services must be equally honest.
+ *
+ * Reuses ORG2 and vt_svc_u2 seeded by the "cross-tenant" describe above.
+ */
+describe('deactivateService', () => {
+  const ACTOR = 'vt_svc_u2'
+
+  it('reports true when it actually deactivated the row', async () => {
+    await pool.query(`
+      insert into services (id, organization_id, name, duration_minutes, price)
+      values ('vt_svc_deact_1', $1, 'Deact Satu', 30, 50000)`, [ORG])
+    const closed = await deactivateService('vt_svc_deact_1', ORG, ACTOR)
+    expect(closed).toBe(true)
+    const { rows: [row] } = await pool.query(`select active from services where id = $1`,
+      ['vt_svc_deact_1'])
+    expect(row.active).toBe(false)
+  })
+
+  it("reports false for another salon's service -- and never touches the row", async () => {
+    await pool.query(`
+      insert into services (id, organization_id, name, duration_minutes, price)
+      values ('vt_svc_deact_2', $1, 'Deact Salon Lain', 30, 50000)`, [ORG2])
+    const closed = await deactivateService('vt_svc_deact_2', ORG, ACTOR)
+    expect(closed).toBe(false)
+    const { rows: [row] } = await pool.query(`select active from services where id = $1`,
+      ['vt_svc_deact_2'])
+    expect(row.active).toBe(true)
+  })
+
+  it('reports false for an id that never existed', async () => {
+    const closed = await deactivateService('vt_svc_deact_nonexistent', ORG, ACTOR)
+    expect(closed).toBe(false)
   })
 })
 

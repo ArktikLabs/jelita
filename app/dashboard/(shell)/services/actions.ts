@@ -339,8 +339,10 @@ export async function reactivateServiceAction(
 /**
  * §7's bulk action for this resource -- same shape as
  * deactivateSelectedCustomersAction (customers/actions.ts). `deactivateService`
- * carries no guard of its own, so every resolved id always succeeds;
- * `bulkDeactivate` still owns the counting.
+ * carries no business guard of its own, so it always succeeds in the normal
+ * flow, but still returns whether a row actually changed (Fix 5) so an id
+ * reaching here from outside that flow is reported honestly rather than
+ * rounded into "done"; `bulkDeactivate` owns the counting either way.
  */
 export async function deactivateSelectedServicesAction(formData: FormData) {
   const actor = await requirePagePermission({ service: ['update'] })
@@ -353,7 +355,7 @@ export async function deactivateSelectedServicesAction(formData: FormData) {
     idOf: (r: ServiceRow) => r.id,
   })
   const outcome = await bulkDeactivate(
-    targets, (id) => deactivateService(id, organizationId, actor.user.id).then(() => true),
+    targets, (id) => deactivateService(id, organizationId, actor.user.id),
   )
 
   revalidatePath('/dashboard/services')

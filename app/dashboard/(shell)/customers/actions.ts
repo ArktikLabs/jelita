@@ -102,9 +102,13 @@ export async function setCustomerActiveAction(
 /**
  * §7's bulk action for this resource -- SelectionBar's seam
  * (app/dashboard/(shell)/customers/page.tsx). `deactivateCustomer` carries
- * no guard of its own (unlike staff's last-owner CTE), so every resolved id
- * always succeeds; `bulkDeactivate` still owns the counting, so a future
- * guard on this resource would be reported honestly with no change here.
+ * no business guard of its own (unlike staff's last-owner CTE) -- every id
+ * `resolveSelection` hands back is already scoped to this org, so it always
+ * succeeds in the normal flow. It still returns whether a row actually
+ * changed (Fix 5), so an id that reaches here from OUTSIDE that flow -- a
+ * hand-crafted form post naming another org's customer, or one already
+ * deleted between page render and submit -- is reported honestly rather
+ * than rounded into "done"; `bulkDeactivate` owns the counting either way.
  */
 export async function deactivateSelectedCustomersAction(formData: FormData) {
   const actor = await requirePagePermission({ customer: ['update'] })
@@ -117,7 +121,7 @@ export async function deactivateSelectedCustomersAction(formData: FormData) {
     idOf: (r: CustomerRow) => r.id,
   })
   const outcome = await bulkDeactivate(
-    targets, (id) => deactivateCustomer(id, organizationId, actor.user.id).then(() => true),
+    targets, (id) => deactivateCustomer(id, organizationId, actor.user.id),
   )
 
   revalidatePath('/dashboard/customers')
