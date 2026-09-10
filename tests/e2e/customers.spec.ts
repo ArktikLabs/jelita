@@ -511,3 +511,60 @@ test.describe('selection', () => {
     expect(rows.every((r) => r.active === false), 'both selected rows actually deactivated').toBe(true)
   })
 })
+
+/**
+ * Fix 3 (phase 4 review, §8): `wasTruncated` decided the CSV file's own
+ * notice (lib/list-csv.ts) but had no consumer on the SCREEN -- someone
+ * clicking "Ekspor CSV" on a table over 10.000 rows had no warning before
+ * downloading a file that silently dropped the rest.
+ */
+test.describe('the export truncation notice', () => {
+  const CAP_DOMAIN = 'custcap.local'
+  const CAP_SLUG = 'customercheck-cap'
+
+  let owner: Awaited<ReturnType<typeof client>>
+  let capOrgId: string
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug = $1`, [CAP_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${CAP_DOMAIN}`])
+
+    owner = await client()
+    const ownerEmail = `owner@${CAP_DOMAIN}`
+    await owner.post('/api/auth/sign-up/email',
+      { data: { name: 'Cap Owner', email: ownerEmail, password: PW } })
+    await verify(ownerEmail)
+    await owner.post('/api/auth/sign-in/email', { data: { email: ownerEmail, password: PW } })
+    const org = await owner.post('/api/auth/organization/create',
+      { data: { name: 'Cap Salon', slug: CAP_SLUG } })
+    capOrgId = (await org.json()).id
+    await owner.post('/api/auth/organization/set-active', { data: { organizationId: capOrgId } })
+
+    // One row over the cap -- exactly what makes wasTruncated(total) true.
+    await pool.query(`
+      insert into customers (id, organization_id, name)
+      select 'e2e_cap_' || g, $1, 'Cap Pelanggan ' || g
+        from generate_series(1, 10001) g`, [capOrgId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await pool.query(`delete from organizations where slug = $1`, [CAP_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${CAP_DOMAIN}`])
+  })
+
+  test('shows the notice when the export would be truncated', async () => {
+    const res = await owner.get('/dashboard/customers')
+    const html = await res.text()
+    expect(html).toContain('10001')
+    expect(html.toLowerCase()).toContain('dipotong')
+  })
+
+  test('says nothing when the filtered view fits under the cap', async () => {
+    // Matches exactly one of the 10.001 seeded rows.
+    const res = await owner.get('/dashboard/customers?q=Cap Pelanggan 5000')
+    const html = await res.text()
+    expect(html).toContain('Cap Pelanggan 5000')
+    expect(html.toLowerCase()).not.toContain('dipotong')
+  })
+})

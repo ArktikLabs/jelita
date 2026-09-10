@@ -4,7 +4,7 @@ import { requireBranch, requirePagePermission, requirePageOrg } from '@/lib/sess
 import { auth } from '@/lib/auth'
 import { TRANSACTION_LIST, listSales, openShift, todayLocal } from '@/lib/pos'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
-import { parseListQuery } from '@/lib/list-query'
+import { parseListQuery, wasTruncated } from '@/lib/list-query'
 import { clearFilters, listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -62,6 +62,15 @@ export default async function TransactionsPage({
           <Link href="/dashboard/pos" className={buttonVariants()}>Kasir</Link>
         </div>
       </div>
+
+      {/* §8: the CSV export caps at 10.000 rows and says so IN THE FILE
+          (lib/list-csv.ts) -- this is the same warning on the SCREEN. */}
+      {wasTruncated(sales.total) && (
+        <p className="text-sm text-muted-foreground">
+          Ekspor CSV akan dipotong pada 10.000 baris dari {sales.total} transaksi yang cocok.
+          Persempit filter untuk mengekspor sisanya.
+        </p>
+      )}
 
       {shift && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm">

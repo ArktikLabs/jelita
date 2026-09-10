@@ -4,7 +4,7 @@ import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { SERVICE_LIST, listServices, salonCurrency } from '@/lib/service'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
 import { formatMoney } from '@/lib/money'
-import { parseListQuery } from '@/lib/list-query'
+import { parseListQuery, wasTruncated } from '@/lib/list-query'
 import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -81,6 +81,15 @@ export default async function ServicesPage({
           </Link>
         </div>
       </div>
+
+      {/* §8: the CSV export caps at 10.000 rows and says so IN THE FILE
+          (lib/list-csv.ts) -- this is the same warning on the SCREEN. */}
+      {wasTruncated(services.total) && (
+        <p className="text-sm text-muted-foreground">
+          Ekspor CSV akan dipotong pada 10.000 baris dari {services.total} layanan yang cocok.
+          Persempit filter untuk mengekspor sisanya.
+        </p>
+      )}
 
       <CategoryCreateForm />
 

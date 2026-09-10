@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import Link from 'next/link'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { CUSTOMER_LIST, listCustomers } from '@/lib/customer'
-import { parseListQuery } from '@/lib/list-query'
+import { parseListQuery, wasTruncated } from '@/lib/list-query'
 import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -65,6 +65,16 @@ export default async function CustomersPage({
           </Link>
         </div>
       </div>
+
+      {/* §8: the CSV export caps at 10.000 rows and says so IN THE FILE
+          (lib/list-csv.ts) -- this is the same warning on the SCREEN, before
+          anyone clicks the link and gets a file that looks complete. */}
+      {wasTruncated(customers.total) && (
+        <p className="text-sm text-muted-foreground">
+          Ekspor CSV akan dipotong pada 10.000 baris dari {customers.total} pelanggan yang cocok.
+          Persempit filter untuk mengekspor sisanya.
+        </p>
+      )}
 
       {/* A plain GET form: zero client JS, and the query survives a reload.
           A native GET submit replaces the WHOLE query string with only this

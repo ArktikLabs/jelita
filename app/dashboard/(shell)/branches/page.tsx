@@ -2,7 +2,7 @@ import { Suspense } from 'react'
 import Link from 'next/link'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { BRANCH_LIST, listBranches } from '@/lib/branch'
-import { parseListQuery } from '@/lib/list-query'
+import { parseListQuery, wasTruncated } from '@/lib/list-query'
 import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -59,6 +59,15 @@ export default async function BranchesPage({
           </Link>
         </div>
       </div>
+
+      {/* §8: the CSV export caps at 10.000 rows and says so IN THE FILE
+          (lib/list-csv.ts) -- this is the same warning on the SCREEN. */}
+      {wasTruncated(branches.total) && (
+        <p className="text-sm text-muted-foreground">
+          Ekspor CSV akan dipotong pada 10.000 baris dari {branches.total} cabang yang cocok.
+          Persempit filter untuk mengekspor sisanya.
+        </p>
+      )}
 
       <form className="max-w-sm">
         {preservedFields(params, ['q']).map(([name, value]) => (

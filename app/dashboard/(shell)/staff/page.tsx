@@ -4,7 +4,7 @@ import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { STAFF_LIST, listStaff } from '@/lib/staff'
 import { branchesOf } from '@/lib/branch'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
-import { parseListQuery } from '@/lib/list-query'
+import { parseListQuery, wasTruncated } from '@/lib/list-query'
 import { clearFilters, listHref, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -86,6 +86,15 @@ export default async function StaffPage({
           </Link>
         </div>
       </div>
+
+      {/* §8: the CSV export caps at 10.000 rows and says so IN THE FILE
+          (lib/list-csv.ts) -- this is the same warning on the SCREEN. */}
+      {wasTruncated(staff.total) && (
+        <p className="text-sm text-muted-foreground">
+          Ekspor CSV akan dipotong pada 10.000 baris dari {staff.total} staf yang cocok.
+          Persempit filter untuk mengekspor sisanya.
+        </p>
+      )}
 
       <FilterBar
         spec={STAFF_LIST}
