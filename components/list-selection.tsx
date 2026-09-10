@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
@@ -39,6 +39,20 @@ function useSelectionApi(): SelectionApi {
 export function SelectionProvider({ total, children }: { total: number; children: ReactNode }) {
   const [ids, setIds] = useState<Set<string>>(new Set())
   const [allMatching, setAllMatching] = useState(false)
+
+  // The query string is the honest key for "which rows are on screen": it
+  // changes on every filter, search, sort or page move, and each of those
+  // swaps the rows under a selection that was only ever about ONE view. This
+  // component survives a soft navigation (the provider does not remount), so
+  // without this reset a selection made under `active=true` still reads "25
+  // dipilih" after switching to `active=false` -- honest about the COUNT,
+  // silent about the fact none of those ids are the 25 now on screen. Do not
+  // delete this as "over-eager": it is the fix for exactly that bug.
+  const queryKey = useSearchParams().toString()
+  useEffect(() => {
+    setIds(new Set())
+    setAllMatching(false)
+  }, [queryKey])
 
   const api = useMemo<SelectionApi>(() => ({
     selection: { ids, allMatching, total },

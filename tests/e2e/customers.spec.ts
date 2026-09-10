@@ -430,6 +430,14 @@ test.describe('selection', () => {
       insert into customers (id, organization_id, name)
       select 'e2e_bulk_' || g, $1, 'Bulk Pelanggan ' || lpad(g::text, 2, '0')
         from generate_series(1, 30) g`, [salon.organizationId])
+
+    // The one customer on the OTHER side of the `active` filter -- proof
+    // that a filter change actually swapped the rows, not just that some
+    // count went to zero (which would also pass on a page that failed to
+    // render at all).
+    await pool.query(`
+      insert into customers (id, organization_id, name, active)
+      values ('e2e_bulk_inactive', $1, 'Nonaktif Marker', false)`, [salon.organizationId])
   })
 
   test.afterAll(async () => {
@@ -451,5 +459,29 @@ test.describe('selection', () => {
     await page.getByRole('button', { name: /Pilih semua .* yang cocok/ }).click()
     const count = await page.getByTestId('selection-count').textContent()
     expect(Number(count!.replace(/\D/g, ''))).toBeGreaterThan(25)
+  })
+
+  // Fix round 1: the provider held its Set across a soft navigation, so a
+  // selection made under one filter silently kept reading as valid under a
+  // completely different one -- honest about the COUNT, silent about the
+  // fact none of those ids were still on screen.
+  test('changing the filter drops a selection made under the old one', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?active=true')
+
+    await page.getByRole('checkbox', { name: 'Pilih semua di halaman ini' }).check()
+    await expect(page.getByTestId('selection-count')).toContainText('25')
+    // Anchor: this really is the active-filtered view, not an empty/broken page.
+    await expect(page.getByText('Bulk Pelanggan 01')).toBeVisible()
+
+    await page.getByRole('link', { name: 'Nonaktif', exact: true }).click()
+
+    // The page actually re-rendered with the OTHER filter's row -- not the
+    // same page failing to update.
+    await expect(page.getByText('Nonaktif Marker')).toBeVisible()
+    await expect(page.getByText('Bulk Pelanggan 01')).not.toBeVisible()
+    // And the stale selection is gone: SelectionBar renders nothing once
+    // both `ids` and `allMatching` are empty/false again.
+    await expect(page.getByTestId('selection-count')).toHaveCount(0)
   })
 })

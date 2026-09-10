@@ -75,63 +75,63 @@ export default async function CustomersPage({
 
       <FilterBar spec={CUSTOMER_LIST} query={query} params={params} />
 
-      <SelectionProvider total={customers.total}>
-        {/* SelectionBar reads the current filter via useSearchParams, which
-            requires a Suspense boundary -- see app/reset-password/page.tsx
-            for the same pattern. */}
-        <Suspense>
+      {/* SelectionProvider and SelectionBar read the current filter via
+          useSearchParams, which requires a Suspense boundary -- see
+          app/reset-password/page.tsx for the same pattern. */}
+      <Suspense>
+        <SelectionProvider total={customers.total}>
           <SelectionBar action={deactivateSelectedCustomers} label="Nonaktifkan yang dipilih" />
-        </Suspense>
 
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-10">
-                <SelectAll ids={customers.rows.map((c) => c.id)} />
-              </TableHead>
-              <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
-              <TableHead>Nomor</TableHead>
-              <TableHead>Status</TableHead>
-              <SortableHead column="created" label="Dibuat" spec={CUSTOMER_LIST} query={query} params={params} />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {customers.rows.length === 0 && (
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={5} className="text-muted-foreground">
-                  {query.q || Object.keys(query.filters).length > 0 ? (
-                    <>
-                      Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
-                      <Link href={listHref(params, clearFilters(CUSTOMER_LIST))} className="underline">
-                        Hapus filter
-                      </Link>
-                    </>
-                  ) : (
-                    'Belum ada pelanggan.'
-                  )}
-                </TableCell>
+                <TableHead className="w-10">
+                  <SelectAll ids={customers.rows.map((c) => c.id)} />
+                </TableHead>
+                <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
+                <TableHead>Nomor</TableHead>
+                <TableHead>Status</TableHead>
+                <SortableHead column="created" label="Dibuat" spec={CUSTOMER_LIST} query={query} params={params} />
               </TableRow>
-            )}
-            {customers.rows.map((c) => (
-              <TableRow key={c.id}>
-                <TableCell>
-                  <SelectRow id={c.id} />
-                </TableCell>
-                <TableCell>
-                  <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
-                </TableCell>
-                <TableCell>{c.phone ?? '—'}</TableCell>
-                <TableCell>
-                  <Badge variant={c.active ? 'secondary' : 'outline'}>
-                    {c.active ? 'Aktif' : 'Nonaktif'}
-                  </Badge>
-                </TableCell>
-                <TableCell>{c.createdAt}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </SelectionProvider>
+            </TableHeader>
+            <TableBody>
+              {customers.rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-muted-foreground">
+                    {query.q || Object.keys(query.filters).length > 0 ? (
+                      <>
+                        Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
+                        <Link href={listHref(params, clearFilters(CUSTOMER_LIST))} className="underline">
+                          Hapus filter
+                        </Link>
+                      </>
+                    ) : (
+                      'Belum ada pelanggan.'
+                    )}
+                  </TableCell>
+                </TableRow>
+              )}
+              {customers.rows.map((c) => (
+                <TableRow key={c.id}>
+                  <TableCell>
+                    <SelectRow id={c.id} />
+                  </TableCell>
+                  <TableCell>
+                    <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
+                  </TableCell>
+                  <TableCell>{c.phone ?? '—'}</TableCell>
+                  <TableCell>
+                    <Badge variant={c.active ? 'secondary' : 'outline'}>
+                      {c.active ? 'Aktif' : 'Nonaktif'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>{c.createdAt}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </SelectionProvider>
+      </Suspense>
 
       <Pagination result={customers} params={params} />
     </div>
