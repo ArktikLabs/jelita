@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { customerProfile, getCustomer } from '@/lib/customer'
 import { CustomerDetailForm, CustomerStatusForm } from './customer-detail-forms'
+import { AuditTrail } from '@/components/audit-trail'
 import Link from 'next/link'
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -41,6 +42,22 @@ export default async function CustomerDetailPage({
           Kasir
         </Link>
       </div>
+
+      {/* No fallback for a null createdByName: `created_by` is null both for
+          a public-booking customer (findOrCreateByPhone) and for one the
+          seed script inserted directly -- the column alone cannot tell
+          those apart, so naming either source would sometimes be a false
+          claim. Omitted entirely, same as branches/services/staff, rather
+          than guessed at. */}
+      <AuditTrail
+        created={{ by: customer.audit.createdByName, at: customer.audit.createdAt }}
+        updated={customer.audit.updatedByName
+          ? { by: customer.audit.updatedByName, at: customer.audit.updatedAt }
+          : null}
+        deactivated={!customer.active && customer.audit.deletedByName
+          ? { by: customer.audit.deletedByName, at: customer.audit.deletedAt! }
+          : null}
+      />
 
       <div className="grid gap-4 sm:grid-cols-4">
         <Stat label="Total belanja" value={formatMoney(profile.spend, currency)} />

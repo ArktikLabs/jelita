@@ -16,7 +16,16 @@ export const staffProfiles = pgTable('staff_profiles', {
   // ("salaried at nothing") -- an owner who sets one by accident should be
   // able to tell which they did (spec 2.1).
   baseSalary: bigint('base_salary', { mode: 'number' }),
-  deactivatedAt: timestamp('deactivated_at', { withTimezone: true }),
+  // NULLABLE and undefaulted: a public booking, the seed and the cron all
+  // write without a signed-in user, and NULL means "not a person" rather
+  // than "we forgot" (Task 2 threads the actor through the write paths).
+  createdBy: text('created_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedBy: text('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  // WHEN a record stopped being offered, and by whom. Not "hide this row" --
+  // `active` remains the single truth for that, and a deactivated stylist
+  // must still appear in the payroll for a month they worked.
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  deletedBy: text('deleted_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [unique('staff_profiles_one_branch').on(t.userId, t.organizationId)])

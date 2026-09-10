@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { TRANSACTION_LIST, checkout, closeShift, currentShift, listSales, voidSale } from '../lib/pos'
+import {
+  TRANSACTION_LIST, checkout, closeShift, currentShift, getSale, listSales, voidSale,
+} from '../lib/pos'
 import { parseListQuery } from '../lib/list-query'
 import { commissionFor, commissionRecap } from '../lib/commission'
 import {
@@ -286,7 +288,7 @@ describe('one booking, one sale', () => {
       items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
       bookingId, customerId: CUSTOMER,
     })
-    await expect(voidSale(id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(id, ORG, 'pos_stylist')).resolves.toBeTruthy()
   })
 
   it('refuses another salon\'s booking', async () => {
@@ -449,7 +451,7 @@ describe('voiding within the shift window', () => {
 
   it('mirrors the sale, and the ledger nets to zero', async () => {
     const { id } = await sale()
-    const { invoiceNo } = await voidSale(id, ORG)
+    const { invoiceNo } = await voidSale(id, ORG, STAFF)
     expect(invoiceNo, 'a void is a document too').toBe(2)
     const { rows } = await pool.query(
       `select coalesce(sum(total), 0)::bigint revenue from transactions
@@ -467,7 +469,7 @@ describe('voiding within the shift window', () => {
     const { rows } = await pool.query(
       `select id from shifts where team_id = $1 and closed_at is null`, [TEAM])
     await closeShift(rows[0].id, ORG, STAFF)
-    await expect(voidSale(id, ORG)).rejects.toThrow('SHIFT_CLOSED')
+    await expect(voidSale(id, ORG, STAFF)).rejects.toThrow('SHIFT_CLOSED')
   })
 
   it('refuses a second close of the same shift', async () => {
@@ -484,13 +486,13 @@ describe('voiding within the shift window', () => {
       `select id from shifts where team_id = $1 and closed_at is null`, [TEAM])
     await closeShift(rows[0].id, ORG, STAFF)
     const second = await sale()
-    await expect(voidSale(first.id, ORG)).rejects.toThrow('SHIFT_CLOSED')
-    await expect(voidSale(second.id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(first.id, ORG, STAFF)).rejects.toThrow('SHIFT_CLOSED')
+    await expect(voidSale(second.id, ORG, STAFF)).resolves.toBeTruthy()
   })
 
   it('cannot reach another salon\'s sale', async () => {
     const { id } = await sale()
-    await expect(voidSale(id, ORG2)).rejects.toThrow('NOT_FOUND')
+    await expect(voidSale(id, ORG2, STAFF)).rejects.toThrow('NOT_FOUND')
   })
 })
 
@@ -678,7 +680,7 @@ describe('commission rules', () => {
   it('gives the earnings back when the sale is voided, netting the month to zero', async () => {
     await setRule('salon', 'percent', 1000)
     const { id } = await sell()
-    await voidSale(id, ORG)
+    await voidSale(id, ORG, STAFF)
     const { rows } = await pool.query(
       `select coalesce(sum(amount), 0)::bigint total from commissions where organization_id = $1`,
       [ORG])
@@ -747,7 +749,7 @@ describe('automatic shift close', () => {
     expect(await openShifts(), 'one shift, still yesterday\'s').toHaveLength(1)
     // Which is the point of leaving it off: the guarantee is only as good as
     // the habit, and that is the salon's choice to make.
-    await expect(voidSale(first.id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(first.id, ORG, STAFF)).resolves.toBeTruthy()
   })
 
   it('closes yesterday\'s shift on the first sale of a new day when switched on', async () => {
@@ -766,7 +768,7 @@ describe('automatic shift close', () => {
     expect(closed.rows[0].closed_by).toBeNull()
     expect(await openShifts(), 'and a fresh one is open').toHaveLength(1)
 
-    await expect(voidSale(first.id, ORG), 'yesterday is locked')
+    await expect(voidSale(first.id, ORG, STAFF), 'yesterday is locked')
       .rejects.toThrow('SHIFT_CLOSED')
   })
 
@@ -776,7 +778,7 @@ describe('automatic shift close', () => {
     const first = await sell()
     await sell()
     expect(await openShifts(), 'the day is not over').toHaveLength(1)
-    await expect(voidSale(first.id, ORG)).resolves.toBeTruthy()
+    await expect(voidSale(first.id, ORG, STAFF)).resolves.toBeTruthy()
   })
 
   it('lets a close record no closer at all, which the old constraint forbade', async () => {
@@ -1180,5 +1182,54 @@ describe('listSales paging', () => {
     await insertSale({ org: LIST_ORG2, team: LIST_TEAM2, completedAt: '2027-05-01 09:00' })
     const r = await listSales(LIST_ORG, LIST_TEAM, q({ date: '2027-05-01' }))
     expect(r.total).toBe(1)
+  })
+})
+
+/**
+ * Task 4: getSale surfaces who rang the sale up (spec §5). The receipt page
+ * itself already prints completed_at, so this only proves the NAME comes
+ * back correctly -- the page decides where/whether to render it.
+ */
+describe('Task 4: getSale surfaces who rang it up', () => {
+  const CASHIER = 'pos_audit_cashier'
+  const VOIDER = 'pos_audit_voider'
+
+  beforeAll(async () => {
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, 'Pos Audit Cashier', 'pos-audit-cashier@pos.local', true, now(), now()),
+             ($2, 'Pos Audit Voider', 'pos-audit-voider@pos.local', true, now(), now())
+      on conflict (id) do nothing`, [CASHIER, VOIDER])
+  })
+
+  beforeEach(async () => {
+    await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
+    await pool.query(`delete from shifts where organization_id = $1`, [ORG])
+  })
+
+  it('names the cashier who rang it up', async () => {
+    const { id } = await checkout({
+      organizationId: ORG, teamId: TEAM, userId: CASHIER, method: 'cash',
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+    })
+    const sale = await getSale(id, ORG)
+    expect(sale!.createdByName).toBe('Pos Audit Cashier')
+  })
+
+  it("names who voided it on the REVERSAL row, not the original sale's cashier", async () => {
+    // Migration 0035: "who voided a sale is already recorded: the reversal
+    // is its own row with its own created_by" -- so the original sale's
+    // createdByName must stay the cashier even after it is voided.
+    const { id } = await checkout({
+      organizationId: ORG, teamId: TEAM, userId: CASHIER, method: 'cash',
+      items: [{ serviceId: SERVICE, quantity: 1, discount: 0 }],
+    })
+    const { id: reversalId } = await voidSale(id, ORG, VOIDER)
+
+    const original = await getSale(id, ORG)
+    expect(original!.createdByName).toBe('Pos Audit Cashier')
+
+    const reversal = await getSale(reversalId, ORG)
+    expect(reversal!.createdByName).toBe('Pos Audit Voider')
   })
 })

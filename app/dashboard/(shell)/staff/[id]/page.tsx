@@ -7,6 +7,7 @@ import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from '@/components/ui/card'
 import { RoleForm, TransferForm, StatusForm, PasswordForm } from './staff-detail-forms'
+import { AuditTrail } from '@/components/audit-trail'
 import {
   ScheduleExceptionsForm, StaffScheduleForm, TimeOffForm,
 } from './schedule-forms'
@@ -78,6 +79,16 @@ export default async function StaffDetailPage({
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
+      <AuditTrail
+        created={{ by: staff.audit.createdByName, at: staff.audit.createdAt }}
+        updated={staff.audit.updatedByName
+          ? { by: staff.audit.updatedByName, at: staff.audit.updatedAt }
+          : null}
+        deactivated={!staff.active && staff.audit.deletedByName
+          ? { by: staff.audit.deletedByName, at: staff.audit.deletedAt! }
+          : null}
+      />
+
       <Card>
         <CardHeader>
           <CardTitle>{staff.name}</CardTitle>

@@ -57,7 +57,8 @@ export async function checkoutAction(
   // contribute nothing to member history.
   if (!customerId && phone) {
     try {
-      customerId = (await findOrCreateByPhone(organizationId, { name: name || phone, phone })).id
+      customerId = (await findOrCreateByPhone(
+        organizationId, { name: name || phone, phone, actorUserId: session.user.id })).id
     } catch {
       return { error: 'Nomor telepon tidak dikenali. Contoh: 0812xxxxxxx.' }
     }
@@ -88,12 +89,12 @@ export async function voidSaleAction(
 ): Promise<FormState> {
   // pos:['void'] -- owner and admin only. Front desk holds checkout and
   // discount and deliberately not this (lib/permissions.ts).
-  await requirePagePermission({ pos: ['void'] })
+  const session = await requirePagePermission({ pos: ['void'] })
   const { organizationId } = await requireBranch({ write: true })
   if (!organizationId) return { error: 'Tidak ada salon aktif.' }
 
   try {
-    await voidSale(String(formData.get('id') ?? ''), organizationId)
+    await voidSale(String(formData.get('id') ?? ''), organizationId, session.user.id)
   } catch (e) {
     const code = e instanceof Error ? e.message : ''
     if (code === 'SHIFT_CLOSED') {

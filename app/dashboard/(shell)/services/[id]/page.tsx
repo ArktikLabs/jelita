@@ -6,6 +6,7 @@ import {
 } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { ServiceDetailForm, OverridesForm, PerformersForm, ServiceStatusForm } from './service-detail-forms'
+import { AuditTrail } from '@/components/audit-trail'
 
 export default async function ServiceDetailPage({
   params,
@@ -22,7 +23,7 @@ export default async function ServiceDetailPage({
   // "no such service" and "not yours" -- notFound() is correct for both.
   const result = await getService(id, organizationId)
   if (!result) notFound()
-  const { service, overrides, performers } = result
+  const { service, overrides, performers, audit } = result
 
   const [categories, currency] = await Promise.all([
     listCategories(organizationId),
@@ -31,6 +32,14 @@ export default async function ServiceDetailPage({
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
+      <AuditTrail
+        created={{ by: audit.createdByName, at: audit.createdAt }}
+        updated={audit.updatedByName ? { by: audit.updatedByName, at: audit.updatedAt } : null}
+        deactivated={!service.active && audit.deletedByName
+          ? { by: audit.deletedByName, at: audit.deletedAt! }
+          : null}
+      />
+
       <Card>
         <CardHeader>
           <CardTitle>{service.name}</CardTitle>

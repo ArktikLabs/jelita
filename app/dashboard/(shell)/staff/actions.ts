@@ -11,7 +11,9 @@ import { db } from '@/lib/db'
 import { PlanError, requireQuota, countResource, getEntitlements } from '@/lib/plan/entitlements'
 import { getBranchStatus } from '@/lib/plan/branch'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
-import { provisionStaff, assignBranch, getStaff } from '@/lib/staff'
+import {
+  assignBranch, deactivateStaff, getStaff, provisionStaff, reactivateStaff,
+} from '@/lib/staff'
 import { branchesOf } from '@/lib/branch'
 import { formError, type FormState, type ImportState } from '@/lib/form-state'
 import { ASSIGNABLE_ROLES, type SalonRole } from '@/lib/permissions'
@@ -84,12 +86,22 @@ async function branchWriteError(
   return null
 }
 
-/** Does the actor's own `members.role` for this org contain 'owner'? */
+/**
+ * Does the actor's own `members.role` for this org contain 'owner'?
+ *
+ * `string_agg` over every row, not `limit 1` -- `members` carries no unique
+ * on (user_id, organization_id) by design (migration 0010_services.sql), so
+ * a dual-membership actor's `limit 1` with no `order by` could land on their
+ * weaker row and read as not-an-owner despite a real owner row sitting right
+ * next to it. Same shape as `staffOf` (lib/staff.ts), which every
+ * owner-protection check here compares the target against -- this is the
+ * actor-side read, and it has to agree with that one.
+ */
 async function isOwner(userId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
-    select role from members where user_id = ${userId} and organization_id = ${organizationId}
-     limit 1`)
-  return ((rows[0] as { role: string } | undefined)?.role ?? '').split(',').includes('owner')
+    select string_agg(role, ',' order by role) as role from members
+     where user_id = ${userId} and organization_id = ${organizationId}`)
+  return ((rows[0] as { role: string | null } | undefined)?.role ?? '').split(',').includes('owner')
 }
 
 /**
@@ -115,18 +127,38 @@ async function activeOwnerCount(organizationId: string) {
  * node_modules/better-auth/dist/plugins/organization/routes/crud-members.mjs:
  * it resolves the target via `adapter.findMemberById(ctx.body.memberId)`
  * whenever that id differs from the caller's own member id.
+ *
+ * Returns EVERY row this person holds in this org, not one. `members` carries
+ * no unique on (user_id, organization_id) by design (migration
+ * 0010_services.sql -- better-auth only checks "already a member" at invite
+ * time), so a person is reachable with two rows the way lib/staff.ts's
+ * staffOf/listStaff docstrings describe: invite an address, create the same
+ * person through "Tambah staf", then accept the stale invitation.
+ *
+ * This used to be `... limit 1` with NO `order by` -- a query with no natural
+ * ordering, so which of a dual-membership person's rows a role change landed
+ * on was whatever Postgres felt like returning that day. Every owner guard in
+ * this file already treats a person's roles as the UNION across their rows
+ * (`role.split(',').includes('owner')`, fed by staffOf's `string_agg`), so a
+ * demotion that only ever touches ONE arbitrarily-chosen row can leave the
+ * OTHER row still saying 'owner' -- silently keeping them an owner despite
+ * every other read of them (and the screen itself) reporting success.
+ * Ordering the pick deterministically would not fix this: no ordering rule
+ * reliably prefers the 'owner' row over whichever role the update is even
+ * clearing. Acting on the whole set does, and matches how the guards already
+ * read this person's roles -- one write, applied to every row, not a pick.
  */
-async function memberIdFor(userId: string, organizationId: string) {
+async function memberIdsFor(userId: string, organizationId: string) {
   const { rows } = await db.execute(sql`
     select id from members where user_id = ${userId} and organization_id = ${organizationId}
-     limit 1`)
-  return (rows[0] as { id: string } | undefined)?.id ?? null
+     order by id`)
+  return (rows as { id: string }[]).map((r) => r.id)
 }
 
 export async function createStaffAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ staff: ['create'] })
+  const actor = await requirePagePermission({ staff: ['create'] })
   const { organizationId } = await requirePageOrg()
 
   const name = String(formData.get('name') ?? '').trim()
@@ -156,7 +188,9 @@ export async function createStaffAction(
   }
 
   try {
-    await provisionStaff({ organizationId, name, email, password, role, teamId })
+    await provisionStaff({
+      organizationId, name, email, password, role, teamId, actorUserId: actor.user.id,
+    })
   } catch (e) {
     // A branch the owner closed, or one the plan tier has outgrown, must not
     // silently acquire a new hire -- provisionStaff itself throws these
@@ -181,7 +215,7 @@ export async function createStaffAction(
 export async function importStaffAction(
   _prev: ImportState, formData: FormData,
 ): Promise<ImportState> {
-  await requirePagePermission({ staff: ['create'] })
+  const actor = await requirePagePermission({ staff: ['create'] })
   const { organizationId } = await requirePageOrg()
 
   const branches = await branchesOf(organizationId)
@@ -337,6 +371,7 @@ export async function importStaffAction(
       const { user } = await provisionStaff({
         organizationId, name: row.name, email: row.email,
         password: row.password, role: row.role, teamId: row.teamId,
+        actorUserId: actor.user.id,
       })
       createdIds.push(user.id)
     } catch (e) {
@@ -456,22 +491,55 @@ export async function updateStaffRoleAction(
     return { error: LAST_OWNER_MSG }
   }
 
-  const memberId = await memberIdFor(userId, organizationId)
-  if (!memberId) return NOT_FOUND
+  const memberIds = await memberIdsFor(userId, organizationId)
+  if (memberIds.length === 0) return NOT_FOUND
 
-  try {
-    await auth.api.updateMemberRole({
-      body: { memberId, organizationId, role },
-      headers: await headers(),
-    })
-  } catch (e) {
-    return { error: formError(e, 'Gagal mengubah peran.') }
+  // updateMemberRole takes one memberId per call -- apply the SAME role to
+  // every row this person holds, not just one (memberIdsFor's docstring
+  // explains why a single, nondeterministically-chosen row was the bug this
+  // loop replaces). It cannot be one transaction: better-auth writes through
+  // its own connection, not this file's `db` (the same reason the
+  // LAST_OWNER_MSG comment above gives for the whole action not being one
+  // either), so a concurrent edit removing one of this person's rows -- or
+  // any other transient failure -- between calls can leave some rows on the
+  // new role and some not.
+  //
+  // Every one of these writes is the SAME role, applied identically and
+  // idempotently to each row -- there is nothing here to compensate the way
+  // importStaffAction (above) undoes a created user, so aborting on the
+  // first failure buys nothing and costs the truth: the earlier iterations
+  // already committed on better-auth's own connection regardless of whether
+  // this function keeps going, so stopping early does not prevent a partial
+  // write -- it just prevents the caller from being TOLD about one. Keep
+  // going, then report accurately: full success only when every row
+  // converged, otherwise how many did, not a blanket "nothing happened".
+  let lastError: unknown
+  let failed = 0
+  for (const memberId of memberIds) {
+    try {
+      await auth.api.updateMemberRole({
+        body: { memberId, organizationId, role },
+        headers: await headers(),
+      })
+    } catch (e) {
+      failed += 1
+      lastError = e
+    }
+  }
+  if (failed === memberIds.length) {
+    return { error: formError(lastError, 'Gagal mengubah peran.') }
+  }
+  if (failed > 0) {
+    return {
+      error: `Peran berhasil diubah untuk ${memberIds.length - failed} dari ${memberIds.length} `
+        + 'catatan keanggotaan orang ini; sisanya gagal. Periksa perannya sebelum mencoba lagi.',
+    }
   }
   // The return value is the assignment, not decoration: assignBranch reports
   // false when no profile row matched, and reporting success on a demotion
   // that left team_id untouched means claiming a stylist has a branch when
   // they have none. transferStaffAction maps it the same way.
-  if (!(await assignBranch(userId, organizationId, nextTeamId))) {
+  if (!(await assignBranch(userId, organizationId, nextTeamId, actor.user.id))) {
     return { error: BRANCH_NOT_FOUND_MSG }
   }
 
@@ -482,7 +550,7 @@ export async function updateStaffRoleAction(
 export async function transferStaffAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ staff: ['update'] })
+  const actor = await requirePagePermission({ staff: ['update'] })
   const { organizationId } = await requirePageOrg()
   const userId = String(formData.get('userId') ?? '')
   const teamId = String(formData.get('teamId') ?? '').trim()
@@ -510,7 +578,7 @@ export async function transferStaffAction(
   // re-assign the branch it meant to clear.
   if (formData.get('release')) {
     if (needsBranch) return { error: 'Peran ini harus ditempatkan di cabang.' }
-    const cleared = await assignBranch(userId, organizationId, null)
+    const cleared = await assignBranch(userId, organizationId, null, actor.user.id)
     if (!cleared) return NOT_FOUND
     revalidateStaff(userId)
     return { done: true }
@@ -525,7 +593,7 @@ export async function transferStaffAction(
   // exercises it -- see lib/staff.ts). A foreign or bogus teamId updates 0
   // rows and reads as not-found, same as a bogus one, without a second
   // query duplicating what assignBranch already does.
-  const updated = await assignBranch(userId, organizationId, teamId)
+  const updated = await assignBranch(userId, organizationId, teamId, actor.user.id)
   if (!updated) return { error: BRANCH_NOT_FOUND_MSG }
 
   revalidateStaff(userId)
@@ -568,39 +636,13 @@ export async function deactivateStaffAction(
   }
 
   // "The last owner cannot be deactivated" is PREVENTED, not handled, so the
-  // count and the write are ONE statement. Folding the count into the WHERE
-  // alone is not enough: under READ COMMITTED two owners deactivating two
-  // DIFFERENT owner peers would each read "2 owners" and both write, leaving
-  // the salon ownerless. The materialized CTE locks every active owner row of the
-  // salon first (ordered, so two of these cannot deadlock), so the second
-  // transaction blocks there, re-reads the now-inactive row under EvalPlanQual,
-  // counts 1 and refuses. Same shape as deactivateBranchAction.
-  const { rows: closed } = await db.execute(sql`
-    with owners as materialized (
-      select s.user_id from staff_profiles s
-        join members m on m.user_id = s.user_id
-                      and m.organization_id = s.organization_id
-       where s.organization_id = ${organizationId} and s.active
-         and (string_to_array(m.role, ',') && array['owner'])
-       order by s.user_id
-         -- of s, m: owner-ness is read from members.role, which
-         -- updateStaffRoleAction writes while taking no staff_profiles lock.
-         -- Locking only s, the two operations never contend: a demotion of
-         -- owner B could commit while this statement's snapshot still counted
-         -- B as an owner, and deactivating A would leave the salon with none.
-         -- With m in the lock set the demotion serialises this behind it, and
-         -- the EvalPlanQual re-check drops B from the owner set.
-         for update of s, m
-    )
-    update staff_profiles
-       set active = false, deactivated_at = now(), updated_at = now()
-     where user_id = ${userId} and organization_id = ${organizationId}
-       and active
-       and (user_id not in (select user_id from owners)
-            or (select count(*) from owners) > 1)
-    returning user_id`)
+  // count and the write are ONE statement -- see deactivateStaff (lib/staff.ts)
+  // for the full CTE and the race it closes (two owners deactivating two
+  // DIFFERENT owner peers under READ COMMITTED). Same shape as
+  // deactivateBranchAction.
+  const closed = await deactivateStaff(userId, organizationId, actor.user.id)
 
-  if (closed.length === 0) {
+  if (!closed) {
     // Two remaining ways to affect no rows, and they are not the same news:
     // already inactive (a double submit) is a no-op, anything else is the
     // last-owner refusal. Re-read rather than trust the pre-read above -- the
@@ -629,7 +671,7 @@ export async function deactivateStaffAction(
 export async function reactivateStaffAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ staff: ['deactivate'] })
+  const actor = await requirePagePermission({ staff: ['deactivate'] })
   const { organizationId } = await requirePageOrg()
   const userId = String(formData.get('userId') ?? '')
   const target = await getStaff(userId, organizationId)
@@ -658,10 +700,7 @@ export async function reactivateStaffAction(
     return { error: formError(e, 'Gagal mengaktifkan staf.') }
   }
 
-  await db.execute(sql`
-    update staff_profiles
-       set active = true, deactivated_at = null, updated_at = now()
-     where user_id = ${userId} and organization_id = ${organizationId}`)
+  await reactivateStaff(userId, organizationId, actor.user.id)
   revalidateStaff(userId)
   return { done: true }
 }

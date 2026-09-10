@@ -1,10 +1,8 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { sql } from 'drizzle-orm'
-import { db } from '@/lib/db'
 import { requireBranch, requirePagePermission } from '@/lib/session'
-import { recordMovement } from '@/lib/inventory'
+import { createProduct, recordMovement } from '@/lib/inventory'
 import { parseMoney } from '@/lib/money'
 import { salonSettings } from '@/lib/service'
 import { type FormState } from '@/lib/form-state'
@@ -12,7 +10,7 @@ import { type FormState } from '@/lib/form-state'
 export async function createProductAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ product: ['create'] })
+  const actor = await requirePagePermission({ product: ['create'] })
   const { organizationId } = await requireBranch({ write: true })
   if (!organizationId) return { error: 'Tidak ada salon aktif.' }
 
@@ -33,10 +31,9 @@ export async function createProductAction(
     if (price === null) return { error: 'Harga tidak valid.' }
   }
 
-  await db.execute(sql`
-    insert into products (id, organization_id, name, sku, kind, price, reorder_level)
-    values (${crypto.randomUUID()}, ${organizationId}, ${name}, ${sku}, ${kind},
-            ${price}, ${reorderLevel})`)
+  await createProduct({
+    organizationId, name, sku, kind, price, reorderLevel, actorUserId: actor.user.id,
+  })
   revalidatePath('/dashboard/products')
   return { done: true }
 }

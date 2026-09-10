@@ -39,6 +39,7 @@ export async function provisionStaff(input: {
   password: string
   role: SalonRole
   teamId?: string | null
+  actorUserId: string
 }) {
   // The allow-list, not `role in roles`: `roles` contains 'owner', and
   // better-auth's addMember performs NO permission check on the role it writes
@@ -108,8 +109,15 @@ export async function provisionStaff(input: {
     })
 
     // The members insert fired the trigger, so a profile exists with team_id
-    // null. Assignment is this module's job -- see the pairing note below.
-    if (input.teamId) await assignBranch(created.id, input.organizationId, input.teamId)
+    // null and no actor at all -- the trigger runs inside Postgres with no
+    // idea who called addMember. Stamp it here, the one place that knows.
+    await db.execute(sql`
+      update staff_profiles set created_by = ${input.actorUserId}
+       where user_id = ${created.id} and organization_id = ${input.organizationId}`)
+    // Assignment is this module's job -- see the pairing note below.
+    if (input.teamId) {
+      await assignBranch(created.id, input.organizationId, input.teamId, input.actorUserId)
+    }
   } catch (e) {
     await ctx.internalAdapter.deleteUser(created.id)
     throw e
@@ -145,10 +153,10 @@ export async function provisionStaff(input: {
  * read as "not found" to the operator).
  */
 export async function assignBranch(
-  userId: string, organizationId: string, teamId: string | null,
+  userId: string, organizationId: string, teamId: string | null, actorUserId: string,
 ): Promise<boolean> {
   const result = await db.execute(sql`
-    update staff_profiles set team_id = ${teamId}, updated_at = now()
+    update staff_profiles set team_id = ${teamId}, updated_by = ${actorUserId}
      where user_id = ${userId} and organization_id = ${organizationId}
        and (${teamId}::text is null or exists (
          select 1 from teams where id = ${teamId}
@@ -240,9 +248,52 @@ export async function staffOf(
   return rowsToStaff(rows as Record<string, unknown>[])
 }
 
+/**
+ * Task 4's audit trail (spec §5), added to `getStaff` alone -- `staffOf`
+ * itself stays untouched so the roster list (and every other caller that
+ * iterates the whole staff table) does not pay for three extra joins it
+ * never reads.
+ *
+ * No fallback for a null created_by: every write path into `staff_profiles`
+ * (provisionStaff, called by the dashboard form, the JSON API and the CSV
+ * import loop alike) requires a signed-in actor, so a null one only ever
+ * comes from the seed script's direct `members` insert -- no nameable
+ * context, hence omitted rather than guessed.
+ *
+ * `updatedByName` is suppressed when it is the SAME actor who created the
+ * row within a few seconds -- provisionStaff inserts the row and then
+ * assignBranch updates it immediately after (same function, same actor), so
+ * a naive "updated_at moved" check would print a "diubah" line for every
+ * single hire.
+ */
 export async function getStaff(userId: string, organizationId: string) {
   const [row] = await staffOf(organizationId, userId)
-  return row ?? null
+  if (!row) return null
+
+  const { rows: auditRows } = await db.execute(sql`
+    select cb.name as created_by_name, to_char(s.created_at, 'DD-MM-YYYY') as created_display,
+           ub.name as updated_by_name, to_char(s.updated_at, 'DD-MM-YYYY') as updated_display,
+           (s.updated_by is not null and (
+             s.updated_by is distinct from s.created_by
+             or extract(epoch from s.updated_at - s.created_at) > 10
+           )) as show_updated,
+           delb.name as deleted_by_name, to_char(s.deleted_at, 'DD-MM-YYYY') as deleted_display
+      from staff_profiles s
+      left join users cb on cb.id = s.created_by
+      left join users ub on ub.id = s.updated_by
+      left join users delb on delb.id = s.deleted_by
+     where s.user_id = ${userId} and s.organization_id = ${organizationId}`)
+  const a = auditRows[0] as Record<string, unknown> | undefined
+  const audit = {
+    createdByName: (a?.created_by_name as string) ?? null,
+    createdAt: (a?.created_display as string) ?? '',
+    updatedByName: a?.show_updated ? (a.updated_by_name as string) : null,
+    updatedAt: (a?.updated_display as string) ?? '',
+    deletedByName: (a?.deleted_by_name as string) ?? null,
+    deletedAt: (a?.deleted_display as string) ?? null,
+  }
+
+  return { ...row, audit }
 }
 
 /**
@@ -357,4 +408,50 @@ export async function listStaff(
     total,
     clamped,
   )
+}
+
+/**
+ * The deactivation write. "The last active owner cannot be deactivated" is
+ * PREVENTED, not handled (spec §6.3), so the count and the write are ONE
+ * statement -- see deactivateStaffAction, which carries the full race
+ * reasoning (two owners deactivating two different peers under READ
+ * COMMITTED). Returns whether a row actually closed: false means either
+ * already inactive (a double submit) or the last-owner refusal, and the
+ * caller re-reads to tell those apart, the same way it always has.
+ */
+export async function deactivateStaff(
+  userId: string, organizationId: string, actorUserId: string,
+): Promise<boolean> {
+  const { rows: closed } = await db.execute(sql`
+    with owners as materialized (
+      select s.user_id from staff_profiles s
+        join members m on m.user_id = s.user_id
+                      and m.organization_id = s.organization_id
+       where s.organization_id = ${organizationId} and s.active
+         and (string_to_array(m.role, ',') && array['owner'])
+       order by s.user_id
+         -- of s, m: see deactivateStaffAction for why members must be locked
+         -- too, not just staff_profiles.
+         for update of s, m
+    )
+    update staff_profiles
+       set active = false, deleted_at = now(), deleted_by = ${actorUserId}
+     where user_id = ${userId} and organization_id = ${organizationId}
+       and active
+       and (user_id not in (select user_id from owners)
+            or (select count(*) from owners) > 1)
+    returning user_id`)
+  return closed.length > 0
+}
+
+/** Rehiring clears the deactivation stamp -- a live row must not still claim
+ *  a deletion date. `updated_by` moves too: reactivating is itself a change,
+ *  even with no "reactivated_by" column of its own. */
+export async function reactivateStaff(
+  userId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update staff_profiles
+       set active = true, deleted_at = null, deleted_by = null, updated_by = ${actorUserId}
+     where user_id = ${userId} and organization_id = ${organizationId}`)
 }

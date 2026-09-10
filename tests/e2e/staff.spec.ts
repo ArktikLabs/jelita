@@ -1,7 +1,7 @@
 import { expect, request, test } from '@playwright/test'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from '../db'
-import { createSalon, BASE_URL } from './fixtures'
+import { createSalon, createLogin, signIn, BASE_URL } from './fixtures'
 
 /**
  * Guards, redirects, form posts, provisioning (the JSON API and both Server
@@ -175,6 +175,22 @@ test.describe.serial('provisioning: POST /api/staff (the JSON route)', () => {
     const { rows: teamMember } = await pool.query(
       `select 1 from team_members where user_id = $1 and team_id = $2`, [stylistId, branchId])
     expect(teamMember).toHaveLength(1)
+  })
+
+  // Task 4 (spec §5): the detail page's audit line, and its suppression rule.
+  // provisionStaff inserts the row and assignBranch (lib/staff.ts) updates it
+  // moments later with the SAME actor -- that pairing is exactly what this
+  // test exercises, since it provisions a stylist WITH a branchId.
+  test('the detail page names who created it, and does not show a redundant diubah line', async () => {
+    const email = `assign-stylist-2@${DOMAIN}`
+    const made = await owner.post('/api/staff',
+      { data: { name: 'Stf Assign Stylist Two', email, password: PW, role: 'stylist', branchId } })
+    expect(made.status(), await made.text()).toBe(201)
+    const stylistId = (await made.json()).user.id
+
+    const detail = await getPage(owner, `/dashboard/staff/${stylistId}`)
+    expect(detail.html).toContain('Dibuat oleh Stf Assign Owner')
+    expect(detail.html).not.toContain('Diubah oleh')
   })
 
   test('provisioning without a branchId leaves staff_profiles.team_id null', async () => {
@@ -428,6 +444,262 @@ test.describe.serial('provisioning through /staff/new: pairing, escalation, cros
       expect(stillOwner?.role).toBe('owner')
       await adminClient.dispose()
     })
+  })
+})
+
+/**
+ * Phase-2 review, finding 2: `memberIdFor` (app/dashboard/(shell)/staff/actions.ts)
+ * picked whichever of a person's `members` rows Postgres happened to return
+ * first for `... limit 1` with no `order by` -- a query with no natural
+ * ordering. A person can hold two rows in the same salon the same way the
+ * dual-role fixture in tests/staff.db.test.ts reaches it: invite an address,
+ * create the same person through "Tambah staf", then accept the stale
+ * invitation. Demoting that person used to touch only the ROW `memberIdFor`
+ * happened to pick -- if that was their weaker row, the actual 'owner' row
+ * was left completely untouched, and the person stayed an owner despite the
+ * screen (and every other read of them) reporting the demotion succeeded.
+ *
+ * Reproduced deterministically here by controlling INSERT order: `members`
+ * has a btree index on user_id and no other ordering guarantee, and a bitmap
+ * heap scan over that index returns matching rows in heap (insertion) order
+ * for a freshly-inserted, never-updated table -- confirmed directly against
+ * this Postgres before writing this fixture. Inserting the weaker ('admin')
+ * row FIRST and the 'owner' row SECOND means the old `limit 1` with no
+ * `order by` reliably picked the admin row, leaving the owner row alone.
+ */
+test.describe.serial('a person with two membership rows: demoting them must not leave a stale owner row behind', () => {
+  let owner: Awaited<ReturnType<typeof client>>
+  let orgId: string
+  let branchId: string
+  let dualUserId: string
+  let ownerRowId: string
+  let adminRowId: string
+
+  test.beforeAll(async () => {
+    ;({ ctx: owner, organizationId: orgId } = await createSalon(pool, {
+      name: 'Stf Dual Owner', email: `dual-owner@${DOMAIN}`, password: PW,
+      salon: 'Stf Check Dual', slug: 'staffcheck-dual',
+    }))
+    await setPlan(orgId, 'business')
+    const branch = await owner.post('/api/auth/organization/create-team',
+      { data: { name: 'Cabang Dual', organizationId: orgId } })
+    branchId = (await branch.json()).id
+
+    // A login with no members row of its own yet -- both rows below are
+    // inserted directly, the same way the dual-role fixture in
+    // tests/staff.db.test.ts does it, since this state (two rows for one
+    // person in one salon) is reachable but not something any single form
+    // submission produces.
+    const email = `dual-member@${DOMAIN}`
+    const created = await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values (gen_random_uuid()::text, 'Stf Dual Member', $1, true, now(), now())
+      returning id`, [email])
+    dualUserId = created.rows[0].id
+
+    adminRowId = `${dualUserId}_m_admin`
+    ownerRowId = `${dualUserId}_m_owner`
+    // Admin row first, owner row second -- see the fixture-order note above.
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'admin', now())`, [adminRowId, dualUserId, orgId])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now())`, [ownerRowId, dualUserId, orgId])
+  })
+  test.afterAll(() => owner.dispose())
+
+  test('the row that said owner is the one that changed, not the weaker row a nondeterministic pick might have touched instead', async () => {
+    const demoted = await submitForm(owner, `/dashboard/staff/${dualUserId}`,
+      'Simpan peran</button>', { userId: dualUserId, role: 'stylist', teamId: branchId })
+    expect(demoted.status, demoted.html).toBe(200)
+    expect(demoted.html).toContain('Peran diperbarui.')
+
+    const { rows: [afterOwnerRow] } = await pool.query(
+      `select role from members where id = $1`, [ownerRowId])
+    expect(afterOwnerRow?.role, 'the row that used to say owner').toBe('stylist')
+
+    const { rows: [afterAdminRow] } = await pool.query(
+      `select role from members where id = $1`, [adminRowId])
+    expect(afterAdminRow?.role, 'the other row, so the person is not left with two conflicting roles').toBe('stylist')
+  })
+})
+
+/**
+ * Fix 2 (crud-phase-3 review): `isOwner` (app/dashboard/(shell)/staff/actions.ts)
+ * did `select role from members ... limit 1` with no `order by` -- the exact
+ * shape `memberIdsFor` above was already fixed to stop using, left behind in
+ * its sibling. It gates every owner-protection check (role change,
+ * deactivation, password reset), so a genuine owner holding two rows was
+ * refused acting on a fellow owner whenever the arbitrary pick landed on
+ * their WEAKER row.
+ *
+ * Deactivation, not the role-change form: updateStaffRoleAction's write goes
+ * through better-auth's own updateMemberRole, which resolves the ACTING
+ * member through its own (separately ambiguous, see the self-demotion block
+ * below) lookup -- confounding a role-change test with a second, unrelated
+ * race. deactivateStaffAction never calls into better-auth at all; the only
+ * thing standing between a dual-membership owner and deactivating a co-owner
+ * is this app's own `isOwner` gate, which is what this test isolates.
+ *
+ * Reproduced with the same fixture shape as the describe block above --
+ * 'admin' inserted first, 'owner' second, which this Postgres reliably
+ * returns in insertion order for `limit 1` with no `order by` (see that
+ * block's own comment) -- except this time the dual-membership person is the
+ * ACTOR, deactivating a genuine second owner. `staffOf` (lib/staff.ts)
+ * already reads this person's roles as the union via `string_agg`, so before
+ * this fix the actor-side check disagreed with how the target side is read.
+ */
+test.describe.serial('a dual-membership owner acting on a fellow owner must not be refused for it', () => {
+  let owner: Awaited<ReturnType<typeof client>>
+  let orgId: string
+  let dualCtx: Awaited<ReturnType<typeof client>>
+  let dualUserId: string
+  let coOwnerUserId: string
+
+  test.beforeAll(async () => {
+    ;({ ctx: owner, organizationId: orgId } = await createSalon(pool, {
+      name: 'Stf Dual Actor Owner', email: `dual-actor-owner@${DOMAIN}`, password: PW,
+      salon: 'Stf Check Dual Actor', slug: 'staffcheck-dualactor',
+    }))
+    await setPlan(orgId, 'business')
+
+    // A genuine second owner -- no login needed, this person never signs in
+    // here, only their `members.role` is read by the actor-side check.
+    const coOwner = await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values (gen_random_uuid()::text, 'Stf Dual Co Owner', $1, true, now(), now())
+      returning id`, [`dual-co-owner@${DOMAIN}`])
+    coOwnerUserId = coOwner.rows[0].id
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values (gen_random_uuid()::text, $1, $2, 'owner', now())`, [coOwnerUserId, orgId])
+
+    // The dual-membership actor: a real login, with an 'admin' row inserted
+    // BEFORE the 'owner' row -- the exact insertion order the fixture above
+    // documents as the one `limit 1` with no `order by` reliably mis-picks.
+    const email = `dual-actor@${DOMAIN}`
+    dualUserId = await createLogin(pool, { name: 'Stf Dual Actor', email, password: PW })
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'admin', now())`, [`${dualUserId}_m_admin`, dualUserId, orgId])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now())`, [`${dualUserId}_m_owner`, dualUserId, orgId])
+
+    dualCtx = await signIn(email, PW)
+    await dualCtx.post('/api/auth/organization/set-active', { data: { organizationId: orgId } })
+  })
+  test.afterAll(async () => {
+    await owner.dispose()
+    await dualCtx.dispose()
+  })
+
+  test('the dual-membership owner can deactivate a fellow owner, not refused with "Hanya pemilik"', async () => {
+    const res = await submitForm(dualCtx, `/dashboard/staff/${coOwnerUserId}`,
+      'Nonaktifkan staf</button>', { userId: coOwnerUserId })
+    expect(res.status, res.html).toBe(200)
+    expect(res.html).not.toContain('Hanya pemilik yang dapat menonaktifkan pemilik.')
+
+    const { rows: [after] } = await pool.query(
+      `select active from staff_profiles where user_id = $1 and organization_id = $2`,
+      [coOwnerUserId, orgId])
+    expect(after?.active, 'the co-owner was actually deactivated, not merely unrefused').toBe(false)
+  })
+})
+
+/**
+ * Fix-round finding: the multi-row loop above (memberIdsFor's docstring)
+ * cannot be one transaction, so a failure partway through can leave some of
+ * a person's rows on the new role and some not -- while the old code
+ * reported that as a flat "Gagal mengubah peran.", exactly as if nothing had
+ * happened. This reproduces a REAL partial failure (no mocking, no stubbed
+ * throw) using better-auth's own rules, not a contrived one:
+ *
+ * A person holding TWO 'owner' rows in the same salon (equally reachable as
+ * the admin+owner pair above -- `members` enforces nothing about which roles
+ * two rows may combine) demotes THEMSELVES, with every OTHER real owner in
+ * the salon already gone. The app's own activeOwnerCount is a plain `join`
+ * with no dedup (app/dashboard/(shell)/staff/actions.ts) -- it counts this
+ * one person's two rows as two owners, so the last-owner guard never fires
+ * even though they are, in truth, the only one. memberIdsFor's loop then
+ * updates their first row successfully -- and the second call is refused by
+ * better-auth ITSELF (crud-members.mjs's own updateMemberRole), for one of
+ * two reasons depending only on which of the person's own rows better-auth's
+ * findMemberByOrgId happens to resolve as "the acting member" this time:
+ * either that lookup now returns the already-demoted row (role no longer
+ * 'owner'), so the actor is no longer seen as able to touch an owner row at
+ * all (FORBIDDEN); or it returns the row still being demoted, and
+ * better-auth's own "cannot leave the organization without an owner" check
+ * fires because, mid-loop, this row is genuinely the only 'owner' row left
+ * in the whole organization (BAD_REQUEST). Both outcomes throw -- there is
+ * no path where the second call quietly succeeds -- so this is deterministic
+ * without depending on which one better-auth picks.
+ */
+test.describe.serial('a self-demotion that fails partway must not be reported as if nothing happened', () => {
+  let owner: Awaited<ReturnType<typeof client>>
+  let orgId: string
+  let creatorUserId: string
+  let dualUserId: string
+  let rowA: string
+  let rowB: string
+  let dualCtx: Awaited<ReturnType<typeof client>>
+
+  test.beforeAll(async () => {
+    ;({ ctx: owner, organizationId: orgId, userId: creatorUserId } = await createSalon(pool, {
+      name: 'Stf Partial Owner', email: `partial-owner@${DOMAIN}`, password: PW,
+      salon: 'Stf Check Partial', slug: 'staffcheck-partial',
+    }))
+    await setPlan(orgId, 'business')
+
+    // A real login, so this person can sign in and demote THEMSELVES.
+    const email = `partial-dual@${DOMAIN}`
+    dualUserId = await createLogin(pool, { name: 'Stf Partial Dual', email, password: PW })
+
+    // Two rows, BOTH 'owner' -- ids chosen so `rowA` sorts first, matching
+    // memberIdsFor's `order by id`, so which row is processed first (and
+    // succeeds) is pinned down for the assertions below.
+    rowA = `${dualUserId}_a_owner`
+    rowB = `${dualUserId}_b_owner`
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now()), ($4, $2, $3, 'owner', now())`,
+      [rowA, dualUserId, orgId, rowB])
+
+    // The salon's creator is no longer an owner at all -- this person's two
+    // rows are the ONLY thing saying this salon has an owner. Bypasses the
+    // app (a real admin/owner demoting the last owner is refused, spec 6.1)
+    // because reaching this state through the app is not what this test is
+    // about; the state itself is what matters; it does not violate the
+    // ownerless-salon trigger (migration 0025) because the dual person's two
+    // rows still say owner when this statement commits.
+    await pool.query(`update members set role = 'stylist' where user_id = $1 and organization_id = $2`,
+      [creatorUserId, orgId])
+
+    dualCtx = await signIn(email, PW)
+    await dualCtx.post('/api/auth/organization/set-active', { data: { organizationId: orgId } })
+  })
+  test.afterAll(async () => {
+    await owner.dispose()
+    await dualCtx.dispose()
+  })
+
+  test('one row changes, the other is refused by better-auth itself, and the response says so -- not "Gagal mengubah peran." as if nothing happened', async () => {
+    const res = await submitForm(dualCtx, `/dashboard/staff/${dualUserId}`,
+      'Simpan peran</button>', { userId: dualUserId, role: 'admin' })
+    expect(res.status, res.html).toBe(200)
+
+    const { rows: [afterA] } = await pool.query(`select role from members where id = $1`, [rowA])
+    const { rows: [afterB] } = await pool.query(`select role from members where id = $1`, [rowB])
+    expect(afterA?.role, 'the first row (memberIdsFor\'s order) converged').toBe('admin')
+    expect(afterB?.role, 'the second row was refused by better-auth and stayed put').toBe('owner')
+
+    // The dishonest report this fix exists to prevent: a flat failure
+    // message would read as "nothing happened", which is false -- rowA
+    // already changed. A flat success would be equally false -- rowB did not.
+    expect(res.html).not.toContain('Peran diperbarui.')
+    expect(res.html, 'names that it was partial, not a bare "Gagal mengubah peran."')
+      .toContain('Peran berhasil diubah untuk 1 dari 2')
   })
 })
 
@@ -1015,7 +1287,7 @@ test.describe.serial('departure: the last owner, and the ownerless-salon guards 
     expect(await activeOf('stf_owner2')).toBe(false)
 
     await pool.query(`
-      update staff_profiles set active = true, deactivated_at = null
+      update staff_profiles set active = true, deleted_at = null
        where user_id = 'stf_owner2' and organization_id = $1`, [orgId])
   })
 

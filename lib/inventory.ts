@@ -143,6 +143,26 @@ export async function lowStock(organizationId: string, teamId: string) {
 }
 
 /**
+ * A new product. There is no deactivate/reactivate for this table yet (the
+ * `active` column exists only for the list's filter today, spec gap noted
+ * elsewhere) -- so this is the whole of products' write surface.
+ */
+export async function createProduct(input: {
+  organizationId: string
+  name: string
+  sku: string | null
+  kind: 'retail' | 'internal'
+  price: number | null
+  reorderLevel: number
+  actorUserId: string
+}): Promise<void> {
+  await db.execute(sql`
+    insert into products (id, organization_id, name, sku, kind, price, reorder_level, created_by)
+    values (${crypto.randomUUID()}, ${input.organizationId}, ${input.name}, ${input.sku},
+            ${input.kind}, ${input.price}, ${input.reorderLevel}, ${input.actorUserId})`)
+}
+
+/**
  * One ledger entry. Never an update -- a correction is another movement
  * (spec 2.2), and the trigger refuses anything else anyway.
  */

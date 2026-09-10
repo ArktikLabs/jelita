@@ -7,6 +7,7 @@ import {
 import {
   BranchDetailsForm, BranchHoursForm, BranchStatusForm,
 } from './branch-detail-forms'
+import { AuditTrail } from '@/components/audit-trail'
 
 export default async function BranchDetailPage({
   params,
@@ -21,10 +22,18 @@ export default async function BranchDetailPage({
   // covers both "no such branch" and "not yours" — notFound() is correct for both.
   const data = await getBranch(id, organizationId)
   if (!data) notFound()
-  const { profile, hours } = data
+  const { profile, hours, audit } = data
 
   return (
     <div className="mx-auto max-w-lg space-y-6">
+      <AuditTrail
+        created={{ by: audit.createdByName, at: audit.createdAt }}
+        updated={audit.updatedByName ? { by: audit.updatedByName, at: audit.updatedAt } : null}
+        deactivated={!profile.active && audit.deletedByName
+          ? { by: audit.deletedByName, at: audit.deletedAt! }
+          : null}
+      />
+
       <Card>
         <CardHeader>
           <CardTitle>{profile.name}</CardTitle>

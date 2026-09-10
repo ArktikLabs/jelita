@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { STAFF_LIST, getStaff, listStaff, staffOf } from '../lib/staff'
+import { STAFF_LIST, deactivateStaff, getStaff, listStaff, staffOf } from '../lib/staff'
+import { setBaseSalary } from '../lib/payroll'
 import { parseListQuery } from '../lib/list-query'
 
 /**
@@ -270,14 +271,20 @@ describe('countResource(\'staff\') SQL facts', () => {
   })
 })
 
-describe('the ownerless-salon guards (deactivateStaffAction, read out of actions.ts)', () => {
-  // The statement is READ OUT OF actions.ts, not copied here -- a copy only
-  // proves the copy. Hoisted above the tests that use it.
-  const actionsSrc = readFileSync('app/dashboard/(shell)/staff/actions.ts', 'utf8')
+describe('the ownerless-salon guards (deactivateStaff, read out of lib/staff.ts)', () => {
+  // The statement is READ OUT OF lib/staff.ts, not copied here -- a copy only
+  // proves the copy. Hoisted above the tests that use it. Task 2 moved this
+  // statement out of actions.ts and into deactivateStaff() so the actor could
+  // be threaded through it -- same statement, new home, one extra parameter.
+  const actionsSrc = readFileSync('lib/staff.ts', 'utf8')
   const sqlStart = actionsSrc.indexOf('with owners as materialized')
   const sqlEnd = actionsSrc.indexOf('returning user_id', sqlStart)
   const deactivateSql = actionsSrc.slice(sqlStart, sqlEnd + 'returning user_id'.length)
     .replaceAll('${organizationId}', '$1').replaceAll('${userId}', '$2')
+    .replaceAll('${actorUserId}', '$3')
+  // Any real user id satisfies deleted_by's FK -- these tests assert the
+  // owner-guard, not who gets recorded as having deactivated whom.
+  const ACTOR = 'vt_staff_owner1'
 
   const activeOwners = async () => (await pool.query(`
     select count(*)::int n from staff_profiles s
@@ -299,7 +306,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
        where organization_id = $1 and user_id in ($2, $3)`,
       [OWNERS_ORG, 'vt_staff_owner1', 'vt_staff_owner2'])
     await pool.query(`
-      update staff_profiles set active = true, deactivated_at = null
+      update staff_profiles set active = true, deleted_at = null
        where organization_id = $1`, [OWNERS_ORG])
   }
 
@@ -358,7 +365,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
       // With the lock narrowed to `s` only, this does NOT need owner2's
       // members row at all -- it proceeds immediately, uncommitted, still
       // counting owner2 as an owner (its own snapshot predates d1's write).
-      const raceB = await d2.query(weakenedSql, [OWNERS_ORG, 'vt_staff_owner1'])
+      const raceB = await d2.query(weakenedSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
       expect(raceB.rows, 'the weakened statement itself still matches').toHaveLength(1)
 
       const results = await Promise.allSettled([d1.query('commit'), d2.query('commit')])
@@ -376,7 +383,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
     await pool.query(`
       update staff_profiles set active = false
        where organization_id = $1 and user_id = 'vt_staff_owner2'`, [OWNERS_ORG])
-    const result = await pool.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1'])
+    const result = await pool.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
     expect(result.rows).toHaveLength(0)
     expect(await activeOwners()).toBe(1)
     await resetTwoActiveOwners()
@@ -401,11 +408,11 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
     try {
       await c1.query('begin')
       await c2.query('begin')
-      const raceA = await c1.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1'])
+      const raceA = await c1.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
       // Fired, not awaited: c2 needs owner1's now-locked row (part of the
       // "every active owner" CTE), so this call blocks in Postgres until c1
       // commits or rolls back.
-      const pending = c2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner2'])
+      const pending = c2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner2', ACTOR])
       await c1.query('commit')
       const raceB = await pending
       await c2.query('commit')
@@ -439,7 +446,7 @@ describe('the ownerless-salon guards (deactivateStaffAction, read out of actions
          where user_id = 'vt_staff_owner2' and organization_id = $1`, [OWNERS_ORG])
       // Needs owner2's members row (locked by d1, uncommitted) as part of the
       // "every active owner" CTE for owner1's own deactivation -- blocks.
-      const pending = d2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1'])
+      const pending = d2.query(deactivateSql, [OWNERS_ORG, 'vt_staff_owner1', ACTOR])
       await d1.query('commit')
       const demoteRace = await pending
       await d2.query('commit')
@@ -798,5 +805,151 @@ describe('every staff_profiles row with a branch has a matching team_members row
          and not exists (select 1 from team_members tm
                           where tm.user_id = s.user_id and tm.team_id = s.team_id)`)
     expect(pairing.n).toBe(0)
+  })
+})
+
+/**
+ * Task 4: getStaff's audit trail (spec §5). Raw SQL against staff_profiles
+ * for the fixture, same as the dual-role describe block above -- provisioning
+ * a real login through better-auth is what the e2e suite already does for
+ * the exact provisionStaff-then-assignBranch suppression scenario
+ * (tests/e2e/staff.spec.ts, "provisioning a stylist with a branchId").
+ */
+describe('Task 4: getStaff surfaces the audit trail', () => {
+  const ORG = 'vt_staff_audit_org'
+  const USER = 'vt_staff_audit_user'
+  const ACTOR = 'vt_staff_audit_actor'
+  const OTHER = 'vt_staff_audit_other'
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = any($1)`, [[USER, ACTOR, OTHER]])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Staff Audit Test', 'vt-staff-audit', now())`, [ORG])
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, 'VT Audit Staff', 'vt-staff-audit@test.local', true, now(), now()),
+             ($2, 'VT Audit Actor', 'vt-staff-audit-actor@test.local', true, now(), now()),
+             ($3, 'VT Audit Other', 'vt-staff-audit-other@test.local', true, now(), now())`,
+      [USER, ACTOR, OTHER])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'admin', now())`, [`${USER}_m`, USER, ORG])
+    // A second, active owner -- ACTOR itself, never actually staffed anywhere
+    // in this org -- so deactivating USER's staff_profiles row below does not
+    // trip the last-active-owner guard (migration 0025), which is not what
+    // this describe block is testing.
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'owner', now())`, [`${ACTOR}_m`, ACTOR, ORG])
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = any($1)`, [[USER, ACTOR, OTHER]])
+  })
+
+  it('names who created the row, with nothing to report before any edit', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1 where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.createdByName).toBe('VT Audit Actor')
+    expect(staff!.audit.updatedByName).toBeNull()
+  })
+
+  it('suppresses the diubah line when the SAME actor touches the row seconds after creating it', async () => {
+    // Mirrors provisionStaff + assignBranch (lib/staff.ts): insert, then a
+    // same-actor update moments later -- the exact shape Task 4's brief
+    // calls out as noise, not a real edit.
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 second'
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    // A separate statement, deliberately: touch_updated_at (Task 1) stamps
+    // updated_at = now() itself, so it cannot be set directly in the same
+    // UPDATE as created_at above.
+    await pool.query(
+      `update staff_profiles set updated_by = $1 where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBeNull()
+  })
+
+  it('shows the diubah line when a DIFFERENT actor changes the row moments later', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 second'
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    await pool.query(
+      `update staff_profiles set updated_by = $1 where user_id = $2 and organization_id = $3`,
+      [OTHER, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBe('VT Audit Other')
+  })
+
+  it('shows the diubah line for the SAME actor once real time has passed', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 hour'
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    await pool.query(
+      `update staff_profiles set updated_by = $1 where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBe('VT Audit Actor')
+  })
+
+  it('shows the deactivation line, independent of the diubah line', async () => {
+    // updated_by reset to null: this describe block reuses one row across
+    // tests, and deactivateStaff (Task 3) deliberately never sets updated_by
+    // -- this test isolates that state rather than inheriting it from
+    // whichever test ran before it.
+    await pool.query(
+      `update staff_profiles set created_by = $1, updated_by = null,
+              deleted_by = $2, deleted_at = now(), active = false
+        where user_id = $3 and organization_id = $4`,
+      [ACTOR, OTHER, USER, ORG])
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.deletedByName).toBe('VT Audit Other')
+    expect(staff!.audit.updatedByName).toBeNull()
+  })
+
+  // Fix 3 (crud-phase-3 review): the test above proved getStaff's read of
+  // deleted_by, but nothing proved deactivateStaff (lib/staff.ts:438) is the
+  // one WRITING it correctly -- every other test in this describe block sets
+  // deleted_by by hand, via raw SQL. Swapping actorUserId for userId there
+  // (recording the deactivated person as the author of their own
+  // deactivation) would pass the entire suite today. Round-trip through the
+  // real function instead, with a distinct actor, the same way
+  // branch.db.test.ts already does for deactivateBranch.
+  it('deactivateStaff itself stamps the ACTOR, not the target, as deleted_by', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = null, updated_by = null,
+              deleted_by = null, deleted_at = null, active = true
+        where user_id = $1 and organization_id = $2`,
+      [USER, ORG])
+    const closed = await deactivateStaff(USER, ORG, ACTOR)
+    expect(closed).toBe(true)
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.deletedByName).toBe('VT Audit Actor')
+    expect(staff!.audit.deletedByName).not.toBe('VT Audit Staff')
+  })
+
+  // Fix 1 (crud-phase-3 review): setBaseSalary (lib/payroll.ts) is a write
+  // site on this very table, and it took no actor at all -- an owner editing
+  // "Gaji pokok" left updated_by null, so this exact audit block reported the
+  // record unchanged. Proven the same way the rest of this describe block
+  // does: through the real write function, not a raw SQL stand-in for it.
+  it('names the editor after setBaseSalary, the same as any other write to this table', async () => {
+    await pool.query(
+      `update staff_profiles set created_by = $1, created_at = now() - interval '1 hour',
+              updated_by = null
+        where user_id = $2 and organization_id = $3`,
+      [ACTOR, USER, ORG])
+    await setBaseSalary(USER, ORG, 5000000, OTHER)
+    const staff = await getStaff(USER, ORG)
+    expect(staff!.audit.updatedByName).toBe('VT Audit Other')
   })
 })

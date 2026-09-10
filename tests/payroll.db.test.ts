@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import {
@@ -117,7 +117,7 @@ const sell = (staffUserId: string, completedAt: string) => checkout({
 
 describe('the recap', () => {
   it('is base + commission - deductions', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     await sell(SINTA, '2027-09-06 10:00')
     await addDeduction({
@@ -131,7 +131,7 @@ describe('the recap', () => {
   })
 
   it('distinguishes NOT SALARIED from salaried at zero', async () => {
-    await setBaseSalary(RINA, ORG, 0)
+    await setBaseSalary(RINA, ORG, 0, SINTA)
     const r = await recap()
     // null and 0 must not collapse: an owner who set one by accident should be
     // able to tell which they did.
@@ -213,6 +213,70 @@ describe('the recap', () => {
   })
 })
 
+/**
+ * Phase-2 review, finding 3 (the more serious of the two staff bugs it
+ * surfaced): `payrollRecap`'s two queries (lib/payroll.ts, the OPEN-month
+ * branch and the CLOSED-month snapshot branch) each `join members m on
+ * m.user_id = ... and m.organization_id = ...` with no de-duplication.
+ * `members` carries no unique constraint on (user_id, organization_id) by
+ * design (migration 0010_services.sql -- see lib/staff.ts's staffOf/listStaff
+ * docstrings for how a person ends up with two rows: invite an address,
+ * create the same person through "Tambah staf", then accept the stale
+ * invitation). A dual-membership person therefore fanned out into one
+ * payroll row PER membership row -- duplicated pay, not a display glitch.
+ */
+describe('a person with two membership rows is not paid twice', () => {
+  const EXTRA_MEMBER_ID = 'pay_sinta_m2'
+
+  // The default plan's staff cap (3) would refuse this fixture's extra
+  // membership row -- same move as tests/staff.db.test.ts's paging describe.
+  beforeAll(() => pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'business')
+     where organization_id = $1`, [ORG]))
+  afterAll(() => pool.query(`
+    update subscriptions set plan_id = (select id from plans where key = 'free')
+     where organization_id = $1`, [ORG]))
+
+  afterEach(async () => {
+    await pool.query(`delete from members where id = $1`, [EXTRA_MEMBER_ID])
+  })
+
+  it('appears once, with one salary, in the OPEN-month recap', async () => {
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
+    await sell(SINTA, '2027-09-05 10:00')
+    // The second row, reachable the way the docstring above describes --
+    // any role works, since it is the JOIN fan-out that duplicates the row,
+    // not the role value itself.
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'frontdesk', now())`, [EXTRA_MEMBER_ID, SINTA, ORG])
+
+    const rows = await payrollRecap(ORG, MONTH)
+    const mine = rows.filter((r) => r.userId === SINTA)
+    expect(mine, 'one row, not one per membership row').toHaveLength(1)
+    expect(mine[0]).toMatchObject({ baseSalary: 3000000, commission: 20000 })
+  })
+
+  it('appears once, with one salary, in a CLOSED month\'s snapshot too', async () => {
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
+    await sell(SINTA, '2027-09-05 10:00')
+    // Closed FIRST, with Sinta still holding just one row -- payroll_run_lines
+    // carries its own unique(run_id, user_id), so closing legitimately snapshots
+    // exactly one line for her. The second row appears only AFTER closing, so
+    // this isolates the CLOSED-month query's own members join, independent of
+    // the open-month fan-out the test above already covers.
+    await closePayrollMonth(ORG, MONTH, SINTA)
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'frontdesk', now())`, [EXTRA_MEMBER_ID, SINTA, ORG])
+
+    const rows = await payrollRecap(ORG, MONTH)
+    const mine = rows.filter((r) => r.userId === SINTA)
+    expect(mine, 'one row, not one per membership row').toHaveLength(1)
+    expect(mine[0]).toMatchObject({ baseSalary: 3000000, commission: 20000 })
+  })
+})
+
 describe('what the database refuses', () => {
   it('refuses a deduction of zero or less', async () => {
     for (const amount of [0, -1]) {
@@ -231,14 +295,14 @@ describe('what the database refuses', () => {
   })
 
   it('refuses a negative base salary', async () => {
-    await expect(setBaseSalary(SINTA, ORG, -1)).rejects.toThrow('BAD_AMOUNT')
+    await expect(setBaseSalary(SINTA, ORG, -1, SINTA)).rejects.toThrow('BAD_AMOUNT')
   })
 
   it('refuses another salon\'s staff', async () => {
     await expect(addDeduction({
       organizationId: ORG, userId: OUTSIDER, month: MONTH, amount: 1000, actorUserId: SINTA,
     })).rejects.toThrow('NOT_FOUND')
-    await expect(setBaseSalary(OUTSIDER, ORG, 100)).rejects.toThrow('NOT_FOUND')
+    await expect(setBaseSalary(OUTSIDER, ORG, 100, SINTA)).rejects.toThrow('NOT_FOUND')
   })
 
   it('cannot remove another salon\'s deduction', async () => {
@@ -256,7 +320,7 @@ describe('closing a month', () => {
   const close = () => closePayrollMonth(ORG, MONTH, SINTA)
 
   it('snapshots exactly what the screen showed', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     await addDeduction({
       organizationId: ORG, userId: SINTA, month: MONTH, amount: 150000, actorUserId: SINTA,
@@ -275,12 +339,12 @@ describe('closing a month', () => {
   })
 
   it('stops later changes from rewriting it', async () => {
-    await setBaseSalary(SINTA, ORG, 3000000)
+    await setBaseSalary(SINTA, ORG, 3000000, SINTA)
     await sell(SINTA, '2027-09-05 10:00')
     await close()
 
     // Everything that could have moved the number, moved.
-    await setBaseSalary(SINTA, ORG, 9000000)
+    await setBaseSalary(SINTA, ORG, 9000000, SINTA)
     await sell(SINTA, '2027-09-20 10:00')
 
     expect((await recap())[SINTA]).toMatchObject({
@@ -289,7 +353,7 @@ describe('closing a month', () => {
   })
 
   it('keeps "not salaried" distinct from zero in the snapshot too', async () => {
-    await setBaseSalary(RINA, ORG, 0)
+    await setBaseSalary(RINA, ORG, 0, SINTA)
     await close()
     const r = await recap()
     expect(r[SINTA].baseSalary).toBeNull()

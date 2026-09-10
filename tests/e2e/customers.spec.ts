@@ -157,6 +157,49 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     expect(n).toBe(0)
   })
 
+  // Task 4 (spec §5): the detail page's audit line.
+  test('the detail page names who created it', async ({ browser }) => {
+    const context = await browser.newContext({
+      storageState: await owner.storageState(), baseURL: BASE_URL,
+    })
+    try {
+      const page = await context.newPage()
+      await page.goto('/dashboard/customers/new')
+      await page.getByLabel('Nama').fill('Audit Baru')
+      await page.getByRole('button', { name: 'Simpan' }).click()
+      await expect(page).toHaveURL(/\/dashboard\/customers$/)
+    } finally {
+      await context.close()
+    }
+    const { rows: [row] } = await pool.query(
+      `select id from customers where organization_id = $1 and name = 'Audit Baru'`, [orgId])
+    const res = await owner.get(`/dashboard/customers/${row.id}`)
+    const html = await res.text()
+    expect(html).toContain('Dibuat oleh Cust Owner')
+  })
+
+  test('a customer with no creator on record shows no created line at all -- never a guess, never a dash', async () => {
+    // sariId was seeded directly above with no created_by. A null actor
+    // there is genuinely ambiguous -- it reads exactly the same for a
+    // public-booking customer (findOrCreateByPhone) as for one the seed
+    // script inserted raw -- so the page must omit the line entirely
+    // rather than assert a source it cannot know, and never fall back to
+    // "Dibuat oleh -", which would read as a missing name.
+    const res = await owner.get(`/dashboard/customers/${sariId}`)
+    const html = await res.text()
+    // Anchor the absence: on a 500 or a redirect BOTH strings below are
+    // absent too, so without a positive assertion first this test would
+    // pass on a page that never rendered. The earlier buggy version had
+    // this by accident -- it asserted the fallback text was present --
+    // and rewriting it to two negatives took the anchor away with it.
+    expect(html).toContain('Sari Wijaya')
+    expect(html).not.toContain('Dibuat oleh')
+    // The specific regression: an earlier version guessed "the booking
+    // page" for ANY null actor, which is false for a row like this one
+    // that never went through findOrCreateByPhone at all.
+    expect(html).not.toContain('Dibuat dari halaman booking')
+  })
+
   test('a stylist may read the list', async () => {
     const res = await stylist.get('/dashboard/customers')
     expect(res.status()).toBe(200)

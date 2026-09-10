@@ -152,7 +152,115 @@ export async function getBranch(teamId: string, organizationId: string) {
     opensAt: String(r.opens_at).slice(0, 5),
     closesAt: String(r.closes_at).slice(0, 5),
   }))
-  return { profile, hours }
+
+  // Task 4's audit trail (spec §5). No fallback for a null created_by: every
+  // branch is either seeded by the `teams` trigger with no actor of its own
+  // (completeBranchCreation stamps one right after, but the default team a
+  // fresh salon starts with never goes through that call) or created by a
+  // signed-in owner/admin -- there is no third, nameable context to guess at.
+  const { rows: auditRows } = await db.execute(sql`
+    select cb.name as created_by_name, to_char(p.created_at, 'DD-MM-YYYY') as created_display,
+           ub.name as updated_by_name, to_char(p.updated_at, 'DD-MM-YYYY') as updated_display,
+           (p.updated_by is not null and (
+             p.updated_by is distinct from p.created_by
+             or extract(epoch from p.updated_at - p.created_at) > 10
+           )) as show_updated,
+           delb.name as deleted_by_name, to_char(p.deleted_at, 'DD-MM-YYYY') as deleted_display
+      from branch_profiles p
+      join teams t on t.id = p.team_id
+      left join users cb on cb.id = p.created_by
+      left join users ub on ub.id = p.updated_by
+      left join users delb on delb.id = p.deleted_by
+     where p.team_id = ${teamId} and t.organization_id = ${organizationId}`)
+  const a = auditRows[0] as Record<string, unknown>
+  const audit = {
+    createdByName: (a.created_by_name as string) ?? null,
+    createdAt: a.created_display as string,
+    updatedByName: a.show_updated ? (a.updated_by_name as string) : null,
+    updatedAt: a.updated_display as string,
+    deletedByName: (a.deleted_by_name as string) ?? null,
+    deletedAt: (a.deleted_display as string) ?? null,
+  }
+
+  return { profile, hours, audit }
+}
+
+/**
+ * Fills in what createTeam and the trigger left blank: the profile's address,
+ * phone, and who created it. Runs unconditionally -- even with neither field
+ * filled in -- because created_by must be stamped either way, and
+ * branch_profiles is seeded by a trigger on `teams` (db/migrations/0008) with
+ * no actor of its own to record.
+ *
+ * Org-scoped like updateBranchDetails/deactivateBranch/reactivateBranch --
+ * not reachable cross-tenant today (the only caller passes the id createTeam
+ * just returned), but this was the one write on the branch with no org
+ * predicate at all, defense in depth for the day another caller exists.
+ */
+export async function completeBranchCreation(
+  teamId: string, organizationId: string,
+  address: string | null, phone: string | null, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update branch_profiles set address = ${address}, phone = ${phone}, created_by = ${actorUserId}
+     where team_id = ${teamId}
+       and exists (select 1 from teams
+                    where id = ${teamId} and organization_id = ${organizationId})`)
+}
+
+/** The details form -- name goes through auth.api.updateTeam (the caller's
+ *  job, since it needs the session's own headers); address/phone live here. */
+export async function updateBranchDetails(
+  teamId: string, organizationId: string,
+  details: { address: string | null; phone: string | null },
+  actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update branch_profiles
+       set address = ${details.address}, phone = ${details.phone}, updated_by = ${actorUserId}
+     where team_id = ${teamId}
+       and exists (select 1 from teams
+                    where id = ${teamId} and organization_id = ${organizationId})`)
+}
+
+/**
+ * "The last active branch cannot be deactivated" is PREVENTED, not handled
+ * (spec §7), so the count and the write are ONE statement -- see
+ * deactivateBranchAction for the full race reasoning. Returns whether a row
+ * actually closed: false means either already closed (a double submit) or a
+ * foreign id, and the caller re-reads to tell those apart.
+ */
+export async function deactivateBranch(
+  teamId: string, organizationId: string, actorUserId: string,
+): Promise<boolean> {
+  const { rows: closed } = await db.execute(sql`
+    with live as materialized (
+      select p.team_id from branch_profiles p
+        join teams t on t.id = p.team_id
+       where t.organization_id = ${organizationId} and p.active
+       order by p.team_id
+         for update of p
+    )
+    update branch_profiles set active = false, deleted_at = now(), deleted_by = ${actorUserId}
+     where team_id = ${teamId}
+       and team_id in (select team_id from live)
+       and (select count(*) from live) > 1
+    returning team_id`)
+  return closed.length > 0
+}
+
+/** Reactivation clears the deletion stamp -- a live row must not still claim
+ *  a deletion date; `updated_by` moves too, the same as every other
+ *  reactivate in this phase. */
+export async function reactivateBranch(
+  teamId: string, organizationId: string, actorUserId: string,
+): Promise<void> {
+  await db.execute(sql`
+    update branch_profiles
+       set active = true, deleted_at = null, deleted_by = null, updated_by = ${actorUserId}
+     where team_id = ${teamId}
+       and exists (select 1 from teams
+                    where id = ${teamId} and organization_id = ${organizationId})`)
 }
 
 /**

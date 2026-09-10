@@ -72,7 +72,7 @@ export async function removeDeductionAction(
 export async function setBaseSalaryAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ payroll: ['read'] })
+  const session = await requirePagePermission({ payroll: ['read'] })
   const { organizationId } = await requirePageOrg()
   const { currency } = await salonSettings(organizationId)
 
@@ -83,7 +83,8 @@ export async function setBaseSalaryAction(
   if (raw !== '' && baseSalary === null) return { error: 'Gaji pokok tidak valid.' }
 
   try {
-    await setBaseSalary(String(formData.get('userId') ?? ''), organizationId, baseSalary)
+    await setBaseSalary(
+      String(formData.get('userId') ?? ''), organizationId, baseSalary, session.user.id)
   } catch (e) {
     return failed(e, 'Gaji pokok gagal disimpan.')
   }

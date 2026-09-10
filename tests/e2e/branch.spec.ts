@@ -313,6 +313,10 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
 
   test('deactivation is refused while staff are assigned', async () => {
     await ownerPage.goto(`/dashboard/branches/${newTeam}`)
+    // Task 4 (spec §5): newTeam was created through the real form, which
+    // runs completeBranchCreation with the owner as actor -- the audit line
+    // must name them.
+    await expect(ownerPage.getByText(/Dibuat oleh Branch Owner/)).toBeVisible()
     await ownerPage.getByRole('button', { name: 'Nonaktifkan cabang' }).click()
     await expect(ownerPage.getByText('Pindahkan staf berikut lebih dulu: BC Desk.')).toBeVisible()
     expect(await isActive(newTeam)).toBe(true)
@@ -320,6 +324,13 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
 
   test('a branch whose only members are management can be deactivated', async () => {
     await ownerPage.goto(`/dashboard/branches/${secondTeam}`)
+    // Task 4: secondTeam was inserted directly into `teams` above, bypassing
+    // completeBranchCreation -- its created_by is null and no context is
+    // known for it, so the line must be left out entirely rather than
+    // printed as "Dibuat oleh —" (a raw dash reads as a missing name, not an
+    // absent person).
+    await expect(ownerPage.getByText(/Dibuat oleh/)).toHaveCount(0)
+
     await ownerPage.getByRole('button', { name: 'Nonaktifkan cabang' }).click()
     // The page must come back showing the NEW state, not the button that was
     // clicked -- the regression this guards is a write that lands with no
@@ -328,6 +339,10 @@ test.describe.serial('branch guards, lifecycle and the switcher', () => {
     await expect(ownerPage.getByRole('button', { name: 'Aktifkan cabang' })).toBeVisible()
     await expect(ownerPage.getByRole('button', { name: 'Nonaktifkan cabang' })).toHaveCount(0)
     expect(await isActive(secondTeam)).toBe(false)
+    // Deactivation itself DOES have a real actor (the click above), so that
+    // line -- the one people actually come here to ask about -- must show
+    // even though creation never named anyone.
+    await expect(ownerPage.getByText(/Dinonaktifkan oleh Branch Owner/)).toBeVisible()
 
     await ownerPage.getByRole('button', { name: 'Aktifkan cabang' }).click()
     await expect(ownerPage.getByRole('button', { name: 'Nonaktifkan cabang' })).toBeVisible()

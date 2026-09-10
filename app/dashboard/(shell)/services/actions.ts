@@ -6,7 +6,10 @@ import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { PlanError, requireQuota } from '@/lib/plan/entitlements'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
-import { salonCurrency, listPerformers } from '@/lib/service'
+import {
+  createService, deactivateService, listPerformers, reactivateService, salonCurrency,
+  updateService,
+} from '@/lib/service'
 import { branchesOf } from '@/lib/branch'
 import { parseMoney, isCurrencyCode } from '@/lib/money'
 import { formError, type FormState } from '@/lib/form-state'
@@ -30,7 +33,7 @@ function revalidateService(id: string) {
 export async function createServiceAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ service: ['create'] })
+  const actor = await requirePagePermission({ service: ['create'] })
   const { organizationId } = await requirePageOrg()
 
   const name = String(formData.get('name') ?? '').trim()
@@ -53,8 +56,8 @@ export async function createServiceAction(
     const categoryId = String(formData.get('categoryId') ?? '').trim() || null
     // Spec 2.6, the other half of setCurrencyAction's guard: `price` above
     // was parsed against `currency`, so this insert must not land under a
-    // DIFFERENT one. `insert ... select ... for update` locks the
-    // salon_profiles row as part of the SAME statement that inserts --
+    // DIFFERENT one. createService's `insert ... select ... for update` locks
+    // the salon_profiles row as part of the SAME statement that inserts --
     // serialising against setCurrencyAction's own row lock on that row (same
     // shape as deactivateStaffAction's/deactivateBranchAction's `for update`
     // precedent, coupling two different actions instead of two calls to the
@@ -65,16 +68,12 @@ export async function createServiceAction(
     // Re-checking `currency = ${currency}` against the row AFTER the lock is
     // what actually closes the race: if the row's currency moved while this
     // request was in flight, the select returns no rows and nothing is
-    // inserted.
-    const { rowCount } = await db.execute(sql`
-      insert into services (id, organization_id, category_id, name,
-                            duration_minutes, price)
-      select ${crypto.randomUUID()}, ${organizationId}, ${categoryId},
-             ${name}, ${duration}, ${price}
-        from salon_profiles
-       where organization_id = ${organizationId} and currency = ${currency}
-         for update`)
-    if (!rowCount) return { error: 'Mata uang salon berubah, coba lagi. Muat ulang halaman.' }
+    // inserted -- createService returns null for exactly that case.
+    const created = await createService({
+      organizationId, name, durationMinutes: duration, price, currency, categoryId,
+      actorUserId: actor.user.id,
+    })
+    if (!created) return { error: 'Mata uang salon berubah, coba lagi. Muat ulang halaman.' }
   } catch (e) {
     if (e instanceof PlanError) {
       return { error: 'Kuota layanan paket Anda sudah tercapai. Upgrade untuk menambah layanan.' }
@@ -134,7 +133,7 @@ export async function createCategoryAction(
 export async function updateServiceAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ service: ['update'] })
+  const actor = await requirePagePermission({ service: ['update'] })
   const { organizationId } = await requirePageOrg()
   const id = String(formData.get('id') ?? '')
   if (!id || !(await ownedService(id, organizationId))) return NOT_FOUND
@@ -152,11 +151,11 @@ export async function updateServiceAction(
   if (price === null) return { error: 'Harga tidak valid.' }
 
   try {
-    await db.execute(sql`
-      update services
-         set name = ${name}, category_id = ${categoryId},
-             duration_minutes = ${duration}, price = ${price}, updated_at = now()
-       where id = ${id} and organization_id = ${organizationId}`)
+    await updateService(
+      id, organizationId,
+      { name, categoryId, durationMinutes: duration, price },
+      actor.user.id,
+    )
   } catch (e) {
     // Same duplicate-name constraint as createServiceAction -- see the note
     // there on why db.execute's error text lives on .cause, not .message.
@@ -294,15 +293,13 @@ export async function setPerformersAction(
 export async function deactivateServiceAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ service: ['update'] })
+  const actor = await requirePagePermission({ service: ['update'] })
   const { organizationId } = await requirePageOrg()
   const id = String(formData.get('id') ?? '')
   if (!id || !(await ownedService(id, organizationId))) return NOT_FOUND
 
   try {
-    await db.execute(sql`
-      update services set active = false, updated_at = now()
-       where id = ${id} and organization_id = ${organizationId}`)
+    await deactivateService(id, organizationId, actor.user.id)
   } catch (e) {
     return { error: formError(e, 'Gagal menonaktifkan layanan.') }
   }
@@ -318,7 +315,7 @@ export async function deactivateServiceAction(
 export async function reactivateServiceAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
-  await requirePagePermission({ service: ['update'] })
+  const actor = await requirePagePermission({ service: ['update'] })
   const { organizationId } = await requirePageOrg()
   const id = String(formData.get('id') ?? '')
   if (!id || !(await ownedService(id, organizationId))) return NOT_FOUND
@@ -332,9 +329,7 @@ export async function reactivateServiceAction(
     return { error: formError(e, 'Gagal mengaktifkan layanan.') }
   }
 
-  await db.execute(sql`
-    update services set active = true, updated_at = now()
-     where id = ${id} and organization_id = ${organizationId}`)
+  await reactivateService(id, organizationId, actor.user.id)
   revalidateService(id)
   return { done: true }
 }

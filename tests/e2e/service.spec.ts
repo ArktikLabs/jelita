@@ -119,6 +119,14 @@ test.describe.serial('catalogue guards, duplicate names and cross-tenant lookups
     expect(created.location ?? '').toContain('/dashboard/services')
   })
 
+  // Task 4 (spec §5): the detail page's audit line.
+  test('the detail page names who created it', async () => {
+    const { rows: [row] } = await pool.query(
+      `select id from services where organization_id = $1 and name = 'Potong Rambut'`, [orgId])
+    const detail = await getPage(owner, `/dashboard/services/${row.id}`)
+    expect(detail.html).toContain('Dibuat oleh Svc List Owner')
+  })
+
   test('a duplicate name is refused case-insensitively, not redirected', async () => {
     const dup = await submitForm(owner, '/dashboard/services/new', 'name="price"', {
       name: 'potong rambut', durationMinutes: '45', price: '99000',

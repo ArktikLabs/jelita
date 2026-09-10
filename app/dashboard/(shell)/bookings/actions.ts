@@ -17,7 +17,7 @@ export async function createBookingAction(
   _prev: FormState, formData: FormData,
 ): Promise<FormState> {
   await requirePagePermission({ booking: ['create'] })
-  const { organizationId, branchId } = await requireBranch({ write: true })
+  const { organizationId, branchId, user } = await requireBranch({ write: true })
   if (!organizationId) return { error: 'Tidak ada salon aktif.' }
 
   const serviceId = String(formData.get('serviceId') ?? '')
@@ -41,7 +41,7 @@ export async function createBookingAction(
   try {
     // Routed through the shared lookup rather than an insert here: two dedup
     // rules that disagree split one person's history in half.
-    customerId = (await findOrCreateByPhone(organizationId, { name, phone })).id
+    customerId = (await findOrCreateByPhone(organizationId, { name, phone, actorUserId: user.id })).id
   } catch {
     return { error: 'Nomor telepon tidak dikenali. Contoh: 0812xxxxxxx.' }
   }

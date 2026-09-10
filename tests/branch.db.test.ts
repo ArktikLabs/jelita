@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { PLANS } from '../scripts/seed-plans.mjs'
-import { BRANCH_LIST, listBranches } from '../lib/branch'
+import {
+  BRANCH_LIST, completeBranchCreation, deactivateBranch, getBranch, listBranches,
+  updateBranchDetails,
+} from '../lib/branch'
 import { parseListQuery } from '../lib/list-query'
 
 /**
@@ -104,7 +107,7 @@ describe('branch_entitlement ranks active branches only', () => {
 
   it('deactivating the older branch leaves the live one operable', async () => {
     await pool.query(`
-      update branch_profiles set active = false, deactivated_at = now()
+      update branch_profiles set active = false, deleted_at = now()
        where team_id = 'vt_branch_t1'`)
     const rows = await within()
     expect(rows).toHaveLength(1)
@@ -234,5 +237,97 @@ describe('branchLabel (pure)', () => {
   it('labels a closed branch Nonaktif rather than dropping it from the switcher', () => {
     expect(branchLabel({ name: 'Cabang Lama', active: false, withinCap: true }))
       .toBe('Cabang Lama — Nonaktif')
+  })
+})
+
+/**
+ * Task 4: getBranch's audit trail (spec §5). A fresh team + branch_profiles
+ * row per test (via makeTeam), rather than one shared row, so ordering
+ * between `it`s never matters.
+ */
+describe('Task 4: getBranch surfaces the audit trail', () => {
+  const ORG = 'vt_branch_audit_org'
+  const ACTOR = 'vt_branch_audit_actor'
+  const OTHER = 'vt_branch_audit_other'
+  let n = 0
+  const makeTeam = async () => {
+    const id = `vt_branch_audit_team_${n++}`
+    await pool.query(
+      `insert into teams (id, name, organization_id, created_at)
+       values ($1, 'Cabang Audit', $2, now())`, [id, ORG])
+    return id
+  }
+
+  beforeAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = any($1)`, [[ACTOR, OTHER]])
+    await pool.query(`
+      insert into organizations (id, name, slug, created_at)
+      values ($1, 'Branch Audit Test', 'vt-branch-audit', now())`, [ORG])
+    await pool.query(`
+      insert into users (id, name, email, email_verified, created_at, updated_at)
+      values ($1, 'VT Branch Actor', 'vt-branch-audit-actor@test.local', true, now(), now()),
+             ($2, 'VT Branch Other', 'vt-branch-audit-other@test.local', true, now(), now())`,
+      [ACTOR, OTHER])
+  })
+
+  afterAll(async () => {
+    await pool.query(`delete from organizations where id = $1`, [ORG])
+    await pool.query(`delete from users where id = any($1)`, [[ACTOR, OTHER]])
+  })
+
+  it('names who created it, with nothing to report before any edit', async () => {
+    const teamId = await makeTeam()
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
+    const got = await getBranch(teamId, ORG)
+    expect(got!.audit.createdByName).toBe('VT Branch Actor')
+    expect(got!.audit.updatedByName).toBeNull()
+  })
+
+  it('suppresses the diubah line for the same actor updating seconds after creation', async () => {
+    const teamId = await makeTeam()
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
+    await updateBranchDetails(teamId, ORG, { address: 'Jl. Baru', phone: null }, ACTOR)
+    const got = await getBranch(teamId, ORG)
+    expect(got!.audit.updatedByName).toBeNull()
+  })
+
+  it('shows the diubah line when a DIFFERENT actor makes the edit, however soon', async () => {
+    const teamId = await makeTeam()
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
+    await updateBranchDetails(teamId, ORG, { address: 'Jl. Baru', phone: null }, OTHER)
+    const got = await getBranch(teamId, ORG)
+    expect(got!.audit.updatedByName).toBe('VT Branch Other')
+  })
+
+  it('shows the diubah line for the SAME actor once real time has passed', async () => {
+    const teamId = await makeTeam()
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
+    await pool.query(
+      `update branch_profiles set created_at = now() - interval '1 hour' where team_id = $1`,
+      [teamId])
+    await updateBranchDetails(teamId, ORG, { address: 'Jl. Baru', phone: null }, ACTOR)
+    const got = await getBranch(teamId, ORG)
+    expect(got!.audit.updatedByName).toBe('VT Branch Actor')
+  })
+
+  it('shows the deactivation line, independent of the diubah line', async () => {
+    const teamId = await makeTeam()
+    await makeTeam() // a second active branch, so teamId is not the org's LAST one (spec §7)
+    await completeBranchCreation(teamId, ORG, null, null, ACTOR)
+    const closed = await deactivateBranch(teamId, ORG, OTHER)
+    expect(closed).toBe(true)
+    const got = await getBranch(teamId, ORG)
+    expect(got!.audit.deletedByName).toBe('VT Branch Other')
+    // deactivateBranch deliberately does not touch updated_by (Task 3).
+    expect(got!.audit.updatedByName).toBeNull()
+  })
+
+  it('omits the created line when nobody stamped it (bypassing completeBranchCreation, like the seed script does)', async () => {
+    const teamId = await makeTeam()
+    const got = await getBranch(teamId, ORG)
+    // Never "Dibuat oleh —": a raw null reads as a missing name, not an
+    // absent person, so the created segment must be left out entirely.
+    expect(got!.audit.createdByName).toBeNull()
   })
 })

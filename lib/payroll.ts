@@ -62,14 +62,25 @@ export async function payrollRecap(
   // negative commission that belongs to the month it happened in, not this one.
   const closed = await payrollRun(organizationId, start)
   if (closed) {
+    // GROUP BY + string_agg(m.role), same shape as listStaff's dedup
+    // (lib/staff.ts) and for the same reason: `members` carries no unique on
+    // (user_id, organization_id) by design (migration 0010_services.sql), so
+    // a dual-membership person's row here fans out through this join one row
+    // per membership row -- payroll_run_lines itself holds exactly one row
+    // per (run_id, user_id) (its own unique constraint), so without the
+    // GROUP BY that one line reads back as TWO payroll rows, i.e. duplicated
+    // pay, not merely a duplicated count. `role` collapses to the comma-joined
+    // union rather than an arbitrary pick for the same reason staffOf does.
     const { rows } = await db.execute(sql`
-      select l.user_id, u.name, m.role, l.base_salary, l.commission, l.deductions, l.net,
+      select l.user_id, u.name, string_agg(m.role, ',' order by m.role) as role,
+             l.base_salary, l.commission, l.deductions, l.net,
              coalesce(p.currency, 'IDR') as currency
         from payroll_run_lines l
         join users u on u.id = l.user_id
         join members m on m.user_id = l.user_id and m.organization_id = l.organization_id
         join salon_profiles p on p.organization_id = l.organization_id
        where l.run_id = ${closed.id}
+       group by l.user_id, u.name, l.base_salary, l.commission, l.deductions, l.net, p.currency
        order by u.name, l.user_id`)
     return (rows as Record<string, unknown>[]).map((r) => ({
       userId: r.user_id as string,
@@ -83,8 +94,14 @@ export async function payrollRecap(
     }))
   }
 
+  // Same GROUP BY dedup as the closed-month query above, and for the same
+  // reason -- see its comment. `staff_profiles` and the two aggregated
+  // subqueries below each hold at most one row per person already; `members`
+  // is the only join here that can return more than one, so it is the only
+  // column that needs `string_agg` rather than a plain SELECT.
   const { rows } = await db.execute(sql`
-    select sp.user_id, u.name, m.role, sp.base_salary,
+    select sp.user_id, u.name, string_agg(m.role, ',' order by m.role) as role,
+           sp.base_salary,
            coalesce(c.commission, 0)::bigint as commission,
            coalesce(d.deductions, 0)::bigint as deductions,
            coalesce(p.currency, 'IDR') as currency
@@ -110,6 +127,7 @@ export async function payrollRecap(
          group by user_id
       ) d on d.user_id = sp.user_id
      where sp.organization_id = ${organizationId} and sp.active
+     group by sp.user_id, u.name, sp.base_salary, c.commission, d.deductions, p.currency
      order by u.name, sp.user_id`)
 
   return (rows as Record<string, unknown>[]).map((r) => {
@@ -194,12 +212,13 @@ export async function removeDeduction(
 }
 
 export async function setBaseSalary(
-  userId: string, organizationId: string, baseSalary: number | null,
+  userId: string, organizationId: string, baseSalary: number | null, actorUserId: string,
 ): Promise<void> {
   let rowCount: number | null
   try {
     ({ rowCount } = await db.execute(sql`
-      update staff_profiles set base_salary = ${baseSalary}, updated_at = now()
+      update staff_profiles
+         set base_salary = ${baseSalary}, updated_at = now(), updated_by = ${actorUserId}
        where user_id = ${userId} and organization_id = ${organizationId}`))
   } catch (e) {
     // Translated here for the same reason addDeduction does it: drizzle wraps

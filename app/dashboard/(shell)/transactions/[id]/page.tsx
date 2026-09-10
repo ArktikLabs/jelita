@@ -48,6 +48,18 @@ export default async function ReceiptPage({
         <PrintButton />
       </div>
 
+      {/* Task 4 (spec §5): who rang this up. Screen-only, deliberately --
+          the printed copy already carries completedAt right below, and this
+          is an internal "who touched this" fact, not something to hand the
+          customer on their own receipt. Reversal reads "Dibatalkan oleh":
+          `created_by` on a reversal ROW is who voided the sale (migration
+          0035), which is different information from "who rang it up". */}
+      {sale.createdByName && (
+        <p className="text-xs text-muted-foreground print:hidden">
+          {reversal ? 'Dibatalkan oleh' : 'Dicatat oleh'} {sale.createdByName}
+        </p>
+      )}
+
       <article
         className="space-y-4 rounded-md border p-6 print:border-0 print:p-0"
         style={salon.brandColor ? { borderColor: salon.brandColor } : undefined}
