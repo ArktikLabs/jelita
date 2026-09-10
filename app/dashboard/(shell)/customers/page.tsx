@@ -1,5 +1,7 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
+import { headers } from 'next/headers'
+import { auth } from '@/lib/auth'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { CUSTOMER_LIST, listCustomers } from '@/lib/customer'
 import { parseListQuery, wasTruncated } from '@/lib/list-query'
@@ -36,6 +38,15 @@ export default async function CustomersPage({
   const query = parseListQuery(CUSTOMER_LIST, params)
   const customers = await listCustomers(organizationId, query)
   const q = query.q
+  // Fix 4 (phase 4 review): the page reads with customer:['read'] (above)
+  // but deactivateSelectedCustomersAction requires customer:['update'] --
+  // the only one of the six bulk screens where the two diverge (a stylist
+  // holds read alone, lib/permissions.ts). Without this check a stylist
+  // could tick rows and hit a bare permission redirect with no message.
+  const { success: canBulk } = await auth.api.hasPermission({
+    headers: await headers(),
+    body: { permissions: { customer: ['update'] } },
+  })
 
   return (
     <div className="space-y-6">
@@ -92,17 +103,26 @@ export default async function CustomersPage({
 
       {/* SelectionProvider and SelectionBar read the current filter via
           useSearchParams, which requires a Suspense boundary -- see
-          app/reset-password/page.tsx for the same pattern. */}
+          app/reset-password/page.tsx for the same pattern.
+
+          Fix 4: the whole selection UI is skipped for anyone without
+          customer:['update'] -- a stylist can read this list but the bulk
+          action would refuse them, so there is nothing here for them to
+          select. */}
       <Suspense>
         <SelectionProvider total={customers.total}>
-          <SelectionBar action={deactivateSelectedCustomersAction} label="Nonaktifkan yang dipilih" />
+          {canBulk && (
+            <SelectionBar action={deactivateSelectedCustomersAction} label="Nonaktifkan yang dipilih" />
+          )}
 
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-10">
-                  <SelectAll ids={customers.rows.map((c) => c.id)} />
-                </TableHead>
+                {canBulk && (
+                  <TableHead className="w-10">
+                    <SelectAll ids={customers.rows.map((c) => c.id)} />
+                  </TableHead>
+                )}
                 <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
                 <TableHead>Nomor</TableHead>
                 <TableHead>Status</TableHead>
@@ -112,7 +132,7 @@ export default async function CustomersPage({
             <TableBody>
               {customers.rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-muted-foreground">
+                  <TableCell colSpan={canBulk ? 5 : 4} className="text-muted-foreground">
                     {query.q || Object.keys(query.filters).length > 0 ? (
                       <>
                         Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
@@ -128,9 +148,11 @@ export default async function CustomersPage({
               )}
               {customers.rows.map((c) => (
                 <TableRow key={c.id}>
-                  <TableCell>
-                    <SelectRow id={c.id} />
-                  </TableCell>
+                  {canBulk && (
+                    <TableCell>
+                      <SelectRow id={c.id} />
+                    </TableCell>
+                  )}
                   <TableCell>
                     <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
                   </TableCell>

@@ -568,3 +568,74 @@ test.describe('the export truncation notice', () => {
     expect(html.toLowerCase()).not.toContain('dipotong')
   })
 })
+
+/**
+ * Fix 4 (phase 4 review): the page requires customer:['read'] (a stylist
+ * needs the list at checkout/lookup) while the bulk action requires
+ * customer:['update'] -- a permission gap none of the other five bulk
+ * screens have. Before this fix, a stylist with 25 rows ticked would click
+ * "Nonaktifkan yang dipilih" and land on a bare requirePagePermission
+ * redirect with no message, unable to tell whether anything happened.
+ */
+test.describe('the bulk bar and role', () => {
+  const ROLE_DOMAIN = 'custrole.local'
+  const ROLE_SLUG = 'customercheck-role'
+
+  let owner: Awaited<ReturnType<typeof client>>
+  let stylist: Awaited<ReturnType<typeof client>>
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug = $1`, [ROLE_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${ROLE_DOMAIN}`])
+
+    owner = await client()
+    const ownerEmail = `owner@${ROLE_DOMAIN}`
+    await owner.post('/api/auth/sign-up/email',
+      { data: { name: 'Role Owner', email: ownerEmail, password: PW } })
+    await verify(ownerEmail)
+    await owner.post('/api/auth/sign-in/email', { data: { email: ownerEmail, password: PW } })
+    const org = await owner.post('/api/auth/organization/create',
+      { data: { name: 'Role Salon', slug: ROLE_SLUG } })
+    const roleOrgId = (await org.json()).id
+    await owner.post('/api/auth/organization/set-active', { data: { organizationId: roleOrgId } })
+
+    stylist = await client()
+    const stylistEmail = `stylist@${ROLE_DOMAIN}`
+    await stylist.post('/api/auth/sign-up/email',
+      { data: { name: 'Role Stylist', email: stylistEmail, password: PW } })
+    await verify(stylistEmail)
+    const { rows: [su] } = await pool.query(`select id from users where email = $1`, [stylistEmail])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ('e2e_role_m_sty', $1, $2, 'stylist', now())`, [su.id, roleOrgId])
+    await stylist.post('/api/auth/sign-in/email', { data: { email: stylistEmail, password: PW } })
+
+    await pool.query(`
+      insert into customers (id, organization_id, name)
+      values ('e2e_role_c1', $1, 'Role Pelanggan 1')`, [roleOrgId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await stylist.dispose()
+    await pool.query(`delete from organizations where slug = $1`, [ROLE_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${ROLE_DOMAIN}`])
+  })
+
+  test('an owner sees the bulk-deactivate bar', async () => {
+    const res = await owner.get('/dashboard/customers')
+    const html = await res.text()
+    expect(html).toContain('Nonaktifkan yang dipilih')
+  })
+
+  test('a stylist -- read only -- sees no bulk-deactivate bar at all', async () => {
+    const res = await stylist.get('/dashboard/customers')
+    expect(res.status()).toBe(200)
+    const html = await res.text()
+    expect(html).not.toContain('Nonaktifkan yang dipilih')
+    // Selection has nothing to act on without the bar, so it should not
+    // render the row checkboxes either -- otherwise ticking rows still
+    // looks like it does something.
+    expect(html).not.toContain('Pilih semua di halaman ini')
+  })
+})
