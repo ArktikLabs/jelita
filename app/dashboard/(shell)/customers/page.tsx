@@ -31,9 +31,23 @@ export default async function CustomersPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-medium">Pelanggan</h1>
-        <Link href="/dashboard/customers/new" className={buttonVariants()}>
-          Tambah pelanggan
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* The export must carry the CURRENT view, so it reuses the same
+              searchParams the list was built from -- a bare /csv link would
+              silently export the unfiltered table, which is the bug §8
+              exists to prevent. */}
+          <a
+            href={`/api/customers/csv?${new URLSearchParams(
+              Object.entries(params).filter(([, v]) => typeof v === 'string') as [string, string][],
+            )}`}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            Ekspor CSV
+          </a>
+          <Link href="/dashboard/customers/new" className={buttonVariants()}>
+            Tambah pelanggan
+          </Link>
+        </div>
       </div>
 
       {/* A plain GET form: zero client JS, and the query survives a reload.

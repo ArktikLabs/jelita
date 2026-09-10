@@ -216,6 +216,18 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     expect(res.status()).toBeGreaterThanOrEqual(300)
     expect(res.status()).toBeLessThan(400)
   })
+
+  test('the export carries the filtered view, not the whole table', async () => {
+    const res = await owner.get('/api/customers/csv?q=sari')
+    expect(res.status()).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('Sari Wijaya')
+    // The one that matters: a customer the filter excluded must NOT be in the
+    // file. Without this, exporting the whole table would pass.
+    expect(text).not.toContain('Budi Santoso')
+    // And never another salon's row, whatever the filter says.
+    expect(text).not.toContain('Rahasia Salon Lain')
+  })
 })
 
 /**
