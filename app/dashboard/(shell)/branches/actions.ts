@@ -221,7 +221,7 @@ export async function deactivateSelectedBranchesAction(formData: FormData) {
   const { organizationId } = await requirePageOrg()
   const { ids, allMatching, params } = selectionFromForm(formData)
 
-  const targets = await resolveSelection({
+  const { ids: targets, capped } = await resolveSelection({
     spec: BRANCH_LIST, params, ids, allMatching,
     list: (q) => listBranches(organizationId, q),
     idOf: (r: BranchRow) => r.teamId,
@@ -246,6 +246,7 @@ export async function deactivateSelectedBranchesAction(formData: FormData) {
     {
       bulkMsg: bulkMessage(
         outcome, 'cabang terakhir yang aktif atau masih ada staf yang ditempatkan tidak bisa dinonaktifkan',
+        capped,
       ),
     },
   )}`)

@@ -1,4 +1,4 @@
-import { exportQuery, type ListQuery, type ListResult, type ListSpec } from './list-query'
+import { EXPORT_CAP, exportQuery, wasTruncated, type ListQuery, type ListResult, type ListSpec } from './list-query'
 
 export type BulkOutcome = { done: number; refused: number; total: number }
 
@@ -13,6 +13,11 @@ export type BulkOutcome = { done: number; refused: number; total: number }
  * Capped at EXPORT_CAP for the same reason the export is: a bulk action over
  * more rows than that is not this product's case, and an uncapped one is an
  * unbounded statement.
+ *
+ * `capped` says whether that cap actually bit -- true 12.000 matching rows
+ * resolves to 10.000 ids AND `capped: true`, so the caller can tell the
+ * person the rest were never touched, not just that 10.000 were, exactly as
+ * the CSV export already tells them in the file (`wasTruncated`, list-csv.ts).
  */
 export async function resolveSelection<K extends string, T>(opts: {
   spec: ListSpec<K>
@@ -24,10 +29,10 @@ export async function resolveSelection<K extends string, T>(opts: {
    *  not agree on a name: CustomerRow/ServiceRow have `id`, StaffRow has
    *  `userId`, BranchRow has `teamId`. */
   idOf: (row: T) => string
-}): Promise<string[]> {
-  if (!opts.allMatching) return opts.ids
-  const { rows } = await opts.list(exportQuery(opts.spec, opts.params))
-  return rows.map(opts.idOf)
+}): Promise<{ ids: string[]; capped: boolean }> {
+  if (!opts.allMatching) return { ids: opts.ids, capped: false }
+  const { rows, total } = await opts.list(exportQuery(opts.spec, opts.params))
+  return { ids: rows.map(opts.idOf), capped: wasTruncated(total) }
 }
 
 /**
@@ -54,10 +59,19 @@ export async function bulkDeactivate(
  * §7's confirmation copy, in Indonesian. `refusedReason` says what "ditolak"
  * means for THIS resource -- unused (and unwritten) whenever nothing was
  * refused, because a reason for zero refusals is a sentence about nothing.
+ *
+ * `capped` (from `resolveSelection`) adds a THIRD sentence, independent of
+ * `refused`: rows outside the first 10.000 were never resolved at all, so
+ * they can be neither done nor refused -- silence here is indistinguishable
+ * from "that was everything", which is the failure §8 calls worse than a
+ * refusal. Re-running the same filter catches the next 10.000.
  */
-export function bulkMessage(outcome: BulkOutcome, refusedReason: string): string {
-  if (outcome.refused === 0) return `${outcome.done} dinonaktifkan.`
-  return `${outcome.done} dinonaktifkan, ${outcome.refused} ditolak (${refusedReason}).`
+export function bulkMessage(outcome: BulkOutcome, refusedReason: string, capped = false): string {
+  const base = outcome.refused === 0
+    ? `${outcome.done} dinonaktifkan.`
+    : `${outcome.done} dinonaktifkan, ${outcome.refused} ditolak (${refusedReason}).`
+  if (!capped) return base
+  return `${base} Dibatasi pada ${EXPORT_CAP} baris; masih ada yang cocok di luar batas ini dan belum diproses -- jalankan lagi untuk memprosesnya.`
 }
 
 /**

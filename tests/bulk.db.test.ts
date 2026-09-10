@@ -3,6 +3,7 @@ import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
 import { bulkDeactivate, resolveSelection } from '../lib/bulk'
 import { deactivateStaff } from '../lib/staff'
+import { EXPORT_CAP } from '../lib/list-query'
 import { CUSTOMER_LIST, listCustomers, type CustomerRow } from '../lib/customer'
 
 /**
@@ -98,21 +99,40 @@ describe('bulkDeactivate', () => {
 describe('resolveSelection', () => {
   it('resolves "all matching" from the filter, not from ids', async () => {
     // 3 active customers match; the caller sends zero ids.
-    const ids = await resolveSelection({
+    const { ids, capped } = await resolveSelection({
       spec: CUSTOMER_LIST, params: { active: 'true' }, ids: [], allMatching: true,
       list: (q) => listCustomers(ORG, q),
       idOf: (r: CustomerRow) => r.id,
     })
     expect(ids).toHaveLength(3)
     expect(ids, "and never another salon's row").not.toContain(OUTSIDER_CUSTOMER)
+    expect(capped, 'well under the 10.000 cap').toBe(false)
   })
 
   it('returns the posted ids untouched when not selecting all matching', async () => {
-    const ids = await resolveSelection({
+    const { ids, capped } = await resolveSelection({
       spec: CUSTOMER_LIST, params: {}, ids: ['blk_c1', 'blk_c2'], allMatching: false,
       list: (q) => listCustomers(ORG, q),
       idOf: (r: CustomerRow) => r.id,
     })
     expect(ids).toEqual(['blk_c1', 'blk_c2'])
+    expect(capped, 'the cap only applies to "all matching"').toBe(false)
+  })
+
+  it('reports capped when "all matching" hits the export cap', async () => {
+    // A stub `list`, not 10.001 real rows: the CAP is EXPORT_CAP's own
+    // constant, so this only needs to prove resolveSelection reads `total`
+    // against it -- lib/list-csv.db.test.ts already proves the real
+    // query pays for the cap correctly.
+    const { ids, capped } = await resolveSelection({
+      spec: CUSTOMER_LIST, params: {}, ids: [], allMatching: true,
+      list: async () => ({
+        rows: [{ id: 'blk_c1' }] as unknown as CustomerRow[],
+        total: EXPORT_CAP + 1, page: 1, perPage: EXPORT_CAP, pages: 2,
+      }),
+      idOf: (r: CustomerRow) => r.id,
+    })
+    expect(ids).toEqual(['blk_c1'])
+    expect(capped).toBe(true)
   })
 })

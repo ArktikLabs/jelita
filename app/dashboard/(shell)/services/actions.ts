@@ -347,7 +347,7 @@ export async function deactivateSelectedServicesAction(formData: FormData) {
   const { organizationId } = await requirePageOrg()
   const { ids, allMatching, params } = selectionFromForm(formData)
 
-  const targets = await resolveSelection({
+  const { ids: targets, capped } = await resolveSelection({
     spec: SERVICE_LIST, params, ids, allMatching,
     list: (q) => listServices(organizationId, q),
     idOf: (r: ServiceRow) => r.id,
@@ -357,5 +357,5 @@ export async function deactivateSelectedServicesAction(formData: FormData) {
   )
 
   revalidatePath('/dashboard/services')
-  redirect(`/dashboard/services${listHref(params, { bulkMsg: bulkMessage(outcome, '') })}`)
+  redirect(`/dashboard/services${listHref(params, { bulkMsg: bulkMessage(outcome, '', capped) })}`)
 }

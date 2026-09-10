@@ -111,7 +111,7 @@ export async function deactivateSelectedCustomersAction(formData: FormData) {
   const { organizationId } = await requirePageOrg()
   const { ids, allMatching, params } = selectionFromForm(formData)
 
-  const targets = await resolveSelection({
+  const { ids: targets, capped } = await resolveSelection({
     spec: CUSTOMER_LIST, params, ids, allMatching,
     list: (q) => listCustomers(organizationId, q),
     idOf: (r: CustomerRow) => r.id,
@@ -121,5 +121,5 @@ export async function deactivateSelectedCustomersAction(formData: FormData) {
   )
 
   revalidatePath('/dashboard/customers')
-  redirect(`/dashboard/customers${listHref(params, { bulkMsg: bulkMessage(outcome, '') })}`)
+  redirect(`/dashboard/customers${listHref(params, { bulkMsg: bulkMessage(outcome, '', capped) })}`)
 }

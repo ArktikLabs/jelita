@@ -908,7 +908,7 @@ export async function deactivateSelectedStaffAction(formData: FormData) {
   const { organizationId } = await requirePageOrg()
   const { ids, allMatching, params } = selectionFromForm(formData)
 
-  const targets = await resolveSelection({
+  const { ids: targets, capped } = await resolveSelection({
     spec: STAFF_LIST, params, ids, allMatching,
     list: (q) => listStaff(organizationId, q),
     idOf: (r: StaffRow) => r.userId,
@@ -940,6 +940,6 @@ export async function deactivateSelectedStaffAction(formData: FormData) {
 
   revalidatePath('/dashboard/staff')
   redirect(`/dashboard/staff${listHref(
-    params, { bulkMsg: bulkMessage(outcome, 'pemilik terakhir tidak bisa dinonaktifkan') },
+    params, { bulkMsg: bulkMessage(outcome, 'pemilik terakhir tidak bisa dinonaktifkan', capped) },
   )}`)
 }
