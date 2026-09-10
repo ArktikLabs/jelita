@@ -50,9 +50,21 @@ export default async function ServicesPage({
             </p>
           )}
         </div>
-        <Link href="/dashboard/services/new" className={buttonVariants()}>
-          Tambah layanan
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* The export must carry the CURRENT view, so it reuses the same
+              searchParams the list was built from. */}
+          <a
+            href={`/api/services/csv?${new URLSearchParams(
+              Object.entries(params).filter(([, v]) => typeof v === 'string') as [string, string][],
+            )}`}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            Ekspor CSV
+          </a>
+          <Link href="/dashboard/services/new" className={buttonVariants()}>
+            Tambah layanan
+          </Link>
+        </div>
       </div>
 
       <CategoryCreateForm />

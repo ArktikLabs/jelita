@@ -7,6 +7,7 @@ import { salonSettings } from '@/lib/service'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
 import { parseListQuery } from '@/lib/list-query'
 import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
+import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { SortableHead } from '@/components/list/sortable-head'
@@ -56,7 +57,20 @@ export default async function ProductsPage({
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-medium">Produk</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-medium">Produk</h1>
+        {/* The export must carry the CURRENT view, so it reuses the same
+            searchParams the list was built from -- a bare /csv link would
+            silently export the unfiltered table. */}
+        <a
+          href={`/api/products/csv?${new URLSearchParams(
+            Object.entries(params).filter(([, v]) => typeof v === 'string') as [string, string][],
+          )}`}
+          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+        >
+          Ekspor CSV
+        </a>
+      </div>
 
       {low.length > 0 && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">

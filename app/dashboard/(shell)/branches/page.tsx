@@ -28,9 +28,21 @@ export default async function BranchesPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-medium">Cabang</h1>
-        <Link href="/dashboard/branches/new" className={buttonVariants()}>
-          Tambah cabang
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* The export must carry the CURRENT view, so it reuses the same
+              searchParams the list was built from. */}
+          <a
+            href={`/api/branches/csv?${new URLSearchParams(
+              Object.entries(params).filter(([, v]) => typeof v === 'string') as [string, string][],
+            )}`}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            Ekspor CSV
+          </a>
+          <Link href="/dashboard/branches/new" className={buttonVariants()}>
+            Tambah cabang
+          </Link>
+        </div>
       </div>
 
       <form className="max-w-sm">

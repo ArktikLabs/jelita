@@ -2,7 +2,7 @@ import Link from 'next/link'
 import { headers } from 'next/headers'
 import { requireBranch, requirePagePermission, requirePageOrg } from '@/lib/session'
 import { auth } from '@/lib/auth'
-import { TRANSACTION_LIST, listSales, openShift } from '@/lib/pos'
+import { TRANSACTION_LIST, listSales, openShift, todayLocal } from '@/lib/pos'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
 import { parseListQuery } from '@/lib/list-query'
 import { clearFilters, listHref, type Params } from '@/lib/list-url'
@@ -15,12 +15,6 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
 import { CloseShiftButton, VoidButton } from './sale-actions'
-
-const todayLocal = () => {
-  const d = new Date()
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
 
 export const INVOICE = (n: number | null) =>
   (n === null ? '—' : `INV-${String(n).padStart(6, '0')}`)
@@ -54,7 +48,19 @@ export default async function TransactionsPage({
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-xl font-medium">Transaksi</h1>
-        <Link href="/dashboard/pos" className={buttonVariants()}>Kasir</Link>
+        <div className="flex items-center gap-2">
+          {/* The export must carry the CURRENT view, so it reuses the same
+              searchParams the list was built from. */}
+          <a
+            href={`/api/transactions/csv?${new URLSearchParams(
+              Object.entries(params).filter(([, v]) => typeof v === 'string') as [string, string][],
+            )}`}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            Ekspor CSV
+          </a>
+          <Link href="/dashboard/pos" className={buttonVariants()}>Kasir</Link>
+        </div>
       </div>
 
       {shift && (
