@@ -78,14 +78,15 @@ describe('exportQuery', () => {
 
   it('raises perPage to the cap and pins page 1', () => {
     // The whole point: the screen's 25 must not become the export's 25.
-    const q = exportQuery(CUSTOMER_LIST, { perPage: '25', page: '7' })
+    const q = exportQuery(CUSTOMER_LIST, { per: '25', page: '7' })
     expect(q.perPage).toBe(EXPORT_CAP)
     expect(q.page).toBe(1)
   })
 
   it('ignores an attempt to raise the cap from the URL', () => {
-    // perPage is attacker-reachable; the cap is not negotiable from a request.
-    const q = exportQuery(CUSTOMER_LIST, { perPage: '999999' })
+    // `per` is the URL key parseListQuery actually reads (lib/list-query.ts:84);
+    // it is attacker-reachable, and the cap is not negotiable from a request.
+    const q = exportQuery(CUSTOMER_LIST, { per: '999999' })
     expect(q.perPage).toBe(EXPORT_CAP)
   })
 
