@@ -3,9 +3,11 @@ import Image from 'next/image'
 /* The live demo. Env-driven so it follows a custom domain without a code change. */
 const DEMO_URL = process.env.NEXT_PUBLIC_DEMO_URL
   ?? 'https://jelita-six.vercel.app/salon/ovarya'
-/* PLACEHOLDER. Set NEXT_PUBLIC_WA_NUMBER before this page is shown to anyone --
-   a "Tanya via WhatsApp" button that reaches nobody is worse than no button. */
-const WA_URL = `https://wa.me/${process.env.NEXT_PUBLIC_WA_NUMBER ?? '6281234567890'}`
+/* Arktik's real WhatsApp, +62 851-1769-7889, as the DEFAULT rather than a
+   placeholder: this page went live once with a made-up number behind every
+   "Tanya via WhatsApp" button, which sends prospects to a stranger. The env
+   var stays so another deployment of this base can point somewhere else. */
+const WA_URL = `https://wa.me/${process.env.NEXT_PUBLIC_WA_NUMBER ?? '6285117697889'}`
 
 /* The seeded demo's actual contents, checked against scripts/seed-demo.ts.
    Labelled as demo contents on the page -- never dressed up as customer or
