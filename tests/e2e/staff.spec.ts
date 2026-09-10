@@ -1823,6 +1823,7 @@ test.describe('bulk deactivation: a stylist and the last remaining owner', () =>
   let adminCtx: Awaited<ReturnType<typeof signIn>>
   let ownerUserId: string
   let stylistUserId: string
+  let organizationId: string
 
   test.beforeAll(async () => {
     await pool.query(`delete from organizations where slug like 'staffbulk%'`)
@@ -1834,6 +1835,7 @@ test.describe('bulk deactivation: a stylist and the last remaining owner', () =>
     })
     ownerCtx = salon.ctx
     ownerUserId = salon.userId
+    organizationId = salon.organizationId
     await setPlan(salon.organizationId, 'business')
 
     // A plain admin -- distinct from the owner -- does the bulk deactivating.
@@ -1884,5 +1886,39 @@ test.describe('bulk deactivation: a stylist and the last remaining owner', () =>
     const activeOf = Object.fromEntries(rows.map((r) => [r.user_id, r.active])) as Record<string, boolean>
     expect(activeOf[stylistUserId], 'the stylist actually deactivated').toBe(false)
     expect(activeOf[ownerUserId], 'the last owner was refused, not silently deactivated').toBe(true)
+  })
+
+  test('bulk-deactivating an already-inactive staff member is not a false last-owner refusal', async ({ page }) => {
+    // deactivateStaff's UPDATE is `WHERE ... AND active`, so an already-
+    // inactive row closes nothing -- the same `false` the SQL returns for a
+    // genuine last-owner refusal. The admin filters to "Nonaktif" and every
+    // row there carries a checkbox regardless of `active`, so this is a real
+    // path, not a theoretical one: it must NOT read as "pemilik terakhir
+    // tidak bisa dinonaktifkan" for a row that was already a harmless no-op.
+    const retiredUserId = await createLogin(pool, {
+      name: 'Bulk Retired', email: `retired@${BULK_DOMAIN}`, password: PW,
+    })
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'stylist', now())`, [`${retiredUserId}_m`, retiredUserId, organizationId])
+    await pool.query(`
+      update staff_profiles set active = false, deleted_at = now(), deleted_by = $1
+       where user_id = $2 and organization_id = $3`, [ownerUserId, retiredUserId, organizationId])
+
+    await page.context().addCookies((await adminCtx.storageState()).cookies)
+    await page.goto('/dashboard/staff?active=false')
+
+    await page.getByRole('row', { name: /Bulk Retired/ }).getByRole('checkbox').check()
+    await expect(page.getByTestId('selection-count')).toContainText('1')
+
+    await page.getByRole('button', { name: 'Nonaktifkan yang dipilih' }).click()
+
+    const message = page.getByTestId('bulk-message')
+    await expect(message).toContainText('1 dinonaktifkan.')
+    await expect(message, 'a harmless no-op must not be blamed on the last owner').not.toContainText('ditolak')
+
+    const { rows } = await pool.query(
+      `select active from staff_profiles where user_id = $1`, [retiredUserId])
+    expect(rows[0].active, 'still inactive, unaffected by the no-op').toBe(false)
   })
 })

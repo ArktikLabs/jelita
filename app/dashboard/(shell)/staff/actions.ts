@@ -922,7 +922,16 @@ export async function deactivateSelectedStaffAction(formData: FormData) {
       return false
     }
     const closed = await deactivateStaff(userId, organizationId, actor.user.id)
-    if (!closed) return false
+    if (!closed) {
+      // Not closed is not one story: already inactive (a double submit,
+      // idempotent -- same as deactivateStaffAction's own `{ done: true }`)
+      // and the last-owner refusal both land here. Re-read to tell them
+      // apart, same shape as deactivateSelectedBranchesAction -- otherwise
+      // every already-inactive row in a "Nonaktif" filter reads as a false
+      // "pemilik terakhir tidak bisa dinonaktifkan".
+      const fresh = await getStaff(userId, organizationId)
+      return fresh ? !fresh.active : false
+    }
     const ctx = await auth.$context
     await ctx.internalAdapter.deleteUserSessions(userId)
     return true
