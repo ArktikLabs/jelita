@@ -7,12 +7,14 @@ import { db } from '@/lib/db'
 import { PlanError, requireQuota } from '@/lib/plan/entitlements'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import {
-  createService, deactivateService, listPerformers, reactivateService, salonCurrency,
-  updateService,
+  createService, deactivateService, listPerformers, listServices, reactivateService,
+  salonCurrency, SERVICE_LIST, updateService, type ServiceRow,
 } from '@/lib/service'
 import { branchesOf } from '@/lib/branch'
 import { parseMoney, isCurrencyCode } from '@/lib/money'
 import { formError, type FormState } from '@/lib/form-state'
+import { bulkDeactivate, bulkMessage, resolveSelection, selectionFromForm } from '@/lib/bulk'
+import { listHref } from '@/lib/list-url'
 
 const NOT_FOUND = { error: 'Layanan tidak ditemukan.' }
 
@@ -332,4 +334,28 @@ export async function reactivateServiceAction(
   await reactivateService(id, organizationId, actor.user.id)
   revalidateService(id)
   return { done: true }
+}
+
+/**
+ * §7's bulk action for this resource -- same shape as
+ * deactivateSelectedCustomersAction (customers/actions.ts). `deactivateService`
+ * carries no guard of its own, so every resolved id always succeeds;
+ * `bulkDeactivate` still owns the counting.
+ */
+export async function deactivateSelectedServicesAction(formData: FormData) {
+  const actor = await requirePagePermission({ service: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const { ids, allMatching, params } = selectionFromForm(formData)
+
+  const targets = await resolveSelection({
+    spec: SERVICE_LIST, params, ids, allMatching,
+    list: (q) => listServices(organizationId, q),
+    idOf: (r: ServiceRow) => r.id,
+  })
+  const outcome = await bulkDeactivate(
+    targets, (id) => deactivateService(id, organizationId, actor.user.id).then(() => true),
+  )
+
+  revalidatePath('/dashboard/services')
+  redirect(`/dashboard/services${listHref(params, { bulkMsg: bulkMessage(outcome, '') })}`)
 }

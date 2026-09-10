@@ -4,10 +4,13 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { normalizePhone } from '@/lib/phone'
 import {
-  createCustomer, deactivateCustomer, getCustomer, reactivateCustomer, updateCustomer,
+  createCustomer, CUSTOMER_LIST, deactivateCustomer, getCustomer, listCustomers,
+  reactivateCustomer, updateCustomer, type CustomerRow,
 } from '@/lib/customer'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { formError, type FormState } from '@/lib/form-state'
+import { bulkDeactivate, bulkMessage, resolveSelection, selectionFromForm } from '@/lib/bulk'
+import { listHref } from '@/lib/list-url'
 
 const DUPLICATE = 'Nomor ini sudah terdaftar untuk pelanggan lain.'
 
@@ -94,4 +97,29 @@ export async function setCustomerActiveAction(
   revalidatePath('/dashboard/customers')
   revalidatePath(`/dashboard/customers/${id}`)
   return { done: true }
+}
+
+/**
+ * §7's bulk action for this resource -- SelectionBar's seam
+ * (app/dashboard/(shell)/customers/page.tsx). `deactivateCustomer` carries
+ * no guard of its own (unlike staff's last-owner CTE), so every resolved id
+ * always succeeds; `bulkDeactivate` still owns the counting, so a future
+ * guard on this resource would be reported honestly with no change here.
+ */
+export async function deactivateSelectedCustomersAction(formData: FormData) {
+  const actor = await requirePagePermission({ customer: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const { ids, allMatching, params } = selectionFromForm(formData)
+
+  const targets = await resolveSelection({
+    spec: CUSTOMER_LIST, params, ids, allMatching,
+    list: (q) => listCustomers(organizationId, q),
+    idOf: (r: CustomerRow) => r.id,
+  })
+  const outcome = await bulkDeactivate(
+    targets, (id) => deactivateCustomer(id, organizationId, actor.user.id).then(() => true),
+  )
+
+  revalidatePath('/dashboard/customers')
+  redirect(`/dashboard/customers${listHref(params, { bulkMsg: bulkMessage(outcome, '') })}`)
 }

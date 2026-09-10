@@ -12,11 +12,14 @@ import { PlanError, requireQuota, countResource, getEntitlements } from '@/lib/p
 import { getBranchStatus } from '@/lib/plan/branch'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import {
-  assignBranch, deactivateStaff, getStaff, provisionStaff, reactivateStaff,
+  assignBranch, deactivateStaff, getStaff, listStaff, provisionStaff, reactivateStaff,
+  STAFF_LIST, type StaffRow,
 } from '@/lib/staff'
 import { branchesOf } from '@/lib/branch'
 import { formError, type FormState, type ImportState } from '@/lib/form-state'
 import { ASSIGNABLE_ROLES, type SalonRole } from '@/lib/permissions'
+import { bulkDeactivate, bulkMessage, resolveSelection, selectionFromForm } from '@/lib/bulk'
+import { listHref } from '@/lib/list-url'
 
 const NEEDS_BRANCH = ['stylist', 'frontdesk']
 
@@ -878,4 +881,56 @@ export async function removeTimeOffAction(
      where id = ${id} and organization_id = ${organizationId}`)
   revalidatePath(`/dashboard/staff/${userId}`)
   return { done: true }
+}
+
+/**
+ * §7's bulk action for this resource -- same shape as
+ * deactivateSelectedCustomersAction (customers/actions.ts), but staff is the
+ * one resource whose deactivate* function GENUINELY refuses rows in normal
+ * use (migration 0025's last-active-owner guard, enforced in SQL), so this
+ * is the wiring the headline test (tests/bulk.db.test.ts) exercises.
+ *
+ * Every guard deactivateStaffAction enforces for ONE row -- self-deactivation,
+ * an admin reaching for an owner, the last-owner CTE itself -- applies here
+ * per row too; skipping any of them for the bulk path would make "select
+ * everyone, deactivate" a way around a rule the single-row screen refuses.
+ * Session revocation on success is the same reason: a bulk-dismissed
+ * employee must be logged out exactly like a singly-dismissed one.
+ *
+ * ponytail: every refusal reason (self, admin-vs-owner, last-owner) folds
+ * into one message naming the last-owner guard, the one that fires in
+ * normal use -- a per-reason breakdown is more than one bulk action needs
+ * today. Upgrade path: have `run` return the reason, not just a boolean, if
+ * a second reason starts showing up in support requests.
+ */
+export async function deactivateSelectedStaffAction(formData: FormData) {
+  const actor = await requirePagePermission({ staff: ['deactivate'] })
+  const { organizationId } = await requirePageOrg()
+  const { ids, allMatching, params } = selectionFromForm(formData)
+
+  const targets = await resolveSelection({
+    spec: STAFF_LIST, params, ids, allMatching,
+    list: (q) => listStaff(organizationId, q),
+    idOf: (r: StaffRow) => r.userId,
+  })
+
+  const run = async (userId: string): Promise<boolean> => {
+    if (userId === actor.user.id) return false
+    const target = await getStaff(userId, organizationId)
+    if (!target) return false
+    if (target.role.split(',').includes('owner') && !(await isOwner(actor.user.id, organizationId))) {
+      return false
+    }
+    const closed = await deactivateStaff(userId, organizationId, actor.user.id)
+    if (!closed) return false
+    const ctx = await auth.$context
+    await ctx.internalAdapter.deleteUserSessions(userId)
+    return true
+  }
+  const outcome = await bulkDeactivate(targets, run)
+
+  revalidatePath('/dashboard/staff')
+  redirect(`/dashboard/staff${listHref(
+    params, { bulkMsg: bulkMessage(outcome, 'pemilik terakhir tidak bisa dinonaktifkan') },
+  )}`)
 }

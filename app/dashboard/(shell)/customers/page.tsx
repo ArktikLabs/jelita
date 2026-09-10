@@ -7,6 +7,7 @@ import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { SortableHead } from '@/components/list/sortable-head'
 import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
@@ -14,15 +15,7 @@ import { SelectAll, SelectionBar, SelectionProvider, SelectRow } from '@/compone
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
-
-/**
- * Task 5 wires this into `lib/bulk.ts`'s `bulkDeactivate` and the guard
- * reporting it needs. For now it is only the seam `SelectionBar`'s interface
- * requires -- a Server Action passed as a prop, not a URL string.
- */
-async function deactivateSelectedCustomers(_formData: FormData) {
-  'use server'
-}
+import { deactivateSelectedCustomersAction } from './actions'
 
 export default async function CustomersPage({
   searchParams,
@@ -33,13 +26,25 @@ export default async function CustomersPage({
   // look someone up. The create and edit screens guard more tightly.
   await requirePagePermission({ customer: ['read'] })
   const { organizationId } = await requirePageOrg()
-  const params = await searchParams
+  const rawParams = await searchParams
+  // `bulkMsg` is a one-shot flash from deactivateSelectedCustomersAction's
+  // redirect, not part of the list's own contract -- kept out of `params` so
+  // every other control on this page (search, filters, pagination) stops
+  // carrying a stale confirmation forward the moment it links elsewhere.
+  const { bulkMsg: bulkMsgRaw, ...params } = rawParams
+  const bulkMsg = typeof bulkMsgRaw === 'string' ? bulkMsgRaw : null
   const query = parseListQuery(CUSTOMER_LIST, params)
   const customers = await listCustomers(organizationId, query)
   const q = query.q
 
   return (
     <div className="space-y-6">
+      {bulkMsg && (
+        <Alert data-testid="bulk-message" variant={bulkMsg.includes('ditolak') ? 'destructive' : 'default'}>
+          <AlertDescription>{bulkMsg}</AlertDescription>
+        </Alert>
+      )}
+
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-medium">Pelanggan</h1>
         <div className="flex items-center gap-2">
@@ -80,7 +85,7 @@ export default async function CustomersPage({
           app/reset-password/page.tsx for the same pattern. */}
       <Suspense>
         <SelectionProvider total={customers.total}>
-          <SelectionBar action={deactivateSelectedCustomers} label="Nonaktifkan yang dipilih" />
+          <SelectionBar action={deactivateSelectedCustomersAction} label="Nonaktifkan yang dipilih" />
 
           <Table>
             <TableHeader>

@@ -484,4 +484,30 @@ test.describe('selection', () => {
     // both `ids` and `allMatching` are empty/false again.
     await expect(page.getByTestId('selection-count')).toHaveCount(0)
   })
+
+  // Task 5: deactivateSelectedCustomersAction (customers/actions.ts) --
+  // deactivateCustomer carries no guard of its own, so this is really a test
+  // of the WIRING (resolveSelection -> bulkDeactivate -> the redirect
+  // carrying the count), not of a refusal -- that half lives in the staff
+  // test (tests/e2e/staff.spec.ts), the one resource whose deactivate*
+  // genuinely refuses rows.
+  test('bulk deactivation reports the count of what actually happened', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    // Page 2 (25 per page, 31 rows sorted by name) holds Bulk Pelanggan 26-30
+    // plus the inactive marker -- untouched by the two tests above, which
+    // only ever look at page 1's "Bulk Pelanggan 01".
+    await page.goto('/dashboard/customers?perPage=25&page=2')
+
+    await page.getByRole('row', { name: /Bulk Pelanggan 29/ }).getByRole('checkbox').check()
+    await page.getByRole('row', { name: /Bulk Pelanggan 30/ }).getByRole('checkbox').check()
+    await expect(page.getByTestId('selection-count')).toContainText('2')
+
+    await page.getByRole('button', { name: 'Nonaktifkan yang dipilih' }).click()
+
+    await expect(page.getByTestId('bulk-message')).toContainText('2 dinonaktifkan.')
+
+    const { rows } = await pool.query(
+      `select active from customers where id = any($1)`, [['e2e_bulk_29', 'e2e_bulk_30']])
+    expect(rows.every((r) => r.active === false), 'both selected rows actually deactivated').toBe(true)
+  })
 })
