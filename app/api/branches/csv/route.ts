@@ -8,8 +8,11 @@ import { csvResponse } from '@/lib/list-csv'
 
 /**
  * §8's export. Guarded by branch:['update'] -- the same permission the
- * branches page uses (branch:['read'] is not a statement any role holds
- * without also holding ['update'] today, per the page).
+ * branches page uses. NOT branch:['read']: frontdesk (lib/permissions.ts)
+ * and stylist both hold read without update, so relaxing this guard would
+ * hand every front-desk worker and stylist every branch's name, address and
+ * phone -- unlike report:export or payroll:lock, this is a real distinction,
+ * not just an unexercised one. Pinned by tests/permissions.test.ts.
  */
 export async function GET(request: Request) {
   const session = await getSession()
