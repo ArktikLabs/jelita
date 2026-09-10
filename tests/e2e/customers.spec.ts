@@ -448,7 +448,7 @@ test.describe('selection', () => {
 
   test('selecting the page is not the same as selecting everything', async ({ page }) => {
     await page.context().addCookies(await ownerCookies())
-    await page.goto('/dashboard/customers?perPage=25')
+    await page.goto('/dashboard/customers?per=25')
 
     await page.getByRole('checkbox', { name: 'Pilih semua di halaman ini' }).check()
     // The count must name the PAGE, not the table -- conflating them is how a
@@ -496,7 +496,7 @@ test.describe('selection', () => {
     // Page 2 (25 per page, 31 rows sorted by name) holds Bulk Pelanggan 26-30
     // plus the inactive marker -- untouched by the two tests above, which
     // only ever look at page 1's "Bulk Pelanggan 01".
-    await page.goto('/dashboard/customers?perPage=25&page=2')
+    await page.goto('/dashboard/customers?per=25&page=2')
 
     await page.getByRole('row', { name: /Bulk Pelanggan 29/ }).getByRole('checkbox').check()
     await page.getByRole('row', { name: /Bulk Pelanggan 30/ }).getByRole('checkbox').check()
