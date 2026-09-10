@@ -243,13 +243,19 @@ export function csvResponse(
   rows: (string | number | null)[][],
   total: number,
 ): Response {
-  let body = toCsv(headers, rows)
-  if (wasTruncated(total)) {
-    body += toCsv([], [[
-      `Dipotong pada ${EXPORT_CAP} baris dari ${total} yang cocok. ` +
-      'Persempit filter untuk mengekspor sisanya.',
-    ]])
-  }
+  // The notice is one more ROW in the SAME toCsv call, not a second call.
+  // toCsv unconditionally prepends the BOM, so a second call injects a second
+  // BOM mid-document and a phantom row containing nothing but U+FEFF -- a
+  // stray blank line in Excel and a malformed record for anything stricter.
+  // Padded to the header width so the record is not ragged either.
+  const all = wasTruncated(total)
+    ? [...rows, [
+        `Dipotong pada ${EXPORT_CAP} baris dari ${total} yang cocok. ` +
+        'Persempit filter untuk mengekspor sisanya.',
+        ...Array(Math.max(0, headers.length - 1)).fill(null),
+      ]]
+    : rows
+  const body = toCsv(headers, all)
   const today = new Date().toISOString().slice(0, 10)
   return new Response(body, {
     headers: {
