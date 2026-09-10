@@ -16,6 +16,9 @@ import { pgCode, pgMentions } from './pg-error'
 export type PayrollRow = {
   userId: string
   name: string
+  /** Deactivated, but still owed for this month. Shown so an owner is not
+   *  surprised by a name they thought had gone. */
+  hasLeft: boolean
   role: string
   /** Null means NOT SALARIED, which is different from salaried at zero. */
   baseSalary: number | null
@@ -72,19 +75,28 @@ export async function payrollRecap(
     // pay, not merely a duplicated count. `role` collapses to the comma-joined
     // union rather than an arbitrary pick for the same reason staffOf does.
     const { rows } = await db.execute(sql`
-      select l.user_id, u.name, string_agg(m.role, ',' order by m.role) as role,
+      -- has_left is read live rather than from the snapshot: a closed month
+      -- records what was PAID, which does not change, but whether the person
+      -- is still on staff does, and that is what the badge is telling the
+      -- owner. A left join because staff_profiles is not guaranteed to
+      -- outlive the run line it is annotating.
+      select l.user_id, u.name, coalesce(not sp.active, false) as has_left,
+             string_agg(m.role, ',' order by m.role) as role,
              l.base_salary, l.commission, l.deductions, l.net,
              coalesce(p.currency, 'IDR') as currency
         from payroll_run_lines l
         join users u on u.id = l.user_id
         join members m on m.user_id = l.user_id and m.organization_id = l.organization_id
         join salon_profiles p on p.organization_id = l.organization_id
+        left join staff_profiles sp
+               on sp.user_id = l.user_id and sp.organization_id = l.organization_id
        where l.run_id = ${closed.id}
-       group by l.user_id, u.name, l.base_salary, l.commission, l.deductions, l.net, p.currency
+       group by l.user_id, u.name, sp.active, l.base_salary, l.commission, l.deductions, l.net, p.currency
        order by u.name, l.user_id`)
     return (rows as Record<string, unknown>[]).map((r) => ({
       userId: r.user_id as string,
       name: r.name as string,
+      hasLeft: r.has_left as boolean,
       role: r.role as string,
       baseSalary: r.base_salary === null ? null : Number(r.base_salary),
       commission: Number(r.commission),
@@ -100,7 +112,7 @@ export async function payrollRecap(
   // is the only join here that can return more than one, so it is the only
   // column that needs `string_agg` rather than a plain SELECT.
   const { rows } = await db.execute(sql`
-    select sp.user_id, u.name, string_agg(m.role, ',' order by m.role) as role,
+    select sp.user_id, u.name, not sp.active as has_left, string_agg(m.role, ',' order by m.role) as role,
            sp.base_salary,
            coalesce(c.commission, 0)::bigint as commission,
            coalesce(d.deductions, 0)::bigint as deductions,
@@ -126,8 +138,16 @@ export async function payrollRecap(
          where organization_id = ${organizationId} and month = ${start}::date
          group by user_id
       ) d on d.user_id = sp.user_id
-     where sp.organization_id = ${organizationId} and sp.active
-     group by sp.user_id, u.name, sp.base_salary, c.commission, d.deductions, p.currency
+     -- Not sp.active alone: deactivating somebody does not un-employ them for
+     -- the months they worked. She is owed for the days she was here, so a
+     -- recap covering any part of her employment must still list her --
+     -- while later months, which she was gone for entirely, must not.
+     -- deleted_at (migration 0035) records WHEN she stopped, which is what
+     -- makes that distinction sayable at all. A null there is a row
+     -- deactivated before those columns existed: undateable, so left out.
+     where sp.organization_id = ${organizationId}
+       and (sp.active or sp.deleted_at >= ${start}::date)
+     group by sp.user_id, u.name, sp.active, sp.base_salary, c.commission, d.deductions, p.currency
      order by u.name, sp.user_id`)
 
   return (rows as Record<string, unknown>[]).map((r) => {
@@ -137,6 +157,7 @@ export async function payrollRecap(
     return {
       userId: r.user_id as string,
       name: r.name as string,
+      hasLeft: r.has_left as boolean,
       role: r.role as string,
       baseSalary: base,
       commission,
