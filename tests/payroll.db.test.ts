@@ -92,6 +92,11 @@ afterAll(async () => {
 })
 
 beforeEach(async () => {
+  // Employment state resets here rather than in each test's teardown: the
+  // deactivation tests below leave Rina inactive, and a test that restores
+  // its own state at the end restores nothing when it fails partway.
+  await pool.query(`update staff_profiles set active = true, deleted_at = null
+                     where organization_id = $1`, [ORG])
   await pool.query(`truncate transaction_payments, transaction_lines, transactions cascade`)
   await pool.query(`delete from shifts where organization_id = $1`, [ORG])
   // TRUNCATE, not DELETE: a closed month cannot be reopened, and that trigger
@@ -202,14 +207,46 @@ describe('the recap', () => {
     expect(r[OUTSIDER], 'the other salon\'s stylist').toBeUndefined()
   })
 
-  it('leaves out deactivated staff', async () => {
-    await pool.query(`update staff_profiles set active = false
+  /**
+   * Deactivating somebody is not the same as un-employing them retroactively.
+   * She worked the days she worked, and the salon still owes her for them --
+   * so the recap for a month she was employed in must still list her, while
+   * later months must not. `deleted_at` (migration 0035) is what makes the
+   * difference sayable: it records WHEN she stopped, so "was she here in
+   * September?" is answerable instead of guessed at from `active` alone.
+   */
+  it('still lists someone deactivated DURING the month -- she worked it', async () => {
+    // She earns on the 12th, then leaves on the 20th.
+    await sell(RINA, `${MONTH.slice(0, 7)}-12 10:00`)
+    await pool.query(`update staff_profiles set active = false, deleted_at = $3
+                       where user_id = $1 and organization_id = $2`,
+      [RINA, ORG, `${MONTH.slice(0, 7)}-20`])
+    const r = await recap()
+    expect(r[RINA], 'she worked 1-20 September; the salon owes her for it').toBeDefined()
+    // The money has to survive too -- listing her with a blank row would be
+    // its own way of not paying her.
+    expect(r[RINA].commission).toBeGreaterThan(0)
+    expect(r[SINTA], 'and everyone else still is').toBeDefined()
+  })
+
+  it('drops her from LATER months, once she was gone for the whole of one', async () => {
+    await pool.query(`update staff_profiles set active = false, deleted_at = $3
+                       where user_id = $1 and organization_id = $2`,
+      [RINA, ORG, `${MONTH.slice(0, 7)}-20`])
+    const r = await recap(NEXT)
+    expect(r[RINA], 'she was gone for the whole of October').toBeUndefined()
+    expect(r[SINTA], 'and everyone else still is').toBeDefined()
+  })
+
+  it('drops someone deactivated before 0035 recorded when', async () => {
+    // Rows deactivated before the audit columns existed carry a null
+    // `deleted_at`. There is nothing to date them by, so they stay out --
+    // the same as today's behaviour, which is why this is not a regression.
+    await pool.query(`update staff_profiles set active = false, deleted_at = null
                        where user_id = $1 and organization_id = $2`, [RINA, ORG])
     const r = await recap()
-    expect(r[RINA], 'someone who has left is not on the payroll').toBeUndefined()
-    expect(r[SINTA], 'and everyone else still is').toBeDefined()
-    await pool.query(`update staff_profiles set active = true
-                       where user_id = $1 and organization_id = $2`, [RINA, ORG])
+    expect(r[RINA]).toBeUndefined()
+    expect(r[SINTA]).toBeDefined()
   })
 })
 

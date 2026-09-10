@@ -126,7 +126,15 @@ export async function payrollRecap(
          where organization_id = ${organizationId} and month = ${start}::date
          group by user_id
       ) d on d.user_id = sp.user_id
-     where sp.organization_id = ${organizationId} and sp.active
+     -- Not sp.active alone: deactivating somebody does not un-employ them for
+     -- the months they worked. She is owed for the days she was here, so a
+     -- recap covering any part of her employment must still list her --
+     -- while later months, which she was gone for entirely, must not.
+     -- deleted_at (migration 0035) records WHEN she stopped, which is what
+     -- makes that distinction sayable at all. A null there is a row
+     -- deactivated before those columns existed: undateable, so left out.
+     where sp.organization_id = ${organizationId}
+       and (sp.active or sp.deleted_at >= ${start}::date)
      group by sp.user_id, u.name, sp.base_salary, c.commission, d.deductions, p.currency
      order by u.name, sp.user_id`)
 
