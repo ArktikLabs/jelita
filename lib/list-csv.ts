@@ -16,13 +16,19 @@ export function csvResponse(
   rows: (string | number | null)[][],
   total: number,
 ): Response {
-  let body = toCsv(headers, rows)
-  if (wasTruncated(total)) {
-    body += toCsv([], [[
-      `Dipotong pada ${EXPORT_CAP} baris dari ${total} yang cocok. ` +
-      'Persempit filter untuk mengekspor sisanya.',
-    ]])
-  }
+  // The notice is one more ROW in the same toCsv call, not a second toCsv
+  // call: toCsv unconditionally prepends a BOM, so a second call would leave
+  // a stray BOM-only row sitting between the data and the notice -- a
+  // malformed record next to every four-field data row. Padded to the
+  // header's width so it stays a rectangular table.
+  const all = wasTruncated(total)
+    ? [...rows, [
+        `Dipotong pada ${EXPORT_CAP} baris dari ${total} yang cocok. ` +
+        'Persempit filter untuk mengekspor sisanya.',
+        ...Array(Math.max(0, headers.length - 1)).fill(null),
+      ]]
+    : rows
+  const body = toCsv(headers, all)
   const today = new Date().toISOString().slice(0, 10)
   return new Response(body, {
     headers: {
