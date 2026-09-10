@@ -91,8 +91,12 @@ describe('bulkDeactivate', () => {
   })
 
   it('counts a fully successful run as zero refusals', async () => {
-    const out = await bulkDeactivate([], async () => true)
-    expect(out).toEqual({ done: 0, refused: 0, total: 0 })
+    // Two ids, not zero: an empty array never calls `run` at all, so the
+    // old version of this test (`bulkDeactivate([], async () => true)`)
+    // passed by doing nothing -- it could not fail even if `run` always
+    // returned false.
+    const out = await bulkDeactivate(['blk_c1', 'blk_c2'], async () => true)
+    expect(out).toEqual({ done: 2, refused: 0, total: 2 })
   })
 })
 
