@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import Link from 'next/link'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { CUSTOMER_LIST, listCustomers } from '@/lib/customer'
@@ -9,9 +10,19 @@ import { Input } from '@/components/ui/input'
 import { SortableHead } from '@/components/list/sortable-head'
 import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
+import { SelectAll, SelectionBar, SelectionProvider, SelectRow } from '@/components/list-selection'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+
+/**
+ * Task 5 wires this into `lib/bulk.ts`'s `bulkDeactivate` and the guard
+ * reporting it needs. For now it is only the seam `SelectionBar`'s interface
+ * requires -- a Server Action passed as a prop, not a URL string.
+ */
+async function deactivateSelectedCustomers(_formData: FormData) {
+  'use server'
+}
 
 export default async function CustomersPage({
   searchParams,
@@ -64,48 +75,63 @@ export default async function CustomersPage({
 
       <FilterBar spec={CUSTOMER_LIST} query={query} params={params} />
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
-            <TableHead>Nomor</TableHead>
-            <TableHead>Status</TableHead>
-            <SortableHead column="created" label="Dibuat" spec={CUSTOMER_LIST} query={query} params={params} />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {customers.rows.length === 0 && (
+      <SelectionProvider total={customers.total}>
+        {/* SelectionBar reads the current filter via useSearchParams, which
+            requires a Suspense boundary -- see app/reset-password/page.tsx
+            for the same pattern. */}
+        <Suspense>
+          <SelectionBar action={deactivateSelectedCustomers} label="Nonaktifkan yang dipilih" />
+        </Suspense>
+
+        <Table>
+          <TableHeader>
             <TableRow>
-              <TableCell colSpan={4} className="text-muted-foreground">
-                {query.q || Object.keys(query.filters).length > 0 ? (
-                  <>
-                    Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
-                    <Link href={listHref(params, clearFilters(CUSTOMER_LIST))} className="underline">
-                      Hapus filter
-                    </Link>
-                  </>
-                ) : (
-                  'Belum ada pelanggan.'
-                )}
-              </TableCell>
+              <TableHead className="w-10">
+                <SelectAll ids={customers.rows.map((c) => c.id)} />
+              </TableHead>
+              <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
+              <TableHead>Nomor</TableHead>
+              <TableHead>Status</TableHead>
+              <SortableHead column="created" label="Dibuat" spec={CUSTOMER_LIST} query={query} params={params} />
             </TableRow>
-          )}
-          {customers.rows.map((c) => (
-            <TableRow key={c.id}>
-              <TableCell>
-                <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
-              </TableCell>
-              <TableCell>{c.phone ?? '—'}</TableCell>
-              <TableCell>
-                <Badge variant={c.active ? 'secondary' : 'outline'}>
-                  {c.active ? 'Aktif' : 'Nonaktif'}
-                </Badge>
-              </TableCell>
-              <TableCell>{c.createdAt}</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody>
+            {customers.rows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={5} className="text-muted-foreground">
+                  {query.q || Object.keys(query.filters).length > 0 ? (
+                    <>
+                      Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
+                      <Link href={listHref(params, clearFilters(CUSTOMER_LIST))} className="underline">
+                        Hapus filter
+                      </Link>
+                    </>
+                  ) : (
+                    'Belum ada pelanggan.'
+                  )}
+                </TableCell>
+              </TableRow>
+            )}
+            {customers.rows.map((c) => (
+              <TableRow key={c.id}>
+                <TableCell>
+                  <SelectRow id={c.id} />
+                </TableCell>
+                <TableCell>
+                  <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
+                </TableCell>
+                <TableCell>{c.phone ?? '—'}</TableCell>
+                <TableCell>
+                  <Badge variant={c.active ? 'secondary' : 'outline'}>
+                    {c.active ? 'Aktif' : 'Nonaktif'}
+                  </Badge>
+                </TableCell>
+                <TableCell>{c.createdAt}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </SelectionProvider>
 
       <Pagination result={customers} params={params} />
     </div>

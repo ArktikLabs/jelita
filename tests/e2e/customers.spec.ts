@@ -398,3 +398,58 @@ test.describe('the URL controls', () => {
     }
   })
 })
+
+/**
+ * Task 4 (spec §7): "the 25 on this page" versus "all 4.312 matching". Its
+ * own salon and its own fixture, rather than reusing either describe above --
+ * the top describe seeds only two customers (page-selection and all-matching
+ * would coincide at that size, and the assertion below could never fail) and
+ * the URL-controls describe's 60 rows exist for a different reason entirely.
+ */
+test.describe('selection', () => {
+  const SEL_DOMAIN = 'custsel.local'
+  const SEL_SLUG = 'custsel'
+
+  let owner: Awaited<ReturnType<typeof createSalon>>['ctx']
+  const ownerCookies = async () => (await owner.storageState()).cookies
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug like 'custsel%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${SEL_DOMAIN}`])
+
+    const salon = await createSalon(pool, {
+      name: 'Sel Owner', email: `owner@${SEL_DOMAIN}`, password: PW,
+      salon: 'Sel Salon', slug: SEL_SLUG,
+    })
+    owner = salon.ctx
+
+    // 30, so "this page" (25) and "all matching" are genuinely different
+    // numbers. With fewer rows the two modes coincide and the assertion
+    // below is unfalsifiable.
+    await pool.query(`
+      insert into customers (id, organization_id, name)
+      select 'e2e_bulk_' || g, $1, 'Bulk Pelanggan ' || lpad(g::text, 2, '0')
+        from generate_series(1, 30) g`, [salon.organizationId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await pool.query(`delete from organizations where slug like 'custsel%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${SEL_DOMAIN}`])
+  })
+
+  test('selecting the page is not the same as selecting everything', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?perPage=25')
+
+    await page.getByRole('checkbox', { name: 'Pilih semua di halaman ini' }).check()
+    // The count must name the PAGE, not the table -- conflating them is how a
+    // person deactivates four thousand rows believing they touched twenty-five.
+    await expect(page.getByTestId('selection-count')).toContainText('25')
+
+    // The escalation is a separate, deliberate click.
+    await page.getByRole('button', { name: /Pilih semua .* yang cocok/ }).click()
+    const count = await page.getByTestId('selection-count').textContent()
+    expect(Number(count!.replace(/\D/g, ''))).toBeGreaterThan(25)
+  })
+})
