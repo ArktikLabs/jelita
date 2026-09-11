@@ -713,9 +713,17 @@ test.describe.serial('narrowing the catalogue by category', () => {
     // Sorting is a different URL parameter. If it drops the filter, the
     // person silently gets the whole catalogue back while the select still
     // reads "Perawatan Rambut" -- a screen lying about what it shows.
+    //
+    // waitForURL FIRST, and assert on the URL: content assertions alone are
+    // satisfied by the STALE pre-navigation page, where Creambath is already
+    // visible and Manikur already absent. Verified -- with the content
+    // checks alone, breaking the sort link to drop every parameter still
+    // passed. The URL is the only thing here that changes on navigation.
     await page.getByRole('link', { name: /Harga/ }).first().click()
-    await expect(page.getByText('Creambath')).toBeVisible()
-    await expect(page.getByText('Manikur'), 'the sort must not widen the view').toHaveCount(0)
+    await page.waitForURL(/sort=price/)
+    expect(page.url(), 'the sort must carry the filter with it')
+      .toContain('category=svccat_rambut')
+    await expect(page.getByText('Manikur'), 'and must not widen the view').toHaveCount(0)
   })
 
   test('"Tanpa kategori" isolates the rows that have none', async ({ page }) => {
