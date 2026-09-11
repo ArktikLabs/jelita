@@ -4,10 +4,13 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { normalizePhone } from '@/lib/phone'
 import {
-  createCustomer, deactivateCustomer, getCustomer, reactivateCustomer, updateCustomer,
+  createCustomer, CUSTOMER_LIST, deactivateCustomer, getCustomer, listCustomers,
+  reactivateCustomer, updateCustomer, type CustomerRow,
 } from '@/lib/customer'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { formError, type FormState } from '@/lib/form-state'
+import { bulkDeactivate, bulkMessage, resolveSelection, selectionFromForm } from '@/lib/bulk'
+import { listHref } from '@/lib/list-url'
 
 const DUPLICATE = 'Nomor ini sudah terdaftar untuk pelanggan lain.'
 
@@ -94,4 +97,33 @@ export async function setCustomerActiveAction(
   revalidatePath('/dashboard/customers')
   revalidatePath(`/dashboard/customers/${id}`)
   return { done: true }
+}
+
+/**
+ * §7's bulk action for this resource -- SelectionBar's seam
+ * (app/dashboard/(shell)/customers/page.tsx). `deactivateCustomer` carries
+ * no business guard of its own (unlike staff's last-owner CTE) -- every id
+ * `resolveSelection` hands back is already scoped to this org, so it always
+ * succeeds in the normal flow. It still returns whether a row actually
+ * changed (Fix 5), so an id that reaches here from OUTSIDE that flow -- a
+ * hand-crafted form post naming another org's customer, or one already
+ * deleted between page render and submit -- is reported honestly rather
+ * than rounded into "done"; `bulkDeactivate` owns the counting either way.
+ */
+export async function deactivateSelectedCustomersAction(formData: FormData) {
+  const actor = await requirePagePermission({ customer: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const { ids, allMatching, params } = selectionFromForm(formData)
+
+  const { ids: targets, capped } = await resolveSelection({
+    spec: CUSTOMER_LIST, params, ids, allMatching,
+    list: (q) => listCustomers(organizationId, q),
+    idOf: (r: CustomerRow) => r.id,
+  })
+  const outcome = await bulkDeactivate(
+    targets, (id) => deactivateCustomer(id, organizationId, actor.user.id),
+  )
+
+  revalidatePath('/dashboard/customers')
+  redirect(`/dashboard/customers${listHref(params, { bulkMsg: bulkMessage(outcome, '', capped) })}`)
 }

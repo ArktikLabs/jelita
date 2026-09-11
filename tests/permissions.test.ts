@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { roles, type SalonRole } from '../lib/permissions'
 
@@ -89,4 +90,33 @@ describe('the built-in roles', () => {
     expect(holds('frontdesk', 'stock', 'read')).toBe(true)
     expect(holds('frontdesk', 'stock', 'adjust')).toBe(false)
   })
+})
+
+/**
+ * §8's six CSV routes chose deliberately non-uniform guards (products
+ * product:read, services service:update, staff staff:read, branches
+ * branch:update, customers customer:read, transactions pos:checkout) --
+ * unlike the pairs above, nothing else in the app re-derives these from a
+ * role fact, so a `holds()` assertion can't catch one being relaxed. Reading
+ * the route's own source is what makes this falsifiable: pin the literal
+ * `auth.api.hasPermission` argument, and the day someone loosens
+ * branch:['update'] to branch:['read'] -- exactly the change that opened
+ * every cabang's name, address and phone to a stylist without failing a
+ * single other test -- this fails too.
+ */
+describe('the six CSV export routes', () => {
+  const GUARD: Record<string, string> = {
+    'app/api/products/csv/route.ts': `permissions: { product: ['read'] }`,
+    'app/api/services/csv/route.ts': `permissions: { service: ['update'] }`,
+    'app/api/staff/csv/route.ts': `permissions: { staff: ['read'] }`,
+    'app/api/branches/csv/route.ts': `permissions: { branch: ['update'] }`,
+    'app/api/customers/csv/route.ts': `permissions: { customer: ['read'] }`,
+    'app/api/transactions/csv/route.ts': `permissions: { pos: ['checkout'] }`,
+  }
+
+  for (const [file, guard] of Object.entries(GUARD)) {
+    it(`guards ${file} with ${guard}`, () => {
+      expect(readFileSync(file, 'utf8')).toContain(guard)
+    })
+  }
 })

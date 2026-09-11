@@ -367,6 +367,15 @@ async function reverse(
   })
 }
 
+/** Today, in the server's own timezone -- the transactions list and its
+ *  export both default an absent `date` filter to this (spec 2.6: the salon
+ *  and its customers are in one timezone). */
+export const todayLocal = () => {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
 export type SaleRow = {
   id: string
   invoiceNo: number | null

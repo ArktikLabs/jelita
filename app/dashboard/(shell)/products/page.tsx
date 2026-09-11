@@ -5,8 +5,9 @@ import { auth } from '@/lib/auth'
 import { PRODUCT_LIST, listProducts, productsOf } from '@/lib/inventory'
 import { salonSettings } from '@/lib/service'
 import { formatMoney, type CurrencyCode } from '@/lib/money'
-import { parseListQuery } from '@/lib/list-query'
+import { parseListQuery, wasTruncated } from '@/lib/list-query'
 import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
+import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { SortableHead } from '@/components/list/sortable-head'
@@ -56,7 +57,29 @@ export default async function ProductsPage({
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-medium">Produk</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-medium">Produk</h1>
+        {/* The export must carry the CURRENT view, so it reuses the same
+            searchParams the list was built from -- a bare /csv link would
+            silently export the unfiltered table. */}
+        <a
+          href={`/api/products/csv?${new URLSearchParams(
+            Object.entries(params).filter(([, v]) => typeof v === 'string') as [string, string][],
+          )}`}
+          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+        >
+          Ekspor CSV
+        </a>
+      </div>
+
+      {/* §8: the CSV export caps at 10.000 rows and says so IN THE FILE
+          (lib/list-csv.ts) -- this is the same warning on the SCREEN. */}
+      {wasTruncated(page.total) && (
+        <p className="text-sm text-muted-foreground">
+          Ekspor CSV akan dipotong pada 10.000 baris dari {page.total} produk yang cocok.
+          Persempit filter untuk mengekspor sisanya.
+        </p>
+      )}
 
       {low.length > 0 && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">

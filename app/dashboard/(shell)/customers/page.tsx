@@ -1,17 +1,23 @@
+import { Suspense } from 'react'
 import Link from 'next/link'
+import { headers } from 'next/headers'
+import { auth } from '@/lib/auth'
 import { requirePageOrg, requirePagePermission } from '@/lib/session'
 import { CUSTOMER_LIST, listCustomers } from '@/lib/customer'
-import { parseListQuery } from '@/lib/list-query'
+import { parseListQuery, wasTruncated } from '@/lib/list-query'
 import { clearFilters, listHref, preservedFields, type Params } from '@/lib/list-url'
 import { buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { SortableHead } from '@/components/list/sortable-head'
 import { FilterBar } from '@/components/list/filter-bar'
 import { Pagination } from '@/components/list/pagination'
+import { SelectAll, SelectionBar, SelectionProvider, SelectRow } from '@/components/list-selection'
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table'
+import { deactivateSelectedCustomersAction } from './actions'
 
 export default async function CustomersPage({
   searchParams,
@@ -22,19 +28,64 @@ export default async function CustomersPage({
   // look someone up. The create and edit screens guard more tightly.
   await requirePagePermission({ customer: ['read'] })
   const { organizationId } = await requirePageOrg()
-  const params = await searchParams
+  const rawParams = await searchParams
+  // `bulkMsg` is a one-shot flash from deactivateSelectedCustomersAction's
+  // redirect, not part of the list's own contract -- kept out of `params` so
+  // every other control on this page (search, filters, pagination) stops
+  // carrying a stale confirmation forward the moment it links elsewhere.
+  const { bulkMsg: bulkMsgRaw, ...params } = rawParams
+  const bulkMsg = typeof bulkMsgRaw === 'string' ? bulkMsgRaw : null
   const query = parseListQuery(CUSTOMER_LIST, params)
   const customers = await listCustomers(organizationId, query)
   const q = query.q
+  // Fix 4 (phase 4 review): the page reads with customer:['read'] (above)
+  // but deactivateSelectedCustomersAction requires customer:['update'] --
+  // the only one of the six bulk screens where the two diverge (a stylist
+  // holds read alone, lib/permissions.ts). Without this check a stylist
+  // could tick rows and hit a bare permission redirect with no message.
+  const { success: canBulk } = await auth.api.hasPermission({
+    headers: await headers(),
+    body: { permissions: { customer: ['update'] } },
+  })
 
   return (
     <div className="space-y-6">
+      {bulkMsg && (
+        <Alert data-testid="bulk-message" variant={bulkMsg.includes('ditolak') ? 'destructive' : 'default'}>
+          <AlertDescription>{bulkMsg}</AlertDescription>
+        </Alert>
+      )}
+
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-medium">Pelanggan</h1>
-        <Link href="/dashboard/customers/new" className={buttonVariants()}>
-          Tambah pelanggan
-        </Link>
+        <div className="flex items-center gap-2">
+          {/* The export must carry the CURRENT view, so it reuses the same
+              searchParams the list was built from -- a bare /csv link would
+              silently export the unfiltered table, which is the bug §8
+              exists to prevent. */}
+          <a
+            href={`/api/customers/csv?${new URLSearchParams(
+              Object.entries(params).filter(([, v]) => typeof v === 'string') as [string, string][],
+            )}`}
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            Ekspor CSV
+          </a>
+          <Link href="/dashboard/customers/new" className={buttonVariants()}>
+            Tambah pelanggan
+          </Link>
+        </div>
       </div>
+
+      {/* §8: the CSV export caps at 10.000 rows and says so IN THE FILE
+          (lib/list-csv.ts) -- this is the same warning on the SCREEN, before
+          anyone clicks the link and gets a file that looks complete. */}
+      {wasTruncated(customers.total) && (
+        <p className="text-sm text-muted-foreground">
+          Ekspor CSV akan dipotong pada 10.000 baris dari {customers.total} pelanggan yang cocok.
+          Persempit filter untuk mengekspor sisanya.
+        </p>
+      )}
 
       {/* A plain GET form: zero client JS, and the query survives a reload.
           A native GET submit replaces the WHOLE query string with only this
@@ -50,48 +101,74 @@ export default async function CustomersPage({
 
       <FilterBar spec={CUSTOMER_LIST} query={query} params={params} />
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
-            <TableHead>Nomor</TableHead>
-            <TableHead>Status</TableHead>
-            <SortableHead column="created" label="Dibuat" spec={CUSTOMER_LIST} query={query} params={params} />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {customers.rows.length === 0 && (
-            <TableRow>
-              <TableCell colSpan={4} className="text-muted-foreground">
-                {query.q || Object.keys(query.filters).length > 0 ? (
-                  <>
-                    Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
-                    <Link href={listHref(params, clearFilters(CUSTOMER_LIST))} className="underline">
-                      Hapus filter
-                    </Link>
-                  </>
-                ) : (
-                  'Belum ada pelanggan.'
-                )}
-              </TableCell>
-            </TableRow>
+      {/* SelectionProvider and SelectionBar read the current filter via
+          useSearchParams, which requires a Suspense boundary -- see
+          app/reset-password/page.tsx for the same pattern.
+
+          Fix 4: the whole selection UI is skipped for anyone without
+          customer:['update'] -- a stylist can read this list but the bulk
+          action would refuse them, so there is nothing here for them to
+          select. */}
+      <Suspense>
+        <SelectionProvider total={customers.total}>
+          {canBulk && (
+            <SelectionBar action={deactivateSelectedCustomersAction} label="Nonaktifkan yang dipilih" />
           )}
-          {customers.rows.map((c) => (
-            <TableRow key={c.id}>
-              <TableCell>
-                <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
-              </TableCell>
-              <TableCell>{c.phone ?? '—'}</TableCell>
-              <TableCell>
-                <Badge variant={c.active ? 'secondary' : 'outline'}>
-                  {c.active ? 'Aktif' : 'Nonaktif'}
-                </Badge>
-              </TableCell>
-              <TableCell>{c.createdAt}</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                {canBulk && (
+                  <TableHead className="w-10">
+                    <SelectAll ids={customers.rows.map((c) => c.id)} />
+                  </TableHead>
+                )}
+                <SortableHead column="name" label="Nama" spec={CUSTOMER_LIST} query={query} params={params} />
+                <TableHead>Nomor</TableHead>
+                <TableHead>Status</TableHead>
+                <SortableHead column="created" label="Dibuat" spec={CUSTOMER_LIST} query={query} params={params} />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {customers.rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={canBulk ? 5 : 4} className="text-muted-foreground">
+                    {query.q || Object.keys(query.filters).length > 0 ? (
+                      <>
+                        Tidak ada pelanggan yang cocok dengan pencarian ini.{' '}
+                        <Link href={listHref(params, clearFilters(CUSTOMER_LIST))} className="underline">
+                          Hapus filter
+                        </Link>
+                      </>
+                    ) : (
+                      'Belum ada pelanggan.'
+                    )}
+                  </TableCell>
+                </TableRow>
+              )}
+              {customers.rows.map((c) => (
+                <TableRow key={c.id}>
+                  {canBulk && (
+                    <TableCell>
+                      <SelectRow id={c.id} />
+                    </TableCell>
+                  )}
+                  <TableCell>
+                    <Link href={`/dashboard/customers/${c.id}`} className="underline">{c.name}</Link>
+                  </TableCell>
+                  <TableCell>{c.phone ?? '—'}</TableCell>
+                  <TableCell>
+                    <Badge variant={c.active ? 'secondary' : 'outline'}>
+                      {c.active ? 'Aktif' : 'Nonaktif'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>{c.createdAt}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </SelectionProvider>
+      </Suspense>
 
       <Pagination result={customers} params={params} />
     </div>

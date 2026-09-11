@@ -216,6 +216,18 @@ test.describe('customer search, scoping, permissions and duplicates', () => {
     expect(res.status()).toBeGreaterThanOrEqual(300)
     expect(res.status()).toBeLessThan(400)
   })
+
+  test('the export carries the filtered view, not the whole table', async () => {
+    const res = await owner.get('/api/customers/csv?q=sari')
+    expect(res.status()).toBe(200)
+    const text = await res.text()
+    expect(text).toContain('Sari Wijaya')
+    // The one that matters: a customer the filter excluded must NOT be in the
+    // file. Without this, exporting the whole table would pass.
+    expect(text).not.toContain('Budi Santoso')
+    // And never another salon's row, whatever the filter says.
+    expect(text).not.toContain('Rahasia Salon Lain')
+  })
 })
 
 /**
@@ -384,5 +396,246 @@ test.describe('the URL controls', () => {
     } finally {
       await empty.ctx.dispose()
     }
+  })
+})
+
+/**
+ * Task 4 (spec §7): "the 25 on this page" versus "all 4.312 matching". Its
+ * own salon and its own fixture, rather than reusing either describe above --
+ * the top describe seeds only two customers (page-selection and all-matching
+ * would coincide at that size, and the assertion below could never fail) and
+ * the URL-controls describe's 60 rows exist for a different reason entirely.
+ */
+test.describe('selection', () => {
+  const SEL_DOMAIN = 'custsel.local'
+  const SEL_SLUG = 'custsel'
+
+  let owner: Awaited<ReturnType<typeof createSalon>>['ctx']
+  const ownerCookies = async () => (await owner.storageState()).cookies
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug like 'custsel%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${SEL_DOMAIN}`])
+
+    const salon = await createSalon(pool, {
+      name: 'Sel Owner', email: `owner@${SEL_DOMAIN}`, password: PW,
+      salon: 'Sel Salon', slug: SEL_SLUG,
+    })
+    owner = salon.ctx
+
+    // 30, so "this page" (25) and "all matching" are genuinely different
+    // numbers. With fewer rows the two modes coincide and the assertion
+    // below is unfalsifiable.
+    await pool.query(`
+      insert into customers (id, organization_id, name)
+      select 'e2e_bulk_' || g, $1, 'Bulk Pelanggan ' || lpad(g::text, 2, '0')
+        from generate_series(1, 30) g`, [salon.organizationId])
+
+    // The one customer on the OTHER side of the `active` filter -- proof
+    // that a filter change actually swapped the rows, not just that some
+    // count went to zero (which would also pass on a page that failed to
+    // render at all).
+    await pool.query(`
+      insert into customers (id, organization_id, name, active)
+      values ('e2e_bulk_inactive', $1, 'Nonaktif Marker', false)`, [salon.organizationId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await pool.query(`delete from organizations where slug like 'custsel%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${SEL_DOMAIN}`])
+  })
+
+  test('selecting the page is not the same as selecting everything', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?per=25')
+
+    await page.getByRole('checkbox', { name: 'Pilih semua di halaman ini' }).check()
+    // The count must name the PAGE, not the table -- conflating them is how a
+    // person deactivates four thousand rows believing they touched twenty-five.
+    await expect(page.getByTestId('selection-count')).toContainText('25')
+
+    // The escalation is a separate, deliberate click.
+    await page.getByRole('button', { name: /Pilih semua .* yang cocok/ }).click()
+    const count = await page.getByTestId('selection-count').textContent()
+    expect(Number(count!.replace(/\D/g, ''))).toBeGreaterThan(25)
+  })
+
+  // Fix round 1: the provider held its Set across a soft navigation, so a
+  // selection made under one filter silently kept reading as valid under a
+  // completely different one -- honest about the COUNT, silent about the
+  // fact none of those ids were still on screen.
+  test('changing the filter drops a selection made under the old one', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/customers?active=true')
+
+    await page.getByRole('checkbox', { name: 'Pilih semua di halaman ini' }).check()
+    await expect(page.getByTestId('selection-count')).toContainText('25')
+    // Anchor: this really is the active-filtered view, not an empty/broken page.
+    await expect(page.getByText('Bulk Pelanggan 01')).toBeVisible()
+
+    await page.getByRole('link', { name: 'Nonaktif', exact: true }).click()
+
+    // The page actually re-rendered with the OTHER filter's row -- not the
+    // same page failing to update.
+    await expect(page.getByText('Nonaktif Marker')).toBeVisible()
+    await expect(page.getByText('Bulk Pelanggan 01')).not.toBeVisible()
+    // And the stale selection is gone: SelectionBar renders nothing once
+    // both `ids` and `allMatching` are empty/false again.
+    await expect(page.getByTestId('selection-count')).toHaveCount(0)
+  })
+
+  // Task 5: deactivateSelectedCustomersAction (customers/actions.ts) --
+  // deactivateCustomer carries no guard of its own, so this is really a test
+  // of the WIRING (resolveSelection -> bulkDeactivate -> the redirect
+  // carrying the count), not of a refusal -- that half lives in the staff
+  // test (tests/e2e/staff.spec.ts), the one resource whose deactivate*
+  // genuinely refuses rows.
+  test('bulk deactivation reports the count of what actually happened', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    // Page 2 (25 per page, 31 rows sorted by name) holds Bulk Pelanggan 26-30
+    // plus the inactive marker -- untouched by the two tests above, which
+    // only ever look at page 1's "Bulk Pelanggan 01".
+    await page.goto('/dashboard/customers?per=25&page=2')
+
+    await page.getByRole('row', { name: /Bulk Pelanggan 29/ }).getByRole('checkbox').check()
+    await page.getByRole('row', { name: /Bulk Pelanggan 30/ }).getByRole('checkbox').check()
+    await expect(page.getByTestId('selection-count')).toContainText('2')
+
+    await page.getByRole('button', { name: 'Nonaktifkan yang dipilih' }).click()
+
+    await expect(page.getByTestId('bulk-message')).toContainText('2 dinonaktifkan.')
+
+    const { rows } = await pool.query(
+      `select active from customers where id = any($1)`, [['e2e_bulk_29', 'e2e_bulk_30']])
+    expect(rows.every((r) => r.active === false), 'both selected rows actually deactivated').toBe(true)
+  })
+})
+
+/**
+ * Fix 3 (phase 4 review, §8): `wasTruncated` decided the CSV file's own
+ * notice (lib/list-csv.ts) but had no consumer on the SCREEN -- someone
+ * clicking "Ekspor CSV" on a table over 10.000 rows had no warning before
+ * downloading a file that silently dropped the rest.
+ */
+test.describe('the export truncation notice', () => {
+  const CAP_DOMAIN = 'custcap.local'
+  const CAP_SLUG = 'customercheck-cap'
+
+  let owner: Awaited<ReturnType<typeof client>>
+  let capOrgId: string
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug = $1`, [CAP_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${CAP_DOMAIN}`])
+
+    owner = await client()
+    const ownerEmail = `owner@${CAP_DOMAIN}`
+    await owner.post('/api/auth/sign-up/email',
+      { data: { name: 'Cap Owner', email: ownerEmail, password: PW } })
+    await verify(ownerEmail)
+    await owner.post('/api/auth/sign-in/email', { data: { email: ownerEmail, password: PW } })
+    const org = await owner.post('/api/auth/organization/create',
+      { data: { name: 'Cap Salon', slug: CAP_SLUG } })
+    capOrgId = (await org.json()).id
+    await owner.post('/api/auth/organization/set-active', { data: { organizationId: capOrgId } })
+
+    // One row over the cap -- exactly what makes wasTruncated(total) true.
+    await pool.query(`
+      insert into customers (id, organization_id, name)
+      select 'e2e_cap_' || g, $1, 'Cap Pelanggan ' || g
+        from generate_series(1, 10001) g`, [capOrgId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await pool.query(`delete from organizations where slug = $1`, [CAP_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${CAP_DOMAIN}`])
+  })
+
+  test('shows the notice when the export would be truncated', async () => {
+    const res = await owner.get('/dashboard/customers')
+    const html = await res.text()
+    expect(html).toContain('10001')
+    expect(html.toLowerCase()).toContain('dipotong')
+  })
+
+  test('says nothing when the filtered view fits under the cap', async () => {
+    // Matches exactly one of the 10.001 seeded rows.
+    const res = await owner.get('/dashboard/customers?q=Cap Pelanggan 5000')
+    const html = await res.text()
+    expect(html).toContain('Cap Pelanggan 5000')
+    expect(html.toLowerCase()).not.toContain('dipotong')
+  })
+})
+
+/**
+ * Fix 4 (phase 4 review): the page requires customer:['read'] (a stylist
+ * needs the list at checkout/lookup) while the bulk action requires
+ * customer:['update'] -- a permission gap none of the other five bulk
+ * screens have. Before this fix, a stylist with 25 rows ticked would click
+ * "Nonaktifkan yang dipilih" and land on a bare requirePagePermission
+ * redirect with no message, unable to tell whether anything happened.
+ */
+test.describe('the bulk bar and role', () => {
+  const ROLE_DOMAIN = 'custrole.local'
+  const ROLE_SLUG = 'customercheck-role'
+
+  let owner: Awaited<ReturnType<typeof client>>
+  let stylist: Awaited<ReturnType<typeof client>>
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug = $1`, [ROLE_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${ROLE_DOMAIN}`])
+
+    owner = await client()
+    const ownerEmail = `owner@${ROLE_DOMAIN}`
+    await owner.post('/api/auth/sign-up/email',
+      { data: { name: 'Role Owner', email: ownerEmail, password: PW } })
+    await verify(ownerEmail)
+    await owner.post('/api/auth/sign-in/email', { data: { email: ownerEmail, password: PW } })
+    const org = await owner.post('/api/auth/organization/create',
+      { data: { name: 'Role Salon', slug: ROLE_SLUG } })
+    const roleOrgId = (await org.json()).id
+    await owner.post('/api/auth/organization/set-active', { data: { organizationId: roleOrgId } })
+
+    stylist = await client()
+    const stylistEmail = `stylist@${ROLE_DOMAIN}`
+    await stylist.post('/api/auth/sign-up/email',
+      { data: { name: 'Role Stylist', email: stylistEmail, password: PW } })
+    await verify(stylistEmail)
+    const { rows: [su] } = await pool.query(`select id from users where email = $1`, [stylistEmail])
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ('e2e_role_m_sty', $1, $2, 'stylist', now())`, [su.id, roleOrgId])
+    await stylist.post('/api/auth/sign-in/email', { data: { email: stylistEmail, password: PW } })
+
+    await pool.query(`
+      insert into customers (id, organization_id, name)
+      values ('e2e_role_c1', $1, 'Role Pelanggan 1')`, [roleOrgId])
+  })
+
+  test.afterAll(async () => {
+    await owner.dispose()
+    await stylist.dispose()
+    await pool.query(`delete from organizations where slug = $1`, [ROLE_SLUG])
+    await pool.query(`delete from users where email like $1`, [`%@${ROLE_DOMAIN}`])
+  })
+
+  test('an owner sees the bulk-deactivate bar', async () => {
+    const res = await owner.get('/dashboard/customers')
+    const html = await res.text()
+    expect(html).toContain('Nonaktifkan yang dipilih')
+  })
+
+  test('a stylist -- read only -- sees no bulk-deactivate bar at all', async () => {
+    const res = await stylist.get('/dashboard/customers')
+    expect(res.status()).toBe(200)
+    const html = await res.text()
+    expect(html).not.toContain('Nonaktifkan yang dipilih')
+    // Selection has nothing to act on without the bar, so it should not
+    // render the row checkboxes either -- otherwise ticking rows still
+    // looks like it does something.
+    expect(html).not.toContain('Pilih semua di halaman ini')
   })
 })

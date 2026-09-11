@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { Pool } from 'pg'
 import { TEST_DATABASE_URL } from './db'
-import { listCustomers, CUSTOMER_LIST } from '../lib/customer'
+import { deactivateCustomer, listCustomers, CUSTOMER_LIST } from '../lib/customer'
 import { parseListQuery } from '../lib/list-query'
 
 /**
@@ -12,6 +12,7 @@ import { parseListQuery } from '../lib/list-query'
 const pool = new Pool({ connectionString: TEST_DATABASE_URL })
 const ORG = 'vt_cust_org'
 const ORG2 = 'vt_cust_org2'
+const ACTOR = 'vt_cust_actor'
 
 const addCustomer = (id: string, org: string, name: string, key: string | null) =>
   pool.query(
@@ -20,13 +21,18 @@ const addCustomer = (id: string, org: string, name: string, key: string | null) 
 
 beforeAll(async () => {
   await pool.query(`delete from organizations where id = any($1)`, [[ORG, ORG2]])
+  await pool.query(`delete from users where id = $1`, [ACTOR])
   await pool.query(`
     insert into organizations (id, name, slug, created_at)
     values ($1, 'VT Cust', 'vt-cust', now()), ($2, 'VT Cust 2', 'vt-cust-2', now())`,
     [ORG, ORG2])
+  await pool.query(`
+    insert into users (id, name, email, email_verified, created_at, updated_at)
+    values ($1, 'VT Cust Actor', 'vt-cust-actor@vt.local', true, now(), now())`, [ACTOR])
 })
 
 afterAll(async () => {
+  await pool.query(`delete from users where id = $1`, [ACTOR])
   await pool.query(`delete from organizations where id = any($1)`, [[ORG, ORG2]])
   await pool.end()
 })
@@ -63,6 +69,38 @@ describe('customers phone uniqueness', () => {
   it('scopes uniqueness per salon', async () => {
     await expect(addCustomer('vt_c5', ORG2, 'Dewi Salon Lain', '62812345678'))
       .resolves.toBeDefined()
+  })
+})
+
+/**
+ * Fix 5 (phase 4 review): the bulk action discarded deactivateCustomer's
+ * result with `.then(() => true)`, so an id from another org (or one that
+ * never existed) reported "1 dinonaktifkan" having changed nothing --
+ * branches and staff already re-read to tell a real update from a no-op
+ * (lib/branch.ts, lib/staff.ts); customers must be equally honest.
+ */
+describe('deactivateCustomer', () => {
+  it('reports true when it actually deactivated the row', async () => {
+    await addCustomer('vt_c_deact_1', ORG, 'Deact Satu', null)
+    const closed = await deactivateCustomer('vt_c_deact_1', ORG, ACTOR)
+    expect(closed).toBe(true)
+    const { rows: [row] } = await pool.query(`select active from customers where id = $1`,
+      ['vt_c_deact_1'])
+    expect(row.active).toBe(false)
+  })
+
+  it("reports false for another salon's customer -- and never touches the row", async () => {
+    await addCustomer('vt_c_deact_2', ORG2, 'Deact Salon Lain', null)
+    const closed = await deactivateCustomer('vt_c_deact_2', ORG, ACTOR)
+    expect(closed).toBe(false)
+    const { rows: [row] } = await pool.query(`select active from customers where id = $1`,
+      ['vt_c_deact_2'])
+    expect(row.active).toBe(true)
+  })
+
+  it('reports false for an id that never existed', async () => {
+    const closed = await deactivateCustomer('vt_c_deact_nonexistent', ORG, ACTOR)
+    expect(closed).toBe(false)
   })
 })
 

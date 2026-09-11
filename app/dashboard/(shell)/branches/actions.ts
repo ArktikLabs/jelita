@@ -1,16 +1,20 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
 import { headers } from 'next/headers'
 import { sql } from 'drizzle-orm'
 import { APIError } from 'better-auth/api'
 import { auth } from '@/lib/auth'
 import { db } from '@/lib/db'
 import {
-  assignedStaff, completeBranchCreation, deactivateBranch, reactivateBranch, updateBranchDetails,
+  assignedStaff, BRANCH_LIST, completeBranchCreation, deactivateBranch, listBranches,
+  reactivateBranch, updateBranchDetails, type BranchRow,
 } from '@/lib/branch'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
 import { formError, type FormState } from '@/lib/form-state'
+import { bulkDeactivate, bulkMessage, resolveSelection, selectionFromForm } from '@/lib/bulk'
+import { listHref } from '@/lib/list-url'
 
 /**
  * The branch's current state, or null when the id is unknown OR belongs to
@@ -200,4 +204,50 @@ export async function reactivateBranchAction(
   await reactivateBranch(teamId, organizationId, actor.user.id)
   revalidateBranch(teamId)
   return { done: true }
+}
+
+/**
+ * §7's bulk action for this resource -- same shape as
+ * deactivateSelectedCustomersAction (customers/actions.ts). `deactivateBranch`
+ * only guards "not the last active branch"; the "move staff first" guard
+ * deactivateBranchAction enforces via `assignedStaff` before ever calling it
+ * is replicated here per row too, otherwise bulk-selecting a staffed branch
+ * would silently close it out from under whoever is stationed there.
+ * Already-inactive is treated as done, not refused -- same idempotence as
+ * the single-row action's own re-read.
+ */
+export async function deactivateSelectedBranchesAction(formData: FormData) {
+  const actor = await requirePagePermission({ branch: ['update'] })
+  const { organizationId } = await requirePageOrg()
+  const { ids, allMatching, params } = selectionFromForm(formData)
+
+  const { ids: targets, capped } = await resolveSelection({
+    spec: BRANCH_LIST, params, ids, allMatching,
+    list: (q) => listBranches(organizationId, q),
+    idOf: (r: BranchRow) => r.teamId,
+  })
+
+  const run = async (teamId: string): Promise<boolean> => {
+    const staff = await assignedStaff(teamId, organizationId)
+    if (staff.length > 0) return false
+    const closed = await deactivateBranch(teamId, organizationId, actor.user.id)
+    if (closed) return true
+    // Not closed: either already inactive (a double submit -- idempotent,
+    // same as deactivateBranchAction's own "done: true") or the
+    // last-active-branch refusal. Re-read to tell them apart.
+    const branch = await ownedBranch(teamId, organizationId)
+    return branch ? !branch.active : false
+  }
+  const outcome = await bulkDeactivate(targets, run)
+
+  revalidatePath('/dashboard/branches')
+  redirect(`/dashboard/branches${listHref(
+    params,
+    {
+      bulkMsg: bulkMessage(
+        outcome, 'cabang terakhir yang aktif atau masih ada staf yang ditempatkan tidak bisa dinonaktifkan',
+        capped,
+      ),
+    },
+  )}`)
 }

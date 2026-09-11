@@ -1804,3 +1804,121 @@ test.describe('the URL controls', () => {
       url.searchParams.get('active') === 'true' && url.searchParams.get('branch') === branchAId)
   })
 })
+
+/**
+ * Task 5: deactivateSelectedStaffAction (app/dashboard/(shell)/staff/actions.ts).
+ * The headline case §7/task-5-brief.md asks for: a bulk call over a stylist
+ * AND the last remaining owner must report exactly done: 1, refused: 1 --
+ * not "2 dinonaktifkan" as if the owner had gone too. The pure SQL guard
+ * (migration 0025's last-active-owner CTE) is already proven directly in
+ * tests/bulk.db.test.ts; this is the same shape one layer up, through the
+ * actual screen, where the admin-vs-owner guard fires first for the very
+ * same reason -- a non-owner admin can never bulk-deactivate the org's only
+ * owner, whichever guard catches it.
+ */
+test.describe('bulk deactivation: a stylist and the last remaining owner', () => {
+  const BULK_DOMAIN = 'staffbulk.local'
+
+  let ownerCtx: Awaited<ReturnType<typeof createSalon>>['ctx']
+  let adminCtx: Awaited<ReturnType<typeof signIn>>
+  let ownerUserId: string
+  let stylistUserId: string
+  let organizationId: string
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug like 'staffbulk%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${BULK_DOMAIN}`])
+
+    const salon = await createSalon(pool, {
+      name: 'Bulk Owner', email: `owner@${BULK_DOMAIN}`, password: PW,
+      salon: 'Bulk Salon', slug: 'staffbulk',
+    })
+    ownerCtx = salon.ctx
+    ownerUserId = salon.userId
+    organizationId = salon.organizationId
+    await setPlan(salon.organizationId, 'business')
+
+    // A plain admin -- distinct from the owner -- does the bulk deactivating.
+    const adminUserId = await createLogin(pool, {
+      name: 'Bulk Admin', email: `admin@${BULK_DOMAIN}`, password: PW,
+    })
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'admin', now())`, [`${adminUserId}_m`, adminUserId, salon.organizationId])
+
+    stylistUserId = await createLogin(pool, {
+      name: 'Bulk Stylist', email: `stylist@${BULK_DOMAIN}`, password: PW,
+    })
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'stylist', now())`, [`${stylistUserId}_m`, stylistUserId, salon.organizationId])
+
+    adminCtx = await signIn(`admin@${BULK_DOMAIN}`, PW)
+    await adminCtx.post('/api/auth/organization/set-active', { data: { organizationId: salon.organizationId } })
+  })
+
+  test.afterAll(async () => {
+    await ownerCtx.dispose()
+    await adminCtx.dispose()
+    await pool.query(`delete from organizations where slug like 'staffbulk%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${BULK_DOMAIN}`])
+  })
+
+  test('reports the refusal instead of claiming both rows went', async ({ page }) => {
+    await page.context().addCookies((await adminCtx.storageState()).cookies)
+    await page.goto('/dashboard/staff')
+
+    await page.getByRole('row', { name: /Bulk Stylist/ }).getByRole('checkbox').check()
+    await page.getByRole('row', { name: /Bulk Owner/ }).getByRole('checkbox').check()
+    await expect(page.getByTestId('selection-count')).toContainText('2')
+
+    await page.getByRole('button', { name: 'Nonaktifkan yang dipilih' }).click()
+
+    // The dishonest report this task exists to prevent: "2 dinonaktifkan."
+    // would be false -- the owner never moved. The message must name BOTH
+    // numbers, and why the refusal happened.
+    await expect(page.getByTestId('bulk-message')).toContainText(
+      '1 dinonaktifkan, 1 ditolak (pemilik terakhir tidak bisa dinonaktifkan).')
+
+    const { rows } = await pool.query(
+      `select user_id, active from staff_profiles where user_id = any($1)`,
+      [[stylistUserId, ownerUserId]])
+    const activeOf = Object.fromEntries(rows.map((r) => [r.user_id, r.active])) as Record<string, boolean>
+    expect(activeOf[stylistUserId], 'the stylist actually deactivated').toBe(false)
+    expect(activeOf[ownerUserId], 'the last owner was refused, not silently deactivated').toBe(true)
+  })
+
+  test('bulk-deactivating an already-inactive staff member is not a false last-owner refusal', async ({ page }) => {
+    // deactivateStaff's UPDATE is `WHERE ... AND active`, so an already-
+    // inactive row closes nothing -- the same `false` the SQL returns for a
+    // genuine last-owner refusal. The admin filters to "Nonaktif" and every
+    // row there carries a checkbox regardless of `active`, so this is a real
+    // path, not a theoretical one: it must NOT read as "pemilik terakhir
+    // tidak bisa dinonaktifkan" for a row that was already a harmless no-op.
+    const retiredUserId = await createLogin(pool, {
+      name: 'Bulk Retired', email: `retired@${BULK_DOMAIN}`, password: PW,
+    })
+    await pool.query(`
+      insert into members (id, user_id, organization_id, role, created_at)
+      values ($1, $2, $3, 'stylist', now())`, [`${retiredUserId}_m`, retiredUserId, organizationId])
+    await pool.query(`
+      update staff_profiles set active = false, deleted_at = now(), deleted_by = $1
+       where user_id = $2 and organization_id = $3`, [ownerUserId, retiredUserId, organizationId])
+
+    await page.context().addCookies((await adminCtx.storageState()).cookies)
+    await page.goto('/dashboard/staff?active=false')
+
+    await page.getByRole('row', { name: /Bulk Retired/ }).getByRole('checkbox').check()
+    await expect(page.getByTestId('selection-count')).toContainText('1')
+
+    await page.getByRole('button', { name: 'Nonaktifkan yang dipilih' }).click()
+
+    const message = page.getByTestId('bulk-message')
+    await expect(message).toContainText('1 dinonaktifkan.')
+    await expect(message, 'a harmless no-op must not be blamed on the last owner').not.toContainText('ditolak')
+
+    const { rows } = await pool.query(
+      `select active from staff_profiles where user_id = $1`, [retiredUserId])
+    expect(rows[0].active, 'still inactive, unaffected by the no-op').toBe(false)
+  })
+})
