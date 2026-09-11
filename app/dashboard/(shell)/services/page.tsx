@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import Link from 'next/link'
 import { requirePagePermission, requirePageOrg } from '@/lib/session'
-import { SERVICE_LIST, listServices, salonCurrency } from '@/lib/service'
+import { SERVICE_LIST, listCategories, listServices, salonCurrency } from '@/lib/service'
 import { getEntitlements, countResource } from '@/lib/plan/entitlements'
 import { formatMoney } from '@/lib/money'
 import { parseListQuery, wasTruncated } from '@/lib/list-query'
@@ -40,11 +40,12 @@ export default async function ServicesPage({
   const bulkMsg = typeof bulkMsgRaw === 'string' ? bulkMsgRaw : null
   const query = parseListQuery(SERVICE_LIST, params)
 
-  const [services, entitlements, used, currency] = await Promise.all([
+  const [services, entitlements, used, currency, categories] = await Promise.all([
     listServices(organizationId, query),
     getEntitlements(organizationId),
     countResource(organizationId, 'services'),
     salonCurrency(organizationId),
+    listCategories(organizationId),
   ])
   const cap = entitlements.caps.services
 
@@ -100,7 +101,24 @@ export default async function ServicesPage({
         <Input name="q" defaultValue={query.q ?? ''} placeholder="Cari nama layanan" />
       </form>
 
-      <FilterBar spec={SERVICE_LIST} query={query} params={params} />
+      <FilterBar
+        spec={SERVICE_LIST}
+        query={query}
+        params={params}
+        controls={{
+          category: {
+            type: 'select',
+            placeholder: 'Semua kategori',
+            // "Tanpa kategori" is an option, not a gap: the table renders
+            // those rows under that label, and a group you can read but not
+            // isolate is the thing this filter exists to fix.
+            options: [
+              ...categories.map((c) => ({ value: c.id, label: c.name })),
+              { value: 'none', label: UNCATEGORISED },
+            ],
+          },
+        }}
+      />
 
       {/* SelectionProvider and SelectionBar read the current filter via
           useSearchParams, which requires a Suspense boundary. */}

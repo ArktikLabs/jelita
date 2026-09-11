@@ -416,6 +416,54 @@ describe('listServices paging', () => {
     expect(r.rows.map((x) => x.id)).not.toContain('vt_svc_s2')
   })
 
+  /**
+   * The services page renders every row's category (or "Tanpa kategori"),
+   * but until now offered no way to narrow to one -- a salon with sixty
+   * services across eight categories could read the labels and nothing else.
+   *
+   * `none` is a real filter value, not a placeholder: category_id is
+   * nullable, the page shows those rows as a group, and being able to see a
+   * group you cannot isolate is the gap this closes.
+   */
+  it('narrows to one category, and to the uncategorised ones', async () => {
+    await pool.query(`
+      insert into service_categories (id, organization_id, name)
+      values ('svc_cat_a', $1, 'Perawatan Rambut'),
+             ('svc_cat_b', $1, 'Perawatan Kuku')`, [ORG])
+    await pool.query(`update services set category_id = 'svc_cat_a'
+                       where id in ('svc_pg_001', 'svc_pg_002')`)
+    await pool.query(`update services set category_id = 'svc_cat_b'
+                       where id = 'svc_pg_003'`)
+
+    const a = await listServices(ORG, q({ category: 'svc_cat_a' }))
+    expect(a.total).toBe(2)
+    expect(a.rows.map((x) => x.id).sort()).toEqual(['svc_pg_001', 'svc_pg_002'])
+
+    const none = await listServices(ORG, q({ category: 'none' }))
+    expect(none.total, 'the other 57 carry no category').toBe(57)
+    expect(none.rows.map((x) => x.id)).not.toContain('svc_pg_001')
+  })
+
+  it('treats an unknown category as matching nothing, not as absent', async () => {
+    // The id comes from a URL. Falling back to "no filter" would silently
+    // show the whole catalogue to somebody who asked for one category --
+    // the same shape of lie as an export that ignores its filter.
+    const r = await listServices(ORG, q({ category: 'svc_cat_does_not_exist' }))
+    expect(r.total).toBe(0)
+    expect(r.rows).toEqual([])
+  })
+
+  it('never narrows to another salon\'s category', async () => {
+    await pool.query(`
+      insert into service_categories (id, organization_id, name)
+      values ('svc_cat_other', $1, 'Kategori Salon Lain')`, [ORG2])
+    await pool.query(`
+      insert into services (id, organization_id, name, duration_minutes, price, category_id)
+      values ('vt_svc_other_cat', $1, 'Layanan Salon Lain', 30, 50000, 'svc_cat_other')`, [ORG2])
+    const r = await listServices(ORG, q({ category: 'svc_cat_other' }))
+    expect(r.total, 'ORG holds nothing in that category').toBe(0)
+  })
+
   // Task 5: services didn't declare a filter for its own `active` column --
   // one of the two four-resource gaps found while building the FilterBar.
   it('filters to just the active or inactive rows', async () => {

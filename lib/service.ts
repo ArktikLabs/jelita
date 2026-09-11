@@ -3,7 +3,7 @@ import { db } from './db'
 import type { CurrencyCode } from './money'
 import {
   clampPage, orderBy, paginate, toResult,
-  type ListQuery, type ListResult, type ListSpec,
+  type FilterRule, type ListQuery, type ListResult, type ListSpec,
 } from './list-query'
 
 export type ServiceRow = {
@@ -90,6 +90,23 @@ export async function servicesOf(
  * match the existing `services_org_name_lower` unique index
  * (organization_id, lower(name)) -- a plain `s.name` sort would not use it.
  */
+/**
+ * Categories are per-salon rows, so there is no allow-list to declare --
+ * the function form of FilterRule, same as STAFF_LIST's `branch`.
+ *
+ * Returning the raw id unvalidated is safe and deliberate: it reaches SQL
+ * only as a bound parameter, and the query's own organization_id predicate
+ * is what stops one salon narrowing to another's category. An id that
+ * belongs to nobody matches nothing, which is the honest answer to asking
+ * for a category that does not exist -- falling back to "no filter" would
+ * show the whole catalogue to somebody who asked for one slice of it.
+ *
+ * `none` is a real value, not a placeholder: category_id is nullable and
+ * the page groups those rows under "Tanpa kategori", so they need to be
+ * selectable like any other group.
+ */
+const categoryFilter: FilterRule = (raw) => (raw === '' ? null : raw)
+
 export const SERVICE_LIST: ListSpec<'name' | 'price'> = {
   sortable: { name: 'lower(s.name)', price: 's.price' },
   defaultSort: 'name',
@@ -97,7 +114,7 @@ export const SERVICE_LIST: ListSpec<'name' | 'price'> = {
   searchable: true,
   // Services carries an `active` column same as customers -- undeclared
   // until Task 5's FilterBar needed a second resource to generalise from.
-  filters: { active: ['true', 'false'] },
+  filters: { active: ['true', 'false'], category: categoryFilter },
 }
 
 /**
@@ -119,7 +136,12 @@ export async function listServices(
       ${term === '' ? sql`` : sql`and s.name ilike ${like}`}
       ${query.filters.active === undefined
         ? sql``
-        : sql`and s.active = ${query.filters.active === 'true'}`}`
+        : sql`and s.active = ${query.filters.active === 'true'}`}
+      ${query.filters.category === undefined
+        ? sql``
+        : query.filters.category === 'none'
+          ? sql`and s.category_id is null`
+          : sql`and s.category_id = ${query.filters.category}`}`
 
   const fetch = async (q: ListQuery) => {
     const { rows } = await db.execute(sql`
