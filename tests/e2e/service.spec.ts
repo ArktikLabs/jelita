@@ -658,3 +658,73 @@ test.describe('a concurrent service-creation + currency-change race never lets b
     expect(corrupted, `${corrupted}/${RACE_TRIALS} corrupted`).toBe(0)
   })
 })
+
+/**
+ * The category filter (services was the one resource whose grouping was lost
+ * when the catalogue moved onto the standard list).
+ *
+ * The load-bearing assertion is not that filtering works -- it is that the
+ * filter SURVIVES a sort, because the two are separate URL parameters and
+ * the bug this whole contract exists to prevent is one silently dropping the
+ * other.
+ */
+test.describe.serial('narrowing the catalogue by category', () => {
+  const DOMAIN = 'svccat.local'
+  const PW = 'demo12345'
+  let owner: Awaited<ReturnType<typeof createSalon>>['ctx']
+  let orgId: string
+  const ownerCookies = async () => (await owner.storageState()).cookies
+
+  test.beforeAll(async () => {
+    await pool.query(`delete from organizations where slug like 'svccat%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${DOMAIN}`])
+    ;({ ctx: owner, organizationId: orgId } = await createSalon(pool, {
+      name: 'Cat Owner', email: `owner@${DOMAIN}`, password: PW,
+      salon: 'Cat Salon', slug: 'svccat',
+    }))
+    await pool.query(`
+      insert into service_categories (id, organization_id, name)
+      values ('svccat_rambut', $1, 'Perawatan Rambut')`, [orgId])
+    await pool.query(`
+      insert into services (id, organization_id, name, duration_minutes, price, category_id)
+      values ('svccat_a', $1, 'Potong Rambut', 60, 150000, 'svccat_rambut'),
+             ('svccat_b', $1, 'Creambath', 45, 90000, 'svccat_rambut'),
+             ('svccat_c', $1, 'Manikur', 30, 70000, null)`, [orgId])
+  })
+
+  test.afterAll(async () => {
+    await pool.query(`delete from organizations where slug like 'svccat%'`)
+    await pool.query(`delete from users where email like $1`, [`%@${DOMAIN}`])
+  })
+
+  test('picking a category narrows the list, and a sort keeps it', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/services')
+    // Anchor: the unfiltered catalogue really does hold all three.
+    await expect(page.getByText('Manikur')).toBeVisible()
+
+    await page.selectOption('select[name="category"]', 'svccat_rambut')
+    await page.getByRole('button', { name: 'Filter' }).click()
+
+    await expect(page.getByText('Potong Rambut')).toBeVisible()
+    await expect(page.getByText('Creambath')).toBeVisible()
+    await expect(page.getByText('Manikur'), 'the other category is gone').toHaveCount(0)
+
+    // Sorting is a different URL parameter. If it drops the filter, the
+    // person silently gets the whole catalogue back while the select still
+    // reads "Perawatan Rambut" -- a screen lying about what it shows.
+    await page.getByRole('link', { name: /Harga/ }).first().click()
+    await expect(page.getByText('Creambath')).toBeVisible()
+    await expect(page.getByText('Manikur'), 'the sort must not widen the view').toHaveCount(0)
+  })
+
+  test('"Tanpa kategori" isolates the rows that have none', async ({ page }) => {
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard/services')
+    await page.selectOption('select[name="category"]', 'none')
+    await page.getByRole('button', { name: 'Filter' }).click()
+
+    await expect(page.getByText('Manikur')).toBeVisible()
+    await expect(page.getByText('Potong Rambut'), 'a categorised row').toHaveCount(0)
+  })
+})
