@@ -1,16 +1,21 @@
-import Link from 'next/link'
+// app/dashboard/(shell)/layout.tsx
 import { headers } from 'next/headers'
 import { sql } from 'drizzle-orm'
 import { db } from '@/lib/db'
 import { requirePageOrg } from '@/lib/session'
-import { visibleNav } from '@/lib/nav'
+import { groupedNav } from '@/lib/nav'
 import { auth } from '@/lib/auth'
 import { branchesOf } from '@/lib/branch'
 import { branchLabel } from '@/lib/branch-label'
-import { buttonVariants } from '@/components/ui/button'
-import { BranchSwitcher } from './branch-switcher'
-import { MainNav } from './main-nav'
-import { signOutAction } from './actions'
+import { salonSettings } from '@/lib/service'
+import { themeOf, themeScript, themeVars } from '@/lib/theme'
+import {
+  SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider,
+} from '@/components/ui/sidebar'
+import { AppSidebar } from './app-sidebar'
+import { ShellHeader } from './shell-header'
+import { BranchIdentity, BranchSwitcher } from './branch-switcher'
+import { ThemeApplier } from './theme-applier'
 
 export default async function AppLayout({
   children,
@@ -29,61 +34,63 @@ export default async function AppLayout({
   // label handed front desk and stylists every branch's name, address, phone
   // and lock state on every page — the very table spec §8 guards /branches to
   // keep from them. They get one row, resolved and rendered on the server.
-  const branches = canSwitch
-    ? await branchesOf(session.organizationId)
-    : activeTeamId ? await branchesOf(session.organizationId, activeTeamId) : []
-  // Narrowed for the same reason the non-switching roles get one row: props to
-  // a client component are serialized into the RSC payload of EVERY page,
-  // rendered or not. The switcher needs an id and a label; address, phone and
-  // staffCount are the /branches table's business, not the header's.
-  // The caller's role, read once, decides which links appear. Showing a link
-  // whose page would redirect is worse than showing none -- it reads as a
-  // broken app rather than an unavailable feature.
-  const { rows } = await db.execute(sql`
-    select role from members
-     where user_id = ${session.user.id}
-       and organization_id = ${session.organizationId}`)
-  const navItems = visibleNav((rows[0] as { role?: string })?.role ?? '')
-    .map(({ href, label }) => ({ href, label }))
+  const [branches, settings, { rows: orgRows }, { rows: memberRows }] = await Promise.all([
+    canSwitch
+      ? branchesOf(session.organizationId)
+      : activeTeamId ? branchesOf(session.organizationId, activeTeamId) : Promise.resolve([]),
+    salonSettings(session.organizationId),
+    db.execute(sql`select name, slug from organizations where id = ${session.organizationId}`),
+    // The caller's role, read once, decides which links appear. Showing a link
+    // whose page would redirect is worse than showing none -- it reads as a
+    // broken app rather than an unavailable feature.
+    db.execute(sql`
+      select role from members
+       where user_id = ${session.user.id}
+         and organization_id = ${session.organizationId}`),
+  ])
+  const org = orgRows[0] as { name: string; slug: string }
+  const sections = groupedNav((memberRows[0] as { role?: string })?.role ?? '')
+  const preset = themeOf(settings.theme)
+  const vars = themeVars(preset, settings.brandColor)
 
+  // Narrowed for the same reason the non-switching roles get one row: the
+  // switcher needs an id and a label; address, phone and staffCount are the
+  // /branches table's business, not the sidebar's.
   const branchOptions = branches.map(
     ({ teamId, name, active, withinCap }) => ({ teamId, name, active, withinCap }),
   )
+  const salon = {
+    name: org.name, slug: org.slug,
+    hasLogo: settings.hasLogo, logoVersion: settings.logoVersion,
+  }
+  const branch = canSwitch ? (
+    <BranchSwitcher salon={salon} branches={branchOptions} activeTeamId={activeTeamId} />
+  ) : (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <SidebarMenuButton size="lg" render={<div />}>
+          <BranchIdentity salon={salon} label={branches[0] ? branchLabel(branches[0]) : '—'} />
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  )
+
   return (
-    <div className="flex min-h-full flex-col">
-      {/* print:hidden -- §5.2 asks for a printable receipt, and the receipt page
-          already strips its own chrome. Without this the navigation bar and
-          the branch switcher print across the top of every receipt handed to
-          a customer. */}
-      <header className="flex items-center justify-between border-b px-6 py-3 print:hidden">
-        <div className="flex min-w-0 items-center gap-6 overflow-x-auto">
-          <Link href="/dashboard" className="font-medium">Jelita</Link>
-          <MainNav items={navItems} />
-        </div>
-        <div className="flex shrink-0 items-center gap-4 text-sm">
-          {canSwitch ? (
-            <BranchSwitcher branches={branchOptions} activeTeamId={activeTeamId} />
-          ) : (
-            <span className="text-sm text-muted-foreground">
-              {branches[0] ? branchLabel(branches[0]) : '—'}
-            </span>
-          )}
-          <Link href="/dashboard/profile" className="whitespace-nowrap underline">
-            {session.user.name}
-          </Link>
-          {/* The (auth) layout bounces a signed-in user away from /login, so
-              this is the only reachable way out of the app. */}
-          <form action={signOutAction}>
-            <button
-              type="submit"
-              className={buttonVariants({ variant: 'outline', size: 'sm' })}
-            >
-              Keluar
-            </button>
-          </form>
-        </div>
-      </header>
-      <main className="flex-1 p-6">{children}</main>
-    </div>
+    <SidebarProvider>
+      {/* First in the stream so <html> carries the theme before the shell
+          paints -- no light-to-dark flash, and portalled menus inherit it.
+          Content is JSON-encoded in themeScript, never raw. */}
+      <script dangerouslySetInnerHTML={{ __html: themeScript(preset.mode, vars) }} />
+      <ThemeApplier mode={preset.mode} vars={vars} />
+      <AppSidebar
+        sections={sections}
+        userName={session.user.name}
+        branch={branch}
+      />
+      <SidebarInset>
+        <ShellHeader sections={sections} />
+        <div className="flex-1 p-6">{children}</div>
+      </SidebarInset>
+    </SidebarProvider>
   )
 }

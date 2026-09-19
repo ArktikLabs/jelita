@@ -25,8 +25,11 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // The e2e suite builds here so it does not fight a running dev server for
     // .next (Next's dev lock is scoped to the output directory). Without this,
-    // lint walks the build output after every e2e run.
+    // lint walks the build output after every e2e run. Playwright actually
+    // builds into per-port .next-e2e-<port> directories, so the glob must
+    // cover those too.
     ".next-e2e/**",
+    ".next-e2e*/**",
     // Playwright's failure artefacts: traces, screenshots, error context.
     "test-results/**",
     "playwright-report/**",

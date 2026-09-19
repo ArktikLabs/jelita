@@ -1452,3 +1452,208 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - §9 errors: Task 7 (Indonesian error), Task 1 and 2 (invalid accent or theme falls back, never reaches CSS). ✔
 - §10 tests: Tasks 1, 2, 3, 8. ✔
 - §11 rollout: default `ivory`, no backfill. ✔
+
+---
+
+### Task 9: TeamSwitcher-style branch switcher in the sidebar header
+
+Added 2026-09-19 after the owner asked for the branch switcher to look like the
+shadcn sidebar-07 block's `TeamSwitcher`. Spec §3 item 1 was amended to match.
+Runs after Task 8 so the shell e2e spec exists to cover it.
+
+**Files:**
+- Modify: `app/dashboard/(shell)/branch-switcher.tsx` (whole file)
+- Modify: `app/dashboard/(shell)/app-sidebar.tsx` (header and props)
+- Modify: `app/dashboard/(shell)/layout.tsx` (what it passes)
+- Modify: `tests/e2e/branch.spec.ts` and `tests/e2e/shell.spec.ts` only if an assertion targets the old `Select`
+
+**Interfaces:**
+- Consumes: `switchBranchAction` (unchanged), `branchLabel`, `BranchRow`, shadcn `DropdownMenu*`, `SidebarMenu*`, `useSidebar`.
+- Produces:
+  - `BranchIdentity` props: `{ salon: { name: string; slug: string; hasLogo: boolean; logoVersion: string }; label: string; chevron?: boolean }` — the presentational row.
+  - `BranchSwitcher` props: `{ salon: <same shape>; branches: Pick<BranchRow, 'teamId' | 'name' | 'active' | 'withinCap'>[]; activeTeamId: string | null }`.
+  - `AppSidebar` prop `branchSwitcher` is renamed `branch: React.ReactNode` and now renders in `SidebarHeader`; the `salon` prop is removed from `AppSidebar` (the header row owns it).
+
+- [ ] **Step 1: Rewrite `branch-switcher.tsx`**
+
+```tsx
+// app/dashboard/(shell)/branch-switcher.tsx
+'use client'
+
+import { startTransition, useActionState } from 'react'
+import { Check, ChevronsUpDown } from 'lucide-react'
+import { switchBranchAction } from './actions'
+import type { FormState } from '@/lib/form-state'
+import type { BranchRow } from '@/lib/branch'
+import { branchLabel } from '@/lib/branch-label'
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar'
+
+const initial: FormState = {}
+
+type Salon = { name: string; slug: string; hasLogo: boolean; logoVersion: string }
+
+/**
+ * The header row itself: salon mark, active branch in bold, salon name under
+ * it. Rendered inside a SidebarMenuButton so the switcher and the static
+ * version for non-switching roles look identical; only the chevron and the
+ * menu differ.
+ */
+export function BranchIdentity({ salon, label, chevron = false }: {
+  salon: Salon
+  label: string
+  chevron?: boolean
+}) {
+  return (
+    <>
+      {salon.hasLogo ? (
+        // Served from object storage through our own route; next/image would
+        // add an optimiser in front of a 50 KB file for nothing.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={`/api/salon/logo?salon=${salon.slug}&v=${salon.logoVersion}`}
+          alt=""
+          className="size-8 rounded-lg object-contain"
+        />
+      ) : (
+        <span className="flex size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-sm font-semibold">
+          {salon.name.charAt(0).toUpperCase() || 'J'}
+        </span>
+      )}
+      <span className="grid flex-1 text-left text-sm leading-tight">
+        <span className="truncate font-medium">{label}</span>
+        <span className="truncate text-xs text-muted-foreground">{salon.name}</span>
+      </span>
+      {chevron && <ChevronsUpDown className="ml-auto size-4" />}
+    </>
+  )
+}
+
+/**
+ * Rendered only for roles that hold branch:['switch'] — the layout renders a
+ * static BranchIdentity for everyone else, so the list never reaches a client
+ * component that could not act on it.
+ */
+export function BranchSwitcher({ salon, branches, activeTeamId }: {
+  salon: Salon
+  // Exactly what an option needs: an id and what branchLabel reads. Anything
+  // wider would ride into the RSC payload of every page in this layout.
+  branches: Pick<BranchRow, 'teamId' | 'name' | 'active' | 'withinCap'>[]
+  activeTeamId: string | null
+}) {
+  const [state, action, pending] = useActionState(switchBranchAction, initial)
+  const { isMobile } = useSidebar()
+  const active = branches.find((b) => b.teamId === activeTeamId)
+  const label = active ? branchLabel(active) : 'Pilih cabang'
+
+  // Built and dispatched directly rather than via a form: the menu item is
+  // the whole gesture, and the action guards itself server-side.
+  const choose = (teamId: string) => {
+    if (teamId === activeTeamId) return
+    const fd = new FormData()
+    fd.set('teamId', teamId)
+    startTransition(() => action(fd))
+  }
+
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<SidebarMenuButton size="lg" disabled={pending} aria-label="Ganti cabang" />}
+          >
+            <BranchIdentity salon={salon} label={label} chevron />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            side={isMobile ? 'bottom' : 'right'}
+            sideOffset={4}
+            className="w-(--anchor-width) min-w-56"
+          >
+            <DropdownMenuLabel className="text-xs text-muted-foreground">Cabang</DropdownMenuLabel>
+            {branches.map((b) => (
+              <DropdownMenuItem key={b.teamId} onClick={() => choose(b.teamId)} className="gap-2 p-2">
+                <span className="flex size-6 items-center justify-center rounded-sm border text-xs">
+                  {b.name.charAt(0).toUpperCase()}
+                </span>
+                <span className="truncate">{branchLabel(b)}</span>
+                {b.teamId === activeTeamId && <Check className="ml-auto size-4" />}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {state.error && <p className="px-2 pt-1 text-xs text-destructive">{state.error}</p>}
+      </SidebarMenuItem>
+    </SidebarMenu>
+  )
+}
+```
+
+If `DropdownMenuContent` in `components/ui/dropdown-menu.tsx` does not accept `side`/`sideOffset`/`align` by those names (base-ui uses them on its `Positioner`), read that file and pass whatever it forwards; the generated component in this repo already spreads positioner props. If `w-(--anchor-width)` is not recognised by this Tailwind, drop it and keep `min-w-56`.
+
+- [ ] **Step 2: Move the row into the sidebar header**
+
+In `app/dashboard/(shell)/app-sidebar.tsx`:
+
+- Change the props type: remove `salon`, rename `branchSwitcher: React.ReactNode` to `branch: React.ReactNode`.
+- Replace the whole `<SidebarHeader>…</SidebarHeader>` block (the `<Link href="/dashboard">` with the logo and salon name) with:
+
+```tsx
+      <SidebarHeader>{branch}</SidebarHeader>
+```
+
+- In `<SidebarFooter>`, delete the line `<div className="px-2 pb-1">{branchSwitcher}</div>`; the footer keeps only the user `SidebarMenu`.
+- Remove the now-unused `Link` import only if nothing else in the file uses it (the nav items still use `Link`, so it stays).
+
+- [ ] **Step 3: Update the layout**
+
+In `app/dashboard/(shell)/layout.tsx`:
+
+- Change the import line for the switcher to `import { BranchIdentity, BranchSwitcher } from './branch-switcher'`.
+- Replace the `const branchSwitcher = canSwitch ? (...) : (...)` block with:
+
+```tsx
+  const salon = {
+    name: org.name, slug: org.slug,
+    hasLogo: settings.hasLogo, logoVersion: settings.logoVersion,
+  }
+  const branch = canSwitch ? (
+    <BranchSwitcher salon={salon} branches={branchOptions} activeTeamId={activeTeamId} />
+  ) : (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <SidebarMenuButton size="lg" className="pointer-events-none">
+          <BranchIdentity salon={salon} label={branches[0] ? branchLabel(branches[0]) : '—'} />
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  )
+```
+
+- Add `SidebarMenu, SidebarMenuButton, SidebarMenuItem` to the import from `@/components/ui/sidebar`.
+- In the `<AppSidebar …/>` call, delete the `salon={{ … }}` prop and change `branchSwitcher={branchSwitcher}` to `branch={branch}`.
+
+- [ ] **Step 4: Type-check, lint, look at it**
+
+Run: `pnpm exec tsc --noEmit -p tsconfig.json && pnpm exec eslint app/dashboard`
+Expected: no errors.
+
+Run: `pnpm dev`, sign in as owner. Expected: the top of the sidebar shows the salon initial or logo, the active branch name in bold, the salon name below, and a chevron; clicking opens a menu titled "Cabang" listing every branch with the active one ticked; picking another switches the branch (the row updates after the action completes) and the page data follows. Sign in as a stylist or front desk: same row, no chevron, not clickable. On a phone width, the menu opens below the row inside the drawer.
+
+- [ ] **Step 5: Run the covering e2e specs**
+
+Run: `pnpm test:e2e tests/e2e/branch.spec.ts tests/e2e/shell.spec.ts tests/e2e/ui.spec.ts`
+Expected: PASS. If `branch.spec.ts` drove the old `Select` (look for `selectOption` or a `SelectTrigger` locator around the switch test), change it to: click `getByRole('button', { name: 'Ganti cabang' })`, then click `getByRole('menuitem', { name: /<branch name>/ })`, and keep the assertions that follow. Record the change in the report.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/dashboard/\(shell\)/branch-switcher.tsx app/dashboard/\(shell\)/app-sidebar.tsx \
+        app/dashboard/\(shell\)/layout.tsx tests/e2e
+git commit -m "feat(shell): branch switcher as a TeamSwitcher-style header row
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```

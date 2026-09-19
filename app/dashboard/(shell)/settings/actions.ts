@@ -9,6 +9,7 @@ import { parsePointsValue } from '@/lib/customer'
 import { imageType, logoKey, putObject } from '@/lib/storage'
 import { salonSettings } from '@/lib/service'
 import { type FormState } from '@/lib/form-state'
+import { isThemeKey } from '@/lib/theme'
 
 /**
  * Moved here from /services with the card: currency was always a salon-wide
@@ -177,6 +178,12 @@ export async function setBrandingAction(
     return { error: 'Warna harus format #rrggbb, misalnya #1a2b3c.' }
   }
 
+  const theme = String(formData.get('theme') ?? '')
+  if (!isThemeKey(theme)) {
+    // Also a check constraint in the database. This one says so in Indonesian.
+    return { error: 'Pilih salah satu tema yang tersedia.' }
+  }
+
   const file = formData.get('logo')
   if (file instanceof File && file.size > 0) {
     if (file.size > MAX_LOGO_BYTES) return { error: 'Logo maksimal 200 KB.' }
@@ -194,8 +201,11 @@ export async function setBrandingAction(
   }
 
   await db.execute(sql`
-    update salon_profiles set brand_color = ${color || null}, updated_at = now()
+    update salon_profiles
+       set brand_color = ${color || null}, theme = ${theme}, updated_at = now()
      where organization_id = ${organizationId}`)
-  revalidatePath('/dashboard/settings')
+  // The shell layout reads the theme; the page path alone would leave the
+  // sidebar and <html> on the old preset until a hard reload.
+  revalidatePath('/dashboard', 'layout')
   return { done: true }
 }

@@ -2,7 +2,9 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+/* .dark is the class shadcn's docs assume; data-theme is what the dashboard
+   shell sets on <html> from the salon's preset (lib/theme.ts). Both work. */
+@custom-variant dark (&:is(.dark *, [data-theme="dark"] *));
 
 @theme inline {
   --color-background: var(--background);
@@ -92,7 +94,7 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
-.dark {
+.dark, [data-theme="dark"] {
   /* The dark steps are SELECTED for the dark surface, not an automatic flip
      of the light ones. */
   --viz-series-1: #3987e5;
@@ -140,5 +142,17 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+/* The receipt page prints from inside the dashboard shell. A `print:hidden`
+   class on <Sidebar> only reaches its inner container, not the wrapper that
+   reserves 16rem of width, and not the mobile Sheet at all -- so the chrome
+   is hidden here by slot instead. Both the desktop wrapper and the mobile
+   SheetContent carry data-slot="sidebar". */
+@media print {
+  [data-slot="sidebar"],
+  [data-slot="sheet-overlay"] {
+    display: none !important;
   }
 }

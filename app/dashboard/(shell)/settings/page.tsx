@@ -44,6 +44,7 @@ export default async function SettingsPage() {
         hasLogo={salon.hasLogo}
         logoVersion={salon.logoVersion}
         brandColor={salon.brandColor}
+        theme={salon.theme}
       />
     </div>
   )

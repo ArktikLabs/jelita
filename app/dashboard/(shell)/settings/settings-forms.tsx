@@ -16,6 +16,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
+import { THEMES, accentForeground, type ThemeKey } from '@/lib/theme'
 
 const initial: FormState = {}
 
@@ -147,31 +148,35 @@ export function SlotGridCard({ slotMinutes }: { slotMinutes: number }) {
 }
 
 /**
- * PRD §7's white-label line: "salon name, logo, brand color, currency in
- * settings -- demo can be re-skinned per prospect in minutes."
- *
- * multipart, because a file cannot ride in a normal action payload.
+ * Logo, theme preset and accent colour. Multipart because a file cannot ride
+ * in a normal action payload, so the preset and colour travel in the same
+ * form and the same action as the logo.
  */
 export function BrandingCard({
-  slug, hasLogo, logoVersion, brandColor,
+  slug, hasLogo, logoVersion, brandColor, theme,
 }: {
   slug: string
   hasLogo: boolean
   logoVersion: string
   brandColor: string | null
+  theme: ThemeKey
 }) {
   const [state, action, pending] = useActionState(setBrandingAction, initial)
+  // Controlled so the colour well, the hex box and the reset button agree.
+  const [accent, setAccent] = useState(brandColor ?? '')
+  const [preset, setPreset] = useState<ThemeKey>(theme)
+  const previewAccent = accent || THEMES.find((t) => t.key === preset)!.accent
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Tampilan</CardTitle>
         <CardDescription>
-          Logo dan warna yang dipakai pada struk dan halaman pemesanan.
+          Logo, tema dan warna aksen yang dipakai di dasbor, struk dan halaman pemesanan.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <form action={action} className="space-y-4">
+        <form action={action} className="space-y-5">
           {state.error && (
             <Alert variant="destructive">
               <AlertDescription>{state.error}</AlertDescription>
@@ -180,6 +185,7 @@ export function BrandingCard({
           {state.done && (
             <Alert><AlertDescription>Tampilan disimpan.</AlertDescription></Alert>
           )}
+
           {hasLogo && (
             // eslint-disable-next-line @next/next/no-img-element -- served
             // from object storage through our own route; next/image would add
@@ -201,16 +207,79 @@ export function BrandingCard({
             />
             <p className="text-xs text-muted-foreground">PNG, JPEG atau WebP. Maksimal 200 KB.</p>
           </div>
+
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">Tema</legend>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              {THEMES.map((t) => {
+                const surface = t.mode === 'dark' ? '#252525' : '#ffffff'
+                const side = t.mode === 'dark' ? '#343434' : '#f4f4f5'
+                const text = t.mode === 'dark' ? '#e5e5e5' : '#3f3f46'
+                const swatchAccent = t.key === preset ? previewAccent : t.accent
+                return (
+                  <label
+                    key={t.key}
+                    className="cursor-pointer rounded-lg border p-2 has-checked:border-primary has-checked:ring-2 has-checked:ring-primary/30 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2"
+                  >
+                    <input
+                      type="radio"
+                      name="theme"
+                      value={t.key}
+                      defaultChecked={preset === t.key}
+                      onChange={() => setPreset(t.key)}
+                      className="sr-only"
+                    />
+                    {/* A miniature of the shell: sidebar strip, a heading line
+                        and one accent button. Enough to tell presets apart. */}
+                    <div
+                      aria-hidden
+                      className="flex h-16 overflow-hidden rounded-md border"
+                      style={{ background: surface, borderColor: side }}
+                    >
+                      <div className="w-1/3" style={{ background: side }} />
+                      <div className="flex flex-1 flex-col gap-1.5 p-2">
+                        <div className="h-1.5 w-3/4 rounded" style={{ background: text, opacity: 0.5 }} />
+                        <div className="h-1.5 w-1/2 rounded" style={{ background: text, opacity: 0.3 }} />
+                        <div
+                          className="mt-auto h-4 w-10 rounded"
+                          style={{ background: swatchAccent, color: accentForeground(swatchAccent) }}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-1.5 text-center text-xs">{t.label}</div>
+                  </label>
+                )
+              })}
+            </div>
+          </fieldset>
+
           <div className="space-y-2">
-            <Label htmlFor="brandColor">Warna utama</Label>
-            <input
-              id="brandColor"
-              name="brandColor"
-              defaultValue={brandColor ?? ''}
-              placeholder="#1a2b3c"
-              className="flex h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-xs"
-            />
+            <Label htmlFor="brandColor">Warna aksen</Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                aria-label="Pilih warna aksen"
+                value={accent || previewAccent}
+                onChange={(e) => setAccent(e.target.value)}
+                className="h-9 w-12 cursor-pointer rounded-md border bg-transparent p-1"
+              />
+              <input
+                id="brandColor"
+                name="brandColor"
+                value={accent}
+                onChange={(e) => setAccent(e.target.value)}
+                placeholder={previewAccent}
+                className="flex h-9 w-32 rounded-md border bg-transparent px-3 py-1 font-mono text-sm shadow-xs"
+              />
+              <Button type="button" variant="ghost" size="sm" onClick={() => setAccent('')} disabled={!accent}>
+                Pakai warna tema
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Kosongkan untuk memakai warna bawaan tema. Warna ini juga dipakai di struk dan halaman pemesanan.
+            </p>
           </div>
+
           <Button type="submit" variant="outline" disabled={pending}>
             {pending ? 'Menyimpan…' : 'Simpan tampilan'}
           </Button>

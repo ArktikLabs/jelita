@@ -199,11 +199,27 @@ test.describe('the printed receipt', () => {
     // own chrome; the shell header has to strip itself, and nothing else in
     // the suite would notice if it stopped.
     //
-    // getByRole('banner'), not locator('header'): the receipt has a <header>
-    // of its own, so the bare tag matches two elements.
+    // locator('main > header'), not getByRole('banner'): the shell header
+    // lives inside SidebarInset's <main>, so it is not a banner landmark. The
+    // receipt page's own <header> sits deeper inside the content div, so
+    // `main > header` picks out the shell header alone.
     await page.context().addCookies(await ownerCookies())
     await page.goto('/dashboard')
-    await expect(page.getByRole('banner')).toHaveClass(/print:hidden/)
+    await expect(page.locator('main > header')).toHaveClass(/print:hidden/)
+  })
+
+  test('leaves no sidebar column on the printed page', async ({ page }) => {
+    // The class assertion above cannot fail for the right reason: a class on
+    // <Sidebar> only reaches its inner container, and the 16rem gap that
+    // reserves the column lives on a sibling. Only measuring the page proves
+    // the receipt starts at the left edge under print media.
+    await page.context().addCookies(await ownerCookies())
+    await page.goto('/dashboard')
+    await page.emulateMedia({ media: 'print' })
+    const box = await page.locator('main').boundingBox()
+    expect(box, 'main is laid out').not.toBeNull()
+    expect(box!.x, 'no sidebar column reserved beside the receipt').toBe(0)
+    await expect(page.locator('main > header')).toBeHidden()
   })
 })
 
@@ -595,7 +611,7 @@ test.describe.serial('branding', () => {
     await page.locator('#add').selectOption(serviceId)
     await page.getByRole('button', { name: 'Selesaikan pembayaran' }).click()
     await page.waitForURL('**/dashboard/transactions/**')
-    await expect(page.locator('img[src*="/api/salon/logo"]')).toBeVisible()
+    await expect(page.locator('main img[src*="/api/salon/logo"]')).toBeVisible()
 
     await page.goto(`http://poscheck.localhost:${E2E_PORT}/book`)
     await expect(page.locator('img[src*="/api/salon/logo"]')).toBeVisible()

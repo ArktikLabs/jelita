@@ -5,6 +5,7 @@ import {
   clampPage, orderBy, paginate, toResult,
   type FilterRule, type ListQuery, type ListResult, type ListSpec,
 } from './list-query'
+import { DEFAULT_THEME, isThemeKey, type ThemeKey } from './theme'
 
 export type ServiceRow = {
   id: string
@@ -254,7 +255,7 @@ export async function salonCurrency(organizationId: string): Promise<CurrencyCod
 export async function salonSettings(organizationId: string) {
   const { rows } = await db.execute(sql`
     select currency, slot_minutes, logo_key, brand_color, auto_close_shift,
-           points_kind, points_value,
+           points_kind, points_value, theme,
            to_char(logo_updated_at, 'YYYYMMDDHH24MISS') as logo_version
       from salon_profiles where organization_id = ${organizationId}`)
   const r = rows[0] as Record<string, unknown> | undefined
@@ -266,6 +267,9 @@ export async function salonSettings(organizationId: string) {
     // what lets that route cache immutably.
     logoVersion: (r?.logo_version as string) ?? '',
     brandColor: (r?.brand_color as string) ?? null,
+    // The constraint makes a non-key impossible; the guard is for a row that
+    // predates the column in a test that bypassed migrations.
+    theme: (isThemeKey(r?.theme) ? r.theme : DEFAULT_THEME) as ThemeKey,
     autoCloseShift: Boolean(r?.auto_close_shift),
     // Null means the salon runs no loyalty scheme -- distinct from zero.
     pointsKind: (r?.points_kind as string) ?? null,

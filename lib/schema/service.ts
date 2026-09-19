@@ -19,6 +19,10 @@ export const salonProfiles = pgTable('salon_profiles', {
   logoKey: text('logo_key'),
   logoUpdatedAt: timestamp('logo_updated_at', { withTimezone: true }),
   brandColor: text('brand_color'),
+  // Which of the five presets in lib/theme.ts paints the dashboard for every
+  // member of this salon. Defaulted to the look the app had before presets
+  // existed; constrained to the known keys in the migration.
+  theme: text('theme').notNull().default('ivory'),
   // The receipt counter. Bumped by `update ... returning` at completion, which
   // is one statement and therefore serialises per salon without an explicit
   // lock -- two sales cannot be handed the same number.

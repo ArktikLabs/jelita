@@ -1,11 +1,29 @@
 import { roles, type SalonRole } from './permissions'
 
+export type NavGroup = 'Operasional' | 'Keuangan' | 'Katalog' | 'Pengelolaan'
+
+/** Icon NAMES, resolved to lucide components on the client (app-sidebar.tsx).
+ *  Strings here keep the server payload a list of strings, not components. */
+export type NavIcon =
+  | 'dashboard' | 'pos' | 'calendar' | 'customers' | 'receipt' | 'percent'
+  | 'wallet' | 'scissors' | 'package' | 'staff' | 'branch' | 'bell' | 'settings'
+
 export type NavItem = {
   href: string
   label: string
+  icon: NavIcon
+  /** Absent means the item sits above every group (Dasbor). */
+  group?: NavGroup
   /** The permission the destination page's own guard requires. */
   require?: { resource: string; action: string }
 }
+
+/** What crosses to the client: nothing a stylist's browser has no use for. */
+export type ClientNavItem = { href: string; label: string; icon: NavIcon }
+export type NavSection = { label: NavGroup | null; items: ClientNavItem[] }
+
+/** Render order of the groups. Daily work first, rare admin last. */
+export const NAV_GROUPS: readonly NavGroup[] = ['Operasional', 'Keuangan', 'Katalog', 'Pengelolaan']
 
 /**
  * Each entry's `require` mirrors the guard on the page it links to. Deriving
@@ -15,18 +33,19 @@ export type NavItem = {
  * click it.
  */
 export const NAV: NavItem[] = [
-  { href: '/dashboard', label: 'Dasbor' },
-  { href: '/dashboard/bookings', label: 'Janji temu', require: { resource: 'booking', action: 'read' } },
-  { href: '/dashboard/transactions', label: 'Transaksi', require: { resource: 'pos', action: 'checkout' } },
-  { href: '/dashboard/commissions', label: 'Komisi', require: { resource: 'commission', action: 'read:own' } },
-  { href: '/dashboard/payroll', label: 'Penggajian', require: { resource: 'payroll', action: 'read' } },
-  { href: '/dashboard/notifications', label: 'Notifikasi', require: { resource: 'notification', action: 'read' } },
-  { href: '/dashboard/customers', label: 'Pelanggan', require: { resource: 'customer', action: 'read' } },
-  { href: '/dashboard/services', label: 'Layanan', require: { resource: 'service', action: 'update' } },
-  { href: '/dashboard/products', label: 'Produk', require: { resource: 'product', action: 'read' } },
-  { href: '/dashboard/staff', label: 'Staf', require: { resource: 'staff', action: 'read' } },
-  { href: '/dashboard/branches', label: 'Cabang', require: { resource: 'branch', action: 'update' } },
-  { href: '/dashboard/settings', label: 'Pengaturan', require: { resource: 'settings', action: 'update' } },
+  { href: '/dashboard', label: 'Dasbor', icon: 'dashboard' },
+  { href: '/dashboard/pos', label: 'Kasir', icon: 'pos', group: 'Operasional', require: { resource: 'pos', action: 'checkout' } },
+  { href: '/dashboard/bookings', label: 'Janji temu', icon: 'calendar', group: 'Operasional', require: { resource: 'booking', action: 'read' } },
+  { href: '/dashboard/customers', label: 'Pelanggan', icon: 'customers', group: 'Operasional', require: { resource: 'customer', action: 'read' } },
+  { href: '/dashboard/transactions', label: 'Transaksi', icon: 'receipt', group: 'Keuangan', require: { resource: 'pos', action: 'checkout' } },
+  { href: '/dashboard/commissions', label: 'Komisi', icon: 'percent', group: 'Keuangan', require: { resource: 'commission', action: 'read:own' } },
+  { href: '/dashboard/payroll', label: 'Penggajian', icon: 'wallet', group: 'Keuangan', require: { resource: 'payroll', action: 'read' } },
+  { href: '/dashboard/services', label: 'Layanan', icon: 'scissors', group: 'Katalog', require: { resource: 'service', action: 'update' } },
+  { href: '/dashboard/products', label: 'Produk', icon: 'package', group: 'Katalog', require: { resource: 'product', action: 'read' } },
+  { href: '/dashboard/staff', label: 'Staf', icon: 'staff', group: 'Pengelolaan', require: { resource: 'staff', action: 'read' } },
+  { href: '/dashboard/branches', label: 'Cabang', icon: 'branch', group: 'Pengelolaan', require: { resource: 'branch', action: 'update' } },
+  { href: '/dashboard/notifications', label: 'Notifikasi', icon: 'bell', group: 'Pengelolaan', require: { resource: 'notification', action: 'read' } },
+  { href: '/dashboard/settings', label: 'Pengaturan', icon: 'settings', group: 'Pengelolaan', require: { resource: 'settings', action: 'update' } },
 ]
 
 /**
@@ -46,4 +65,22 @@ export function visibleNav(roleCsv: string): NavItem[] {
   }
   return NAV.filter((item) =>
     !item.require || granted.has(`${item.require.resource}:${item.require.action}`))
+}
+
+/**
+ * The visible items in sidebar order: ungrouped first (label null), then each
+ * group in NAV_GROUPS order. A group the role cannot see anything in is
+ * omitted rather than rendered as an empty heading.
+ */
+export function groupedNav(roleCsv: string): NavSection[] {
+  const visible = visibleNav(roleCsv)
+  const strip = ({ href, label, icon }: NavItem): ClientNavItem => ({ href, label, icon })
+  const sections: NavSection[] = []
+  const top = visible.filter((i) => !i.group).map(strip)
+  if (top.length) sections.push({ label: null, items: top })
+  for (const group of NAV_GROUPS) {
+    const items = visible.filter((i) => i.group === group).map(strip)
+    if (items.length) sections.push({ label: group, items })
+  }
+  return sections
 }

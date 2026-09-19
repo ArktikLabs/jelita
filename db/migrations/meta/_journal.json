@@ -253,6 +253,13 @@
       "when": 1788937221394,
       "tag": "0035_audit_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1789790476470,
+      "tag": "0036_salon_theme",
+      "breakpoints": true
     }
   ]
 }

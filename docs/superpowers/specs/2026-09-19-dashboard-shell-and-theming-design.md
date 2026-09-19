@@ -40,7 +40,8 @@ desk on tablets, stylists on phones. The shell has to serve all three equally.
 - Theming the public booking page and receipts beyond the accent colour they
   already read from `brand_color`.
 - A collapsible icon rail on desktop. The sidebar is either open (wide) or a
-  drawer (narrow).
+  drawer (narrow). Re-confirmed by the owner on 2026-09-19 when the header
+  switcher was amended.
 
 ## 3. Shell layout
 
@@ -52,15 +53,21 @@ not custom code.
 
 Sidebar contents, top to bottom:
 
-1. **Header:** salon logo when one is uploaded (via the existing
-   `/api/salon/logo` route), otherwise a one-letter mark, plus the salon name.
+1. **Header: the branch switcher**, in the shape of the shadcn sidebar-07
+   block's `TeamSwitcher` (amended 2026-09-19, owner's request). One row: a
+   square showing the salon logo when one is uploaded (via the existing
+   `/api/salon/logo` route) or the salon's initial, a bold line with the
+   active branch's label (`branchLabel`, so "— Nonaktif" / "— Terkunci"
+   still show), and a small line with the salon name. For roles holding
+   `branch:switch` the row is a dropdown trigger listing every branch, the
+   active one ticked; picking one calls the existing `switchBranchAction`.
+   Other roles get the same row rendered static, and never receive the list.
 2. **Navigation:** the grouped items from §4. Group labels are rendered with
    `SidebarGroupLabel`; a group with no visible items for the current role is
    not rendered.
-3. **Footer:** the existing `BranchSwitcher` (or the single-branch label for
-   roles without `branch:switch`), then a user row showing the member's name
-   that opens a dropdown menu with **Profil** (`/dashboard/profile`) and
-   **Keluar** (the existing `signOutAction` form).
+3. **Footer:** a user row showing the member's name that opens a dropdown
+   menu with **Profil** (`/dashboard/profile`) and **Keluar** (the existing
+   `signOutAction` form).
 
 Above the page content, `SidebarInset` holds a slim header: the
 `SidebarTrigger` hamburger (visible below `md` only) and the current page's
@@ -90,8 +97,8 @@ client from a fixed map so the server payload stays strings).
 | Pengelolaan | Staf, Cabang, Notifikasi, Pengaturan | `staff:read`, `branch:update`, `notification:read`, `settings:update` |
 
 Kasir links to `/dashboard/pos` and mirrors the guard on that page. A
-stylist, holding only booking and own-commission reads, sees Dasbor, Janji
-temu and Komisi with two group labels.
+stylist, holding booking, customer and own-commission reads, sees Dasbor,
+Janji temu, Pelanggan and Komisi under two group labels.
 
 The active-item rule is unchanged: exact match or prefix on a `/` boundary.
 
@@ -128,9 +135,10 @@ default accent applies.
 ### 5.3 What the accent drives
 
 The accent sets these tokens: `--primary`, `--ring`, `--sidebar-primary`,
-and the matching `-foreground` tokens. The foreground is computed as black
-or white from the accent's relative luminance (WCAG formula, threshold 0.5)
-so a pale accent never yields white text on a yellow button. `--accent`,
+and the matching `-foreground` tokens. The foreground is black or white,
+whichever has the higher WCAG contrast ratio against the accent, so a pale
+accent never yields white text on a yellow button and a mid-blue gets black
+text rather than a 2.5:1 white. `--accent`,
 `--secondary`, `--muted` and the surface tokens stay on the existing light
 or dark sets in `app/globals.css`; the preset's `mode` decides which set.
 
@@ -209,14 +217,14 @@ constraint change plus a constant, which is the intended shape.
   override when present and the preset default when null; every preset's
   default accent clears the WCAG 4.5:1 ratio against its own surface.
 - `tests/nav.test.ts` (extend if one exists, else add): groups with no
-  visible items are dropped; stylist role yields Dasbor, Janji temu, Komisi;
+  visible items are dropped; stylist role yields Dasbor, Janji temu, Pelanggan, Komisi;
   Kasir appears for a role holding `pos:checkout`.
 - `tests/salon.db.test.ts`: the theme column rejects an unknown key and the
   branding action round-trips a preset plus accent.
 - One Playwright flow: owner selects Charcoal and a custom accent, saves; a
   stylist in the same salon loads the dashboard and the document root
   carries `data-theme="dark"` and the accent variable. Mobile viewport:
-  the hamburger opens the drawer and the drawer lists the stylist's three
+  the hamburger opens the drawer and the drawer lists the stylist's four
   items.
 
 ## 11. Rollout
@@ -224,3 +232,8 @@ constraint change plus a constant, which is the intended shape.
 Ships as one change. Existing salons land on Ivory with their current
 `brand_color` as accent, so the only visible difference for them is the
 sidebar itself.
+
+A salon that already set a brand colour will see it become the dashboard's
+primary colour on deploy day: buttons, focus rings and the active sidebar
+item take the accent, not just the receipt and booking page. That is §5.2
+working as designed, but it is a visible change, not a no-op.
