@@ -54,3 +54,4 @@ next-env.d.ts
 # of them, which is how they reached a commit once.
 test-results/
 playwright-report/
+.superpowers/
