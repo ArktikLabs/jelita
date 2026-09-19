@@ -84,3 +84,14 @@ export function groupedNav(roleCsv: string): NavSection[] {
   }
   return sections
 }
+
+/**
+ * Which nav item a pathname belongs to. Prefix match so /customers/<id> still
+ * highlights Pelanggan, guarded on a `/` boundary so /services never lights
+ * up /service-x. Dasbor is exact only: every dashboard page starts with
+ * /dashboard, and lighting it everywhere told the user nothing.
+ */
+export function isActive(pathname: string, href: string) {
+  if (href === '/dashboard') return pathname === href
+  return pathname === href || pathname.startsWith(`${href}/`)
+}

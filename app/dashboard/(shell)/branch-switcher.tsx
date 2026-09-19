@@ -120,7 +120,9 @@ export function BranchSwitcher({ salon, branches, activeTeamId }: {
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-        {state.error && <p className="px-2 pt-1 text-xs text-destructive">{state.error}</p>}
+        {state.error && (
+          <p role="alert" className="px-2 pt-1 text-xs text-destructive">{state.error}</p>
+        )}
       </SidebarMenuItem>
     </SidebarMenu>
   )

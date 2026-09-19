@@ -16,7 +16,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select'
-import { THEMES, accentForeground, type ThemeKey } from '@/lib/theme'
+import { HEX_RE, THEMES, accentForeground, type ThemeKey } from '@/lib/theme'
 
 const initial: FormState = {}
 
@@ -165,7 +165,10 @@ export function BrandingCard({
   // Controlled so the colour well, the hex box and the reset button agree.
   const [accent, setAccent] = useState(brandColor ?? '')
   const [preset, setPreset] = useState<ThemeKey>(theme)
-  const previewAccent = accent || THEMES.find((t) => t.key === preset)!.accent
+  // Only a complete #rrggbb drives the preview: a half-typed value would feed
+  // NaN into accentForeground and snap the colour well to black mid-keystroke.
+  // The server re-validates on submit regardless.
+  const previewAccent = HEX_RE.test(accent) ? accent : THEMES.find((t) => t.key === preset)!.accent
 
   return (
     <Card>

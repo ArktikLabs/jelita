@@ -123,3 +123,20 @@ test('a theme key the form does not know is refused in Indonesian, not as a 500'
   await page.getByRole('button', { name: 'Simpan tampilan' }).click()
   await expect(page.getByText('Pilih salah satu tema yang tersedia.')).toBeVisible()
 })
+
+test('signing out from a dark salon leaves /login light', async ({ browser }) => {
+  // Spec §6.3: the shell removes data-theme on unmount so a soft navigation
+  // to /login is not left dark. Own login so the shared owner session, which
+  // other tests still read, is not the one being revoked.
+  const ctx = await browser.newContext()
+  const fresh = await signIn(`owner@${DOMAIN}`, PW)
+  await ctx.addCookies((await fresh.storageState()).cookies)
+  const page = await ctx.newPage()
+  await page.goto('/dashboard')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.getByRole('button', { name: /Shell Owner/ }).click()
+  await page.getByRole('menuitem', { name: 'Keluar' }).click()
+  await expect(page).toHaveURL(/\/login/)
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme')
+  await ctx.close()
+})

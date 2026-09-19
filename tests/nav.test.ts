@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NAV, groupedNav, visibleNav } from '../lib/nav'
+import { NAV, groupedNav, isActive, visibleNav } from '../lib/nav'
 
 /**
  * Which links which role sees, and how they are grouped. Pure: the role
@@ -47,5 +47,19 @@ describe('groupedNav', () => {
 
   it('every item has an icon', () => {
     for (const item of NAV) expect(item.icon).toBeTruthy()
+  })
+})
+
+describe('isActive', () => {
+  it('matches exactly, and by prefix on a / boundary', () => {
+    expect(isActive('/dashboard/customers', '/dashboard/customers')).toBe(true)
+    expect(isActive('/dashboard/customers/abc', '/dashboard/customers')).toBe(true)
+    // /services must never light up /service-x, and vice versa.
+    expect(isActive('/dashboard/service-x', '/dashboard/services')).toBe(false)
+  })
+
+  it('treats Dasbor as exact only, so it is not lit on every sub-page', () => {
+    expect(isActive('/dashboard', '/dashboard')).toBe(true)
+    expect(isActive('/dashboard/pos', '/dashboard')).toBe(false)
   })
 })

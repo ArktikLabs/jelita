@@ -7,7 +7,7 @@ import {
   Bell, Building2, CalendarDays, ChevronsUpDown, CreditCard, IdCard, LayoutDashboard,
   LogOut, Package, Percent, Receipt, Scissors, Settings, User, Users, Wallet,
 } from 'lucide-react'
-import type { NavIcon, NavSection } from '@/lib/nav'
+import { isActive, type NavIcon, type NavSection } from '@/lib/nav'
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
   SidebarGroupLabel, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
@@ -37,13 +37,6 @@ const ICONS: Record<NavIcon, React.ComponentType<{ className?: string }>> = {
   settings: Settings,
 }
 
-/** Prefix match so /customers/<id> still highlights Pelanggan, guarded on a
- *  boundary so /services never lights up /service-x. Dasbor is exact only. */
-export function isActive(pathname: string, href: string) {
-  if (href === '/dashboard') return pathname === href
-  return pathname === href || pathname.startsWith(`${href}/`)
-}
-
 export function AppSidebar({
   sections, userName, branch,
 }: {
@@ -61,6 +54,9 @@ export function AppSidebar({
       <SidebarHeader>{branch}</SidebarHeader>
 
       <SidebarContent>
+        {/* The old top bar was a <nav>; the shadcn sidebar is not, so the
+            landmark is added here for screen-reader users who jump by region. */}
+        <nav aria-label="Navigasi utama">
         {sections.map((section) => (
           <SidebarGroup key={section.label ?? 'top'}>
             {section.label && <SidebarGroupLabel>{section.label}</SidebarGroupLabel>}
@@ -86,6 +82,7 @@ export function AppSidebar({
             </SidebarGroupContent>
           </SidebarGroup>
         ))}
+        </nav>
       </SidebarContent>
 
       <SidebarFooter>
